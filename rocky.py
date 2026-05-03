@@ -40,6 +40,8 @@ import msal
 import requests
 from anthropic import Anthropic
 
+import remy_runner
+
 # Phase A safety modules. Permissions audit runs at startup; kill switch is
 # checked every poll; outbound is the single guarded entry point for any
 # future code that sends mail.
@@ -130,10 +132,19 @@ def load_config() -> dict:
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         config = json.load(f)
 
-    required = ["client_id", "tenant_id", "user_email", "anthropic_api_key"]
+    required = ["client_id", "tenant_id", "user_emails", "anthropic_api_key"]
     missing = [k for k in required if not config.get(k)]
     if missing:
+        # Backward-compat: accept the old single-mailbox `user_email` key.
+        if "user_emails" in missing and config.get("user_email"):
+            config["user_emails"] = [config["user_email"]]
+            missing = [k for k in missing if k != "user_emails"]
+    if missing:
         log.error(f"Missing config fields: {missing}")
+        sys.exit(1)
+
+    if not isinstance(config["user_emails"], list) or not config["user_emails"]:
+        log.error("config.user_emails must be a non-empty list of mailbox addresses.")
         sys.exit(1)
 
     return config
@@ -325,23 +336,46 @@ def fetch_attachments(token: str, user_email: str, message_id: str) -> list[dict
 # State management
 # =============================================================================
 
-def get_last_check_time() -> datetime:
-    """Read the timestamp of the last email we processed; default to N hours ago."""
+def _load_last_check_file() -> dict:
+    """Internal: read the last_check.json shape (handles legacy single-key form)."""
     if not LAST_CHECK_PATH.exists():
-        default = datetime.now(timezone.utc) - timedelta(hours=INITIAL_LOOKBACK_HOURS)
-        log.info(f"No last_check found. Starting from {default.isoformat()}.")
-        return default
-
+        return {}
     with open(LAST_CHECK_PATH, "r", encoding="utf-8") as f:
         data = json.load(f)
-    return datetime.fromisoformat(data["last_check"])
+    # Legacy shape: {"last_check": "..."} — promote to a single-key per-mailbox map
+    # using a placeholder. The caller will resolve to actual mailbox keys.
+    if "last_check" in data and isinstance(data["last_check"], str):
+        return {"_legacy": data["last_check"]}
+    return data
 
 
-def save_last_check_time(when: datetime) -> None:
-    """Persist the high-water-mark timestamp."""
+def get_last_check_times(mailboxes: list[str]) -> dict[str, datetime]:
+    """Return {mailbox: last_check_datetime} for each requested mailbox."""
+    raw = _load_last_check_file()
+    legacy_ts = raw.pop("_legacy", None)
+    default = datetime.now(timezone.utc) - timedelta(hours=INITIAL_LOOKBACK_HOURS)
+
+    result: dict[str, datetime] = {}
+    for mb in mailboxes:
+        if mb in raw:
+            result[mb] = datetime.fromisoformat(raw[mb])
+        elif legacy_ts:
+            # First run after the multi-mailbox migration: seed every mailbox
+            # with the old single timestamp so we don't re-scan the world.
+            result[mb] = datetime.fromisoformat(legacy_ts)
+            log.info(f"Migrated legacy last_check → {mb}")
+        else:
+            result[mb] = default
+            log.info(f"No last_check for {mb}. Starting from {default.isoformat()}.")
+    return result
+
+
+def save_last_check_times(timestamps: dict[str, datetime]) -> None:
+    """Persist the per-mailbox high-water-mark timestamps."""
     STATE_DIR.mkdir(exist_ok=True)
+    serializable = {mb: ts.isoformat() for mb, ts in timestamps.items()}
     with open(LAST_CHECK_PATH, "w", encoding="utf-8") as f:
-        json.dump({"last_check": when.isoformat()}, f)
+        json.dump(serializable, f)
 
 
 # =============================================================================
@@ -1342,16 +1376,19 @@ Your job is twofold:
 2. If it IS a Remy request, identify which TYPE of Remy project the email is asking for.
 
 WHAT REMY DOES (in-scope categories only)
-Remy generates several kinds of landlord-tenant documents. For this classifier, we only care about these five categories:
+Remy generates several kinds of landlord-tenant documents. For this classifier, we care about these seven categories:
 
 - breach_notice — a notice that the resident has breached the lease. Includes rent breaches (late/unpaid rent), non-rent breaches (unauthorized occupants, unauthorized pets, lease violations), and immediate-termination notices for criminal/willful conduct. Jurisdiction-specific: VA (21/30, nonremediable, immediate variants), DC (rent, non-rent, breach), MD (14-day, 30-day).
 - nonrenewal — a notice that the lease will not be renewed at expiration. VA, DC, or MD.
 - warning_letter — a pre-notice warning letter. No formal cure period. Not jurisdiction-specific.
 - settlement_agreement — a residential settlement agreement. Sub-types: move-out, early-termination, concession, transfer, or combination. Not jurisdiction-specific.
 - response_letter — a Gallagher-letterhead response to incoming correspondence (from opposing counsel, a resident, an agency, etc.). Not jurisdiction-specific.
+- dc_rent_complaint — DC Form 1-A rent complaint packet. Triggered when a paralegal (or James) emails asking for a rent complaint to be filed. Inputs typically include a ledger PDF, a notice PDF, and an affidavit PDF.
+- dc_breach_complaint — DC Form 1-B breach complaint packet. Triggered when a paralegal emails asking for a breach complaint. Inputs typically include a lease PDF, a notice PDF, and an affidavit PDF.
+
+PARALEGAL FORM EMAIL: Requests with subject lines beginning "Run Remy:" are paralegal-initiated structured requests. They include a body with key:value lines (Project:, Resident:, Property:, Lease:, Notice:, etc.). Treat these as is_remy_request = true with high confidence. The Project: field tells you the category — trust it.
 
 OUT-OF-SCOPE Remy outputs (treat as is_remy_request = false for now)
-- DC complaints (Form 1-A rent, Form 1-B breach)
 - VA Unlawful Detainer complaints
 - Batch DC rent notices
 
@@ -1524,11 +1561,13 @@ def log_classification(
     case_match: dict | None = None,
     rrids_found: list[str] | None = None,
     save_result: dict | None = None,
+    mailbox: str | None = None,
 ) -> None:
     """Append a single classification record to classifications.jsonl."""
     sender = email.get("from", {}).get("emailAddress", {})
     record = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "mailbox": mailbox,
         "received_at": email.get("receivedDateTime"),
         "message_id": email.get("internetMessageId"),
         "subject": email.get("subject"),
@@ -1612,7 +1651,7 @@ def main():
     config = load_config()
     instructions = load_instructions()
 
-    log.info(f"User email: {config['user_email']}")
+    log.info(f"Mailboxes: {', '.join(config['user_emails'])}")
     log.info(f"Polling every {POLL_INTERVAL_SECONDS}s")
     log.info(f"Classifications will be written to: {CLASSIFICATIONS_PATH}")
     if instructions:
@@ -1631,8 +1670,9 @@ def main():
     # Set up Anthropic client.
     anthropic_client = Anthropic(api_key=config["anthropic_api_key"])
 
-    last_check = get_last_check_time()
-    log.info(f"Starting from: {last_check.isoformat()}")
+    last_check_by_mb = get_last_check_times(config["user_emails"])
+    for mb, ts in last_check_by_mb.items():
+        log.info(f"Starting {mb} from: {ts.isoformat()}")
 
     # Load case index once at startup (logged for visibility); reload each poll.
     initial_cases = load_case_index()
@@ -1647,9 +1687,10 @@ def main():
     log.info("Watching inbox. Ctrl+C to stop.")
     print()
 
-    # Kill-switch: who can send "ROCKY STOP" / "ROCKY START". Defaults to James.
+    # Kill-switch: who can send "ROCKY STOP" / "ROCKY START". Defaults to all
+    # configured mailbox owners.
     kill_switch_authorized = config.get(
-        "kill_switch_authorized", [config["user_email"]]
+        "kill_switch_authorized", list(config["user_emails"])
     )
     log.info(f"Kill-switch authorized senders: {kill_switch_authorized}")
 
@@ -1662,14 +1703,52 @@ def main():
             # we want new RRIDs picked up without restarting Rocky.
             cases = load_case_index()
 
-            # Pull new mail.
-            new_emails = fetch_new_emails(token, config["user_email"], last_check)
+            # Fetch new mail from every configured mailbox, tagging each email
+            # with its source mailbox for downstream logging.
+            per_mailbox_emails: list[tuple[str, list[dict]]] = []
+            for mb in config["user_emails"]:
+                try:
+                    emails = fetch_new_emails(token, mb, last_check_by_mb[mb])
+                except Exception as e:
+                    log.exception(f"Failed to fetch mail from {mb}: {e}. Skipping this mailbox this cycle.")
+                    emails = []
+                per_mailbox_emails.append((mb, emails))
+
+            # Flatten + dedup across mailboxes by internetMessageId. If the same
+            # message lands in both inboxes (e.g., someone CC'd rocky@), we
+            # process it once — the first mailbox in config wins.
+            seen_message_ids: set[str] = set()
+            new_emails: list[dict] = []
+            for mb, emails in per_mailbox_emails:
+                for email in emails:
+                    mid = email.get("internetMessageId")
+                    if mid and mid in seen_message_ids:
+                        log.info(
+                            f"Dedup: skipping duplicate of {mid!r} from {mb} "
+                            f"(already seen in another mailbox this cycle)"
+                        )
+                        continue
+                    if mid:
+                        seen_message_ids.add(mid)
+                    email["_mailbox"] = mb
+                    new_emails.append(email)
 
             # Kill-switch check FIRST — before any classification or saving.
             if new_emails:
                 check_emails_for_kill_switch(
                     STATE_DIR, new_emails, kill_switch_authorized
                 )
+
+            # Compute per-mailbox high-water marks based on what we just fetched
+            # (BEFORE the dormant short-circuit — applies in either branch).
+            high_water_by_mb = dict(last_check_by_mb)
+            for mb, emails in per_mailbox_emails:
+                for email in emails:
+                    received = datetime.fromisoformat(
+                        email["receivedDateTime"].replace("Z", "+00:00")
+                    )
+                    if received > high_water_by_mb[mb]:
+                        high_water_by_mb[mb] = received
 
             # If dormant, advance the high-water mark but skip all classification
             # and case-folder work. Polling continues so we can wake on ROCKY START.
@@ -1679,29 +1758,17 @@ def main():
                         f"DORMANT — skipping classification/save for "
                         f"{len(new_emails)} email(s)."
                     )
-                high_water = last_check
-                for email in new_emails:
-                    received = datetime.fromisoformat(
-                        email["receivedDateTime"].replace("Z", "+00:00")
-                    )
-                    if received > high_water:
-                        high_water = received
-                if high_water > last_check:
-                    last_check = high_water
-                    save_last_check_time(last_check)
+                if high_water_by_mb != last_check_by_mb:
+                    last_check_by_mb = high_water_by_mb
+                    save_last_check_times(last_check_by_mb)
                 time.sleep(POLL_INTERVAL_SECONDS)
                 continue
 
             if new_emails:
-                log.info(f"Processing {len(new_emails)} new email(s).")
+                log.info(f"Processing {len(new_emails)} new email(s) across {len(config['user_emails'])} mailbox(es).")
 
-            high_water = last_check
             for email in new_emails:
-                received = datetime.fromisoformat(
-                    email["receivedDateTime"].replace("Z", "+00:00")
-                )
-                if received > high_water:
-                    high_water = received
+                mailbox = email.get("_mailbox")
 
                 # Match to a case (RRID > case number > sender) before classifying.
                 subject = email.get("subject") or ""
@@ -1725,11 +1792,30 @@ def main():
                     case_match=case_match,
                     rrids_found=rrids_found,
                     save_result=save_result,
+                    mailbox=mailbox,
                 )
 
-            if high_water > last_check:
-                last_check = high_water
-                save_last_check_time(last_check)
+                # Remy invocation — decoupled from case management on purpose.
+                # Gated behind config.enable_remy_invocation; default off.
+                # Failures here never break the main loop.
+                if config.get("enable_remy_invocation"):
+                    try:
+                        remy_result = remy_runner.run(email, classification, config)
+                        if remy_result.get("invoked"):
+                            log.info(
+                                f"REMY → {remy_result['project_type']}: "
+                                f"{remy_result['output_path']}"
+                            )
+                        elif remy_result.get("reason"):
+                            log.info(f"Remy skipped: {remy_result['reason']}")
+                        elif remy_result.get("error"):
+                            log.error(f"Remy error: {remy_result['error']}")
+                    except Exception as e:
+                        log.exception(f"remy_runner crashed (non-fatal): {e}")
+
+            if high_water_by_mb != last_check_by_mb:
+                last_check_by_mb = high_water_by_mb
+                save_last_check_times(last_check_by_mb)
 
         except KeyboardInterrupt:
             log.info("Shutdown requested. Goodbye.")

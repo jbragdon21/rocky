@@ -30,9 +30,17 @@ PYTHON = sys.executable                  # use the Python that's running this wr
 ROCKY_SCRIPT = ROOT / "rocky.py"
 WRAPPER_LOG = ROOT / "wrapper.log"
 
-# How often to check for code updates / liveness. 5 minutes matches Rocky's
-# poll interval; the two are independent but on the same cadence.
-CHECK_INTERVAL_SECONDS = 300
+# Sibling repos to git-pull each cycle. Rocky's own repo is always pulled
+# (ROOT). Add additional dirs here that should track upstream alongside Rocky.
+# A change in ANY tracked repo triggers a Rocky restart so the new code is
+# loaded in-process.
+EXTRA_REPOS = [
+    Path("C:/Remy"),
+]
+
+# How often to check for code updates / liveness. 30 minutes — code pushes
+# are infrequent enough that polling more often is overkill.
+CHECK_INTERVAL_SECONDS = 1800
 
 # Max time to wait for Rocky to shut down gracefully before force-killing.
 SHUTDOWN_GRACE_SECONDS = 20
@@ -61,42 +69,54 @@ def log(msg: str) -> None:
 # Git operations
 # =============================================================================
 
-def git_pull_and_check_for_changes() -> bool:
-    """
-    Run `git pull` in the repo root. Return True if any files changed.
-
-    Returns False on any error — we don't want a transient git/network problem
-    to trigger a Rocky restart loop. The next cycle will try again.
-    """
+def _git_pull_one(repo_path: Path) -> bool:
+    """Pull a single repo. Returns True if it actually changed, False otherwise."""
+    if not repo_path.exists():
+        log(f"Repo path does not exist, skipping: {repo_path}")
+        return False
     try:
         result = subprocess.run(
             ["git", "pull", "--ff-only"],
-            cwd=str(ROOT),
+            cwd=str(repo_path),
             capture_output=True,
             text=True,
             timeout=GIT_PULL_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired:
-        log("git pull timed out. Skipping this cycle.")
+        log(f"git pull timed out for {repo_path}. Skipping this cycle.")
         return False
     except FileNotFoundError:
         log("git command not found. Is Git for Windows installed and on PATH?")
         return False
     except Exception as e:
-        log(f"git pull failed unexpectedly: {e!r}")
+        log(f"git pull failed unexpectedly for {repo_path}: {e!r}")
         return False
 
     output = (result.stdout + result.stderr).strip()
-
     if result.returncode != 0:
-        log(f"git pull returned non-zero ({result.returncode}). Output:\n{output}")
+        log(f"git pull on {repo_path} returned non-zero ({result.returncode}). Output:\n{output}")
         return False
-
     if "Already up to date" in output or "Already up-to-date" in output:
         return False
-
-    log(f"git pull pulled changes:\n{output}")
+    log(f"git pull on {repo_path} pulled changes:\n{output}")
     return True
+
+
+def git_pull_and_check_for_changes() -> bool:
+    """
+    Run `git pull` against every tracked repo (Rocky + EXTRA_REPOS).
+    Return True if ANY repo received new commits — a change in Rocky OR Remy
+    (or any future sibling) triggers a Rocky restart so the new code loads.
+
+    Returns False on errors — transient git/network problems should never
+    trigger a restart loop.
+    """
+    repos = [ROOT, *EXTRA_REPOS]
+    any_changed = False
+    for repo in repos:
+        if _git_pull_one(repo):
+            any_changed = True
+    return any_changed
 
 
 # =============================================================================

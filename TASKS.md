@@ -8,7 +8,11 @@ When you finish a task, replace `[ ]` with `[x]` and move on. When a task spawns
 
 ## Architectural decision (2026-05-02)
 
-**Rocky runs only on the dedicated Rocky laptop.** James's primary laptop is the dev workstation, never a runtime. Code edits flow: edit on primary laptop → `git push` → Rocky laptop pulls within 5 minutes and restarts. This collapses what was originally Phase 0 (validate on James's laptop) and the front-end of Phase A (migrate to production) into a single phase.
+**Rocky runs only on the dedicated Rocky laptop.** James's primary laptop is the dev workstation, never a runtime. Code edits flow: edit on primary laptop → `git push` → Rocky laptop pulls within 30 minutes and restarts. This collapses what was originally Phase 0 (validate on James's laptop) and the front-end of Phase A (migrate to production) into a single phase.
+
+## Who does what (2026-05-03)
+
+Tasks below are split by owner. **🧑‍⚖️ JAMES** = developer / decision-maker, owns code, GitHub, secrets, ongoing operation. **🛠️ JEFF** = colleague handling Rocky-laptop setup once. After initial setup, Jeff is only involved if something on the laptop physically breaks; everything else flows through `git push` automatically.
 
 ## Code status as of 2026-05-02
 
@@ -33,41 +37,81 @@ Pending: GitHub push, IT pre-reqs, Rocky-laptop install, live validation.
 
 - [x] **Provision `rocky@gallagherllp.com`** (M365 mailbox, standard license) — done 2026-05-02
 - [x] **Confirm Rocky laptop is provisioned** (Windows 10/11, on the firm domain, hardware ready) — done 2026-05-02
-- [ ] **Azure AD app registration "Rocky"** — confirm it exists and has delegated `Mail.Read` permission, with admin consent granted. (If not yet created: Azure portal → App registrations → New registration → name "Rocky", supported account types: single tenant. Then API permissions → Add → Microsoft Graph → Delegated → `Mail.Read` → Grant admin consent.)
-- [ ] **Grant `rocky@gallagherllp.com` delegated read on James's mailbox** via Exchange admin (Recipients → Mailboxes → james → Mailbox delegation → Read permissions → add `rocky@gallagherllp.com`)
+- [x] **Azure AD app registration "Rocky"** — done 2026-05-03. Delegated Microsoft Graph permissions granted with admin consent: `Mail.ReadWrite` and `Calendars.ReadWrite` (covers full build: reading mail, saving drafts, calendar read/create). `Mail.Send` intentionally NOT granted — Rocky is drafts-only.
+- [x] **Grant `rocky@gallagherllp.com` delegation on James's mailbox + calendar** — done 2026-05-03. Full Access on mailbox (covers Drafts) and Calendar delegate access granted via Exchange admin.
 - [ ] **Conditional Access exception** for device code flow on `rocky@gallagherllp.com` (firm policy blocks it by default — confirm exception is in place before attempting first device code login)
 
 ### 2. Set up the git deployment pipeline
 
-This is the FIRST technical step on both laptops, before any Rocky code runs in production. See the detailed walkthrough in chat (or BUILD_REFERENCE.md § Git deployment when filed) for layperson step-by-step.
+This is the FIRST technical step before any Rocky code runs in production. Tasks below are split by owner — **🧑‍⚖️ JAMES** (developer laptop, GitHub, secrets) vs. **🛠️ JEFF** (production Rocky laptop setup).
 
-**On James's laptop:**
+---
 
-- [ ] Create GitHub account (free, private repos included)
-- [ ] Install Git for Windows (defaults are fine)
-- [ ] Run `git config --global user.name` and `user.email` once
-- [ ] Create a private GitHub repo named `rocky`
-- [ ] Add `.gitignore` to the local Rocky folder — must list `config.json`, `state/`, `*.log`, `*.jsonl`, `__pycache__/`
-- [ ] `git init`, `git add .`, `git status` — VERIFY config.json and state/ are NOT in the list before committing
-- [ ] `git commit`, `git remote add origin`, `git push -u origin main`
-- [ ] Verify on github.com that secrets did NOT get pushed
+#### 🧑‍⚖️ JAMES — push code to GitHub (on his own dev laptop)
 
-**On the Rocky laptop:**
+- [x] ~~Create GitHub account `jbragdon21`~~ — done 2026-05-03
+- [x] ~~Install Git for Windows + `git config --global user.name` / `user.email`~~ — done 2026-05-03
+- [x] ~~Create private GitHub repo `jbragdon21/rocky`~~ — done 2026-05-03
+- [x] ~~`git init` + `.gitignore` + first push of Rocky code~~ — done 2026-05-03
+- [ ] **Push the latest Rocky changes** (multi-mailbox migration, remy_runner, classifier prompt update). Run `git status` first — verify `config.json`, `state/`, `*.log`, `*.jsonl` are NOT staged. Then `git add .`, `git commit -m "..."`, `git push`.
+- [ ] **Push Remy to GitHub** (private repo `jbragdon21/remy`):
+  - In the Remy folder: confirm `batch_rent_complaint.py` and `batch_dc_rent_notices.py` no longer hardcode the API key (Remy refactored these in commit 8f0104a — verify).
+  - Confirm `.gitignore` covers `config.json`, `output/`, `*.log`, `__pycache__/`.
+  - **Rotate the leaked Anthropic API key** in the Anthropic console BEFORE pushing — the old key was sitting in plaintext in two .py files.
+  - Run `git status`, verify no secrets are staged, then push.
 
-Note: log into the Rocky laptop with your normal credentials for installation work. The `rocky@gallagherllp.com` identity is used only at the device-code-login step — that's an authentication event for the Python program, not a Windows login.
+#### 🧑‍⚖️ JAMES → 🛠️ JEFF — credentials handoff
+
+Send Jeff this information securely (e.g. encrypted message, in-person, or 1Password vault — NOT plain email):
+
+- [ ] **GitHub repo URLs:** `https://github.com/jbragdon21/rocky.git` and `https://github.com/jbragdon21/remy.git`
+- [ ] **GitHub access:** add Jeff as a collaborator on both private repos (Settings → Collaborators on each repo), or generate a deploy token / personal access token for Jeff to clone with.
+- [ ] **Azure AD `client_id`** — from the "Rocky" app registration Overview tab
+- [ ] **Azure AD `tenant_id`** — from the "Rocky" app registration Overview tab
+- [ ] **Anthropic API key** — the freshly-rotated one (used by both Rocky and Remy `config.json` files)
+- [ ] **`rocky@gallagherllp.com` password** — needed for the device-code login step. Either share securely OR plan to be on a screen-share/call when Jeff hits that step so James types the password live without sharing it.
+- [ ] **Confirm Conditional Access exception is in place** (the only remaining IT pre-req from §1) — Jeff's first device-code login will fail without it.
+
+---
+
+#### 🛠️ JEFF — Rocky laptop setup (everything below)
+
+Note: log into the Rocky laptop with whatever credentials IT gave you. The `rocky@gallagherllp.com` identity is only used at the device-code-login step — it's an authentication event for the Python program, not a Windows login.
+
+**Install prerequisites:**
 
 - [ ] Install Git for Windows (defaults are fine)
 - [ ] Install Python 3.12 (NOT 3.13 — MSAL libraries lag). Check "Add Python to PATH" during install.
-- [ ] In Git Bash: `cd /c/` then `git clone https://github.com/YOUR-USERNAME/rocky.git Rocky`. The folder `C:\Rocky` should now exist with all the code.
+
+**Clone Rocky:**
+
+- [ ] In Git Bash: `cd /c/` then `git clone https://github.com/jbragdon21/rocky.git Rocky`. The folder `C:\Rocky` should now exist with all the code.
 - [ ] `cd /c/Rocky` then `pip install -r requirements.txt`
-- [ ] Copy `config.example.json` → `config.json`. Fill in real values:
-  - `client_id` — from the Azure AD app registration "Rocky" (Overview tab)
-  - `tenant_id` — from the Azure AD app registration (Overview tab)
-  - `user_email` — `jbragdon@gallagherllp.com` (the *target* mailbox, not Rocky's)
-  - `anthropic_api_key` — your Anthropic API key
-- [x] ~~Save `run_rocky.py` to `C:\Rocky\`~~ — done; lives in repo root, will arrive automatically when you `git clone`.
-- [ ] **First-time device code login.** Run `python rocky.py` once manually. It will print a code and a URL. On any browser, go to that URL, enter the code, and sign in as `rocky@gallagherllp.com`. (This is the moment Conditional Access exception matters — if device code flow is blocked, login will fail here.) Confirm the token is cached at `state/token_cache.json`. Watch the console for a poll cycle or two to confirm classifications are flowing into `classifications.jsonl`. Then Ctrl+C to stop.
-- [ ] Test the wrapper manually: `python run_rocky.py`. Verify it logs "Wrapper starting up" → "Starting Rocky..." in `wrapper.log`. From James's laptop, push a trivial change (add a comment to `instructions.md`, commit, push). Within 5 minutes, the Rocky laptop's `wrapper.log` should show "Code updated. Restarting Rocky." Ctrl+C to stop the wrapper.
+- [ ] Copy `config.example.json` → `config.json`. Fill in the values James gives you:
+  - `client_id` — Azure AD value James provides
+  - `tenant_id` — Azure AD value James provides
+  - `user_emails` — leave the default `["jbragdon@gallagherllp.com", "rocky@gallagherllp.com"]`
+  - `anthropic_api_key` — value James provides
+  - `remy_cli_path` — leave the default `C:\\Remy\\remy_cli.py`
+  - `remy_outputs_path` — leave the default OneDrive path
+  - `enable_remy_invocation` — leave `false`. James will flip this to `true` later, after testing.
+- [x] ~~Save `run_rocky.py` to `C:\Rocky\`~~ — already in the repo, arrives via `git clone`.
+
+**Clone Remy (separate repo, lives at `C:\Remy\`):**
+
+- [ ] In Git Bash: `cd /c/` then `git clone https://github.com/jbragdon21/remy.git Remy`. The folder `C:\Remy` should now exist.
+- [ ] `cd /c/Remy` then `pip install -r requirements.txt` (Remy has its own dependency set — anthropic, python-docx, pdfminer.six, jinja2, etc.).
+- [ ] Copy Remy's `config.example.json` → `config.json` and paste in the same Anthropic API key James gave you. Remy uses its own copy of the key.
+- [ ] Smoke-test: `python C:\Remy\remy_cli.py --help` should print the subcommand list (`rent-complaint`, `complaint`, `va-ud`, `warning-letter`, `settlement`, `response-letter`, `lease-review`, `notice-summary`). If that works, Remy is ready.
+- [ ] Verify the Remy Outputs folder exists at `C:\Users\jbragdon\OneDrive\OneDrive - gejlaw.com\Remy Outputs\`. Create it if not. Right-click the folder in File Explorer → "Always keep on this device" so OneDrive doesn't make it cloud-only.
+
+**First-time login + wrapper test:**
+
+- [ ] **First-time device code login.** Run `python rocky.py` once manually. It will print a code and a URL. On any browser, go to that URL, enter the code, and sign in as `rocky@gallagherllp.com`. (Have James type the password if you don't have it.) Confirm the token is cached at `state/token_cache.json`. Watch the console for a poll cycle or two to confirm classifications are flowing into `classifications.jsonl`. Then Ctrl+C to stop.
+- [ ] Test the wrapper manually: `python run_rocky.py`. Verify it logs "Wrapper starting up" → "Starting Rocky..." in `wrapper.log`. The wrapper pulls BOTH the Rocky AND Remy repos every 30 minutes — a change in either triggers a Rocky restart. James will push a trivial change from his laptop to confirm; within 30 minutes the Rocky laptop's `wrapper.log` should show `git pull on C:\Rocky pulled changes...` followed by "Code updated. Restarting Rocky." Ctrl+C to stop the wrapper.
+
+**Auto-start at boot:**
+
 - [ ] Set up Task Scheduler entry "Rocky Wrapper":
   - General → "Run whether user is logged on or not", "Run with highest privileges"
   - Triggers → At startup, delay 1 minute
@@ -75,34 +119,56 @@ Note: log into the Rocky laptop with your normal credentials for installation wo
   - Conditions → uncheck "Start the task only if the computer is on AC power"
   - Settings → restart on failure every 5 min, up to 3 attempts
 - [ ] Reboot the laptop. Confirm Rocky comes back up automatically (`wrapper.log` shows startup within ~1 minute of login screen appearing; `classifications.jsonl` resumes being appended on the next email).
+- [ ] Hand the laptop back to James / report success.
 
-### 3. Validate iteration 1 in production
+#### 🛠️ JEFF reference — when Rocky's permissions change later
 
-This is the original Phase 0 validation, but running on the Rocky laptop instead of James's laptop. Code edits flow via git push.
+- [ ] **After ANY change that broadens Rocky's Graph scopes or mailbox list, force a fresh login.** Delete `C:\Rocky\state\token_cache.json` and re-run `python rocky.py` once manually. Sign in again as `rocky@gallagherllp.com` so the new consent prompt reflects the broader scopes / new mailboxes. Cached tokens carry the OLD scope set and will 403 on anything new. (James will tell you when this is needed; the most recent case was the 2026-05-03 multi-mailbox migration.)
 
-- [ ] Let Rocky run for ~1 week. Process real inbox traffic.
-- [ ] Periodically run `python review.py` (RDP into Rocky laptop or run on James's laptop pointing at a synced copy of `classifications.jsonl`) to grade her classifications.
-- [ ] When you spot misclassifications, edit `instructions.md` on James's laptop, commit, push. Production picks it up.
-- [ ] **Decision criteria before moving to iteration 2:**
-  - Classifier reliably correct on ≥90% of routine emails
-  - Recall (catches actual Remy requests) is the metric that matters most
-  - Instructions.md has accumulated meaningful calibration content
+### 3. Ongoing classifier observation (🧑‍⚖️ JAMES — not a gate)
+
+Decision 2026-05-03: skip the original ≥90%-accuracy validation gate. Drafts are reversible, so the cost of a misclassification is low (a deleted Word file). Faster to learn from real production mistakes than to grade in vitro. This is a James task — no Jeff involvement.
+
+- [ ] Spot-check `classifications.jsonl` weekly to catch **false negatives** — real Remy requests Rocky missed. False negatives are silent; false positives surface as bad drafts you'll see anyway. (You'll need to either RDP into the Rocky laptop or ask Jeff to copy the file over periodically — Tailscale + RDP is the cleanest path. See Operational reminders below.)
+- [ ] When you spot misclassifications, edit `instructions.md` on your dev laptop, commit, push. The Rocky laptop picks up the change within 30 minutes — Jeff doesn't need to touch anything.
+- [ ] No accuracy bar to clear before moving to Phase 2 — Phase 2 activation can begin whenever you're ready.
 
 ---
 
-## Phase 2 — Iteration 2: read attachment contents (deferred)
+## Phase 2 — Remy invocation + draft generation
 
-Tasks for the next iteration. Don't start these until Phase 1 is validated.
+Decoupled from case management on purpose. The two pipelines never overlap: Remy invocation writes to its own flat output folder; case-management filing is independent.
 
-- [ ] Add attachment-content reading (still `Mail.Read` permission — covers attachments)
-- [ ] Update classifier to consider attachment text (lease, ledger contents)
-- [ ] Re-run validation against same decision criteria
+Pre-requisites:
+- ✅ Azure: `Mail.ReadWrite` and `Calendars.ReadWrite` granted (done 2026-05-03)
+- ✅ `remy_cli.py` headless entry point built and tested standalone (done 2026-05-03)
+- [ ] Remy code on GitHub (private repo, secrets stripped, leaked key rotated)
+- [ ] Remy cloned to `C:\Remy\` on the Rocky laptop, deps installed (`pip install -r requirements.txt` in `C:\Remy`)
+- ✅ `run_rocky.py` extended to also `git pull` the Remy repo every cycle (done 2026-05-03)
+
+Implementation (done 2026-05-03, dormant):
+- ✅ Built `remy_runner.py` — parses paralegal "Run Remy:" form-email body, stages attachments to a temp dir, invokes the right `remy_cli.py` subcommand, copies output to the configured Remy Outputs folder with a descriptive filename.
+- ✅ Classifier prompt updated to recognize seven categories (added `dc_rent_complaint`, `dc_breach_complaint`) and to bias toward is_remy_request=true on `Run Remy:` subjects.
+- ✅ Wired into rocky.py main loop, behind `config.enable_remy_invocation` (default `false`).
+- ✅ Created `paralegal_remy_request_template.md` — the form email paralegals copy/paste.
+
+To activate (🧑‍⚖️ JAMES — after Phase 1 deployment is stable):
+
+These are James-driven tasks. Jeff already verified the Remy clone and folder during Phase 1 setup; flipping the activation flag and distributing the template is on James.
+
+- [x] Verify `Remy Outputs` folder exists at the configured path on James's OneDrive — Jeff confirmed this during Phase 1 setup.
+- [x] Confirm Remy is cloned to `C:\Remy\` on the Rocky laptop and `--help` works — Jeff confirmed this during Phase 1 setup.
+- [ ] Send a test "Run Remy:" email to `rocky@gallagherllp.com` from `jbragdon@` (use `paralegal_remy_request_template.md` as a starting point). Watch `rocky.log` (RDP or have Jeff send you a copy) for `Remy skipped: missing_attachments: [...]` etc. — iterate on the form template wording until it works end-to-end.
+- [ ] Flip `enable_remy_invocation` from `false` to `true`. Two ways to do this:
+  - **Option A (preferred):** RDP into the Rocky laptop yourself, edit `C:\Rocky\config.json`, save. Rocky restarts at the next git-pull cycle (within 30 min) and picks up the change.
+  - **Option B:** ask Jeff to do it on the laptop — quick edit-and-save in any text editor.
+- [ ] Distribute `paralegal_remy_request_template.md` to paralegals (or convert to PDF first using the same approach as the git-push cheatsheet).
 
 ---
 
 ## Phase 3+ — see BUILD_REFERENCE.md
 
-Drafting, Remy invocation, case management (Phase D detailed design), morning digest, etc. Follow the phase progression in BUILD_REFERENCE.md, all running on the Rocky laptop, all updated via git push.
+Calendar handling, morning digest, multi-skill expansion (lease review, response letter, settlement, etc.). Follow the phase progression in BUILD_REFERENCE.md, all running on the Rocky laptop, all updated via git push.
 
 ---
 

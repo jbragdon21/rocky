@@ -101,36 +101,13 @@ he left off.
 
 ## Reviewing classifications
 
-The fastest way is the included **review tool**, which walks you through
-classifications interactively and tracks accuracy over time:
+Review is manual: skim `classifications.jsonl` directly, or react to bad
+drafts as they appear in production. False positives (Rocky drafts something
+she shouldn't) surface as visible drafts you'll see and delete. False
+negatives (Rocky misses a real Remy request) are silent — catch these by
+spot-checking `classifications.jsonl` periodically.
 
-```
-python review.py
-```
-
-Each classification appears in your terminal with the email metadata, what
-Rocky decided, his confidence, and his reasoning. Press `y` if he got
-it right, `n` if wrong (with an optional note explaining why), `s` to skip,
-or `q` to save progress and quit. Verdicts are saved to `review.jsonl` so
-your grading persists across sessions.
-
-Useful flags:
-
-```
-python review.py --stats        # Just show accuracy stats, no review
-python review.py --recent 20    # Review only the 20 most recent
-python review.py --remy-only    # Skip the ones he said weren't Remy
-python review.py --export       # Write a markdown report of misclassifications
-python review.py --redo         # Re-review entries you've already graded
-```
-
-After 20-30 reviews you'll have a clear picture of where the classifier
-is reliable and where it isn't. The `--export` flag is especially useful —
-it generates a markdown file grouping misclassifications by type (false
-positives vs. false negatives) so you can spot patterns to refine.
-
-For raw access, `classifications.jsonl` is plain JSONL and opens in any
-text editor.
+`classifications.jsonl` is plain JSONL — opens in any text editor.
 
 ## Iterating on the classifier
 

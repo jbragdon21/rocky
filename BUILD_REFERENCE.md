@@ -78,12 +78,10 @@ Phases A–C give a production-ready Rocky in ~5–6 weekends. Full vision throu
 ```
 C:\Rocky\
 ├── rocky.py                  # Main program — single file, ~500 lines
-├── review.py                 # Review tool for grading classifications
 ├── config.json               # Tenant/client IDs, user email, Anthropic key
 ├── instructions.md           # Plain-English rules James edits to refine
 ├── examples/                 # Few-shot examples (starts empty)
 ├── classifications.jsonl     # Append-only log of every classification
-├── review.jsonl              # James's verdicts on classifications
 ├── state/
 │   ├── token_cache.json      # MSAL refresh token (auto-managed)
 │   └── last_check.json       # Polling cursor
@@ -158,7 +156,7 @@ IT setup required:
 
 **Error handling:** Malformed JSON from classifier handled gracefully (logged, returns is_remy_request=False with error noted). API errors logged and skipped; main loop continues. Token refresh handled automatically by MSAL.
 
-**Review tool (`review.py`):** Walks James through unreviewed classifications interactively. Keys: y (correct), n (wrong, with optional note), s (skip), q (quit). Saves verdicts to `review.jsonl` with last-write-wins on duplicate message_ids. Computes confusion matrix: precision (when she says Remy, how often right) and recall (of actual Remy requests, how many caught). Recall is the metric that matters most — false negatives are higher cost than false positives.
+**Review:** Manual. Decision 2026-05-03: removed the `review.py` interactive grading tool. Production review is now: bad drafts surface visibly (delete and refine `instructions.md`); missed requests are caught by periodic spot-checks of `classifications.jsonl`. Recall remains the metric that matters most — false negatives are higher cost than false positives — but it's tracked by attention rather than tooling.
 
 ---
 
@@ -176,7 +174,7 @@ IT setup required:
 - Clean rollback via `git revert`
 - `config.json` (API key) and `state/` (auth tokens) are gitignored — they live ONLY on the Rocky laptop, never sync to GitHub or to James's laptop
 
-**Files in the repo:** `rocky.py`, `review.py`, `run_rocky.py`, `requirements.txt`, `instructions.md`, `examples/`, `config.example.json`, `BUILD_REFERENCE.md`, `SESSIONS.md`, `TASKS.md`, `README.md`, `.gitignore`.
+**Files in the repo:** `rocky.py`, `run_rocky.py`, `requirements.txt`, `instructions.md`, `examples/`, `config.example.json`, `BUILD_REFERENCE.md`, `SESSIONS.md`, `TASKS.md`, `README.md`, `.gitignore`.
 
 **Files NOT in the repo (gitignored):** `config.json`, `state/`, `*.log`, `*.jsonl`, `__pycache__/`, OS junk.
 
@@ -409,7 +407,7 @@ The following deliverables were produced and may exist in James's working folder
 2. **`Margaret_Proposal_Analysis.docx`** — 28 open questions in fillable boxes (uses old name)
 3. **`Minotaur_Build_Plan_Revised.docx`** — workshop-first build plan (uses old name "Minotaur")
 4. **Rocky logo files** — `.ico` (multi-resolution), `.png` (multiple sizes), with and without drop shadow
-5. **`rocky.py`, `review.py`, `instructions.md`, `requirements.txt`, `config.example.json`** — iteration 1 working code
+5. **`rocky.py`, `instructions.md`, `requirements.txt`, `config.example.json`** — iteration 1 working code
 6. **`Rocky.docx`** — case management feature plan (source for Phase D detailed design in this document)
 7. **`run_rocky.py`** (added 2026-05-02) — supervisor wrapper for the production laptop. Loops `git pull`, restarts Rocky on code change or crash. Launched at boot via Task Scheduler.
 8. **`permissions.py`, `outbound.py`, `kill_switch.py`** (added 2026-05-02) — Phase A safety modules. See "Production architecture (Phase A target)" section.
