@@ -1,0 +1,9 @@
+{
+  "_comment": "Copy this to config.json and fill in your values. Do NOT commit config.json to version control if you put this in a git repo.",
+  "client_id": "PASTE-AZURE-AD-APP-CLIENT-ID-HERE",
+  "tenant_id": "PASTE-GALLAGHER-TENANT-ID-HERE",
+  "user_email": "jbragdon@gallagherllp.com",
+  "anthropic_api_key": "sk-ant-PASTE-YOUR-ANTHROPIC-KEY-HERE",
+  "_kill_switch_comment": "Email addresses authorized to send 'ROCKY STOP' / 'ROCKY START' subject lines. Defaults to user_email if omitted.",
+  "kill_switch_authorized": ["jbragdon@gallagherllp.com"]
+}

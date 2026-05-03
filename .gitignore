@@ -1,0 +1,53 @@
+# =============================================================================
+# Rocky — .gitignore
+# =============================================================================
+# Anything that contains secrets, runtime state, or local-machine output.
+# RULE: before every commit, run `git status` and verify nothing in this list
+# appears as "to be committed". If it does, .gitignore is broken — fix first.
+# =============================================================================
+
+# Secrets — NEVER push these
+config.json
+Azure ID Info.txt
+*.key
+*.pem
+.env
+
+# Authentication state — local to each machine
+state/
+
+# Logs
+*.log
+
+# Append-only data files (classifications, reviews, activity)
+*.jsonl
+
+# Python build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# OS / editor junk
+desktop.ini
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Claude Code per-machine settings
+.claude/settings.local.json
+
+# Screenshots and one-off scratch files (keep the repo clean)
+*.png
+!Icon/*.png
+!Icon/*.ico
+inspect_*.py
+smoke_test_*.py
+scratch_*.py
