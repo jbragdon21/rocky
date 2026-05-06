@@ -150,7 +150,17 @@ IT setup required:
 
 **Email parsing:** For each new email, extracts subject, sender, body text, attachment metadata (filenames, content types, sizes — *not* contents in iteration 1). Body is truncated to 10000 chars before sending to Claude.
 
-**Classifier call:** One Claude API call per new email. System prompt is the `CLASSIFIER_SYSTEM_PROMPT` constant (defines what a Remy request is, what isn't, calibration guidance, output format). User prompt is the email + James's instructions.md content (if present). Cost: ~$0.01–0.05 per email.
+**Classifier call:** One Claude API call per *qualifying* new email (see "Pre-Claude triage gate" below). System prompt is the `CLASSIFIER_SYSTEM_PROMPT` constant (defines what a Remy request is, what isn't, calibration guidance, output format). User prompt is the email + James's instructions.md content (if present). Cost: ~$0.01–0.05 per email when Claude is called.
+
+**Pre-Claude triage gate (added 2026-05-03):** Rocky no longer sends every email to Claude. Instead, each email is sorted into one of three buckets *locally* before deciding whether to spend a Claude call:
+
+1. **Case-matched** (any tier of `match_email_to_case` hits) → save to case folder + log; **skip Claude**. The case-management Claude call is future work (see TASKS.md §4). Rationale: case-matched mail is by definition existing case correspondence, not a new Remy request.
+2. **Unmatched + Remy signal** → call the classifier with **body only** (no attachment text, since the body is enough to pre-qualify). Remy signal is currently: sender domain in `REMY_SENDER_DOMAINS` (starts with just `bozzuto.com`) AND subject+body contains at least one keyword in `REMY_KEYWORDS` (`lease violation`, `nonrenewal`, `non-renewal`, `non renewal`, `delinquency`, `breach`, `incident`, `termination`, `resident`).
+3. **Else** → log + skip Claude.
+
+Every email — gated or not — gets a row in `classifications.jsonl` with `claude_called` (bool) and `skip_reason` (`case_matched`, `no_remy_signal`, or null when classified). This preserves the audit trail: false negatives now surface as `skip_reason=no_remy_signal` rows where the email was actually a Remy request, pointing at gaps in the sender list or keyword list.
+
+**Tradeoff:** the bias-toward-false-positives principle (see Core architectural principles) used to be enforced *inside* the Claude call — Rocky sent everything and Claude erred toward "yes." With the triage gate, Rocky's heuristics now own the recall problem for any email her gate rejects. The gate is intentionally narrow at first (one sender, short keyword list); refinement is an ongoing James task as misses surface in the log.
 
 **Logging:** Each classification → one JSON line in `classifications.jsonl`. Operational events → `rocky.log`. Console shows one-line summary per email.
 
@@ -160,29 +170,42 @@ IT setup required:
 
 ---
 
-## Git deployment pipeline
+## OneDrive deployment
 
-**The setup:** Rocky's code lives in a private GitHub repo. James's primary laptop is the dev workstation; the Rocky laptop is the runtime. Edits flow:
+**The setup:** Rocky is packaged as a single `.exe` via PyInstaller and lives on OneDrive. The Rocky laptop syncs the file and runs it at boot via Task Scheduler.
 
-1. James edits on primary laptop → `git commit` → `git push`
-2. Rocky laptop runs `run_rocky.py` (a wrapper script) at boot via Task Scheduler
-3. Wrapper loops every 5 min: `git pull`. If anything changed, kill and restart `rocky.py`. If Rocky has crashed, restart her.
+```
+OneDrive (syncs to both machines):
+  OneDrive - gejlaw.com\Program Files\rocky.exe     ← the program
+  OneDrive - gejlaw.com\Program Files\instructions.md  ← global classifier rules
 
-**Why git, not OneDrive sync:**
-- Atomic file copy (no mid-execution sync corruption)
-- `git diff` is a review step before "deployment"
-- Clean rollback via `git revert`
-- `config.json` (API key) and `state/` (auth tokens) are gitignored — they live ONLY on the Rocky laptop, never sync to GitHub or to James's laptop
+Local on each machine (C:\Rocky\, never synced):
+  C:\Rocky\config.json          ← API keys, tenant/client IDs, mailbox list
+  C:\Rocky\state\               ← MSAL token cache, last_check, conversation cache, dormant flag
+  C:\Rocky\rocky.log            ← operational log
+  C:\Rocky\classifications.jsonl ← email classification audit trail
+```
 
-**Files in the repo:** `rocky.py`, `run_rocky.py`, `requirements.txt`, `instructions.md`, `examples/`, `config.example.json`, `BUILD_REFERENCE.md`, `SESSIONS.md`, `TASKS.md`, `README.md`, `.gitignore`.
+**How updates flow:**
+1. James edits source on primary laptop → runs `python build_exe.py`
+2. Build script creates `rocky.exe` and copies it to `OneDrive\Program Files\`
+3. OneDrive syncs the new .exe to the Rocky laptop
+4. Next restart (manual or after crash), the Rocky laptop picks up the new version
 
-**Files NOT in the repo (gitignored):** `config.json`, `state/`, `*.log`, `*.jsonl`, `__pycache__/`, OS junk.
+**Why OneDrive, not git:**
+- One step to deploy (build script handles everything)
+- Same sync mechanism already used for case files
+- `config.json` and `state/` are local to each machine by design — they live at `C:\Rocky\`, not on OneDrive
 
-**Operational rule:** Always `git status` before `git commit`. If `config.json`, `state/`, or any log/jsonl appears in the list, STOP and fix `.gitignore` before committing. If a secret was accidentally pushed: rotate the Anthropic API key immediately.
+**First-time setup on the Rocky laptop:**
+1. Ensure OneDrive syncs `Program Files\` and `Rocky Cases\` locally ("Always keep on this device")
+2. Create `C:\Rocky\config.json` (copy from `config.example.json`, fill in real values)
+3. Create a Task Scheduler entry that runs `OneDrive\Program Files\rocky.exe` at boot
+4. First run will prompt for device-code auth (one time)
 
-**Wrapper script (`run_rocky.py`):** Lives at the repo root. Manages Rocky's lifecycle: launches her, watches for code updates via `git pull`, restarts on update or crash. Logs to `wrapper.log` (gitignored).
+**Wrapper script (`run_rocky.py`):** Optional crash-recovery wrapper. If used, it launches `rocky.exe` and restarts it after any crash with a 30-second delay. Can also be built as an .exe. Task Scheduler's built-in restart-on-failure works as a simpler alternative.
 
-**Manual access to Rocky laptop:** Tailscale + RDP. Used for occasional debugging, log inspection, force-restart. Set up alongside Phase 1.
+**Manual access to Rocky laptop:** Tailscale + RDP. Used for occasional debugging, log inspection, force-restart.
 
 ---
 
@@ -278,27 +301,36 @@ Case workspace is browsable by Cowork users without needing Rocky-specific knowl
 
 ### Stage 1: Document ingestion — IMPLEMENTED
 
-Triggered every poll cycle, in `rocky.py` main loop. Three matching tiers (in `match_email_to_case`):
+Triggered every poll cycle, in `rocky.py` main loop. Five matching tiers (in `match_email_to_case`):
 
+0. **Conversation cache** — Graph `conversationId` previously matched to a case. Persisted to `state/conversation_cache.json` (90-day TTL). Catches replies that strip the RRID.
 1. **RRID in email** — `\bRRID-\d{4}\b` regex match in subject or body
 2. **Case number in subject/body** — substring match against the index's "Case No. Identifier" column
-3. **Sender identifier** — substring match against the index's "Sender Identifiers" column (comma/semicolon-separated)
+3. **Match Keywords** — whole-word, case-insensitive search of subject+body against the index's "Match Keywords" column (comma/semicolon-separated). Optional, intended for distinctive last names, property nicknames, or short docket titles. Skip generic terms.
+4. **Sender identifier** — substring match against the index's "Sender Identifiers" column (comma/semicolon-separated)
+
+**Open-first with closed fallback.** Within each tier, Open cases are tried first (the `Open/Closed` column; blank counts as open). If no match, closed cases are retried — but only for the strong tiers (RRID, case number). Keyword and sender matches are never attempted against closed cases. A successful closed-case match logs a hint to reopen the case in the index.
+
+**Ambiguity = no match.** Within any tier, if 2+ cases match, the tier is skipped and Rocky logs a warning rather than guessing. Philosophy: don't stretch — let James add an RRID to the subject or update the index over time.
 
 When matched, `save_email_to_case` writes the email body (as `.txt` with header) and all attachments into `<case>/Raw Documents/`. Filenames are prefixed `{receivedYYYYMMDDTHHMM}_{md5(messageId)[:8]}_` so re-runs are idempotent. Every save appends an `email_ingested` event to `<case>/activity.jsonl`.
 
 Case folder lookup is by RRID-substring match in folder name (e.g., `Mackey, Karen (RRID-0001)`), tolerant of the actual on-disk naming convention.
 
-### Stage 2: Daily folder update — IMPLEMENTED (`python rocky.py --folder-update [RRID-XXXX]`)
+### Stage 2: Daily run — IMPLEMENTED (`python rocky.py --daily-run [RRID-XXXX]`)
 
-Reads each case's `master_file_index.json` to get the set of already-processed raw filenames (idempotent). For each new file in `Raw Documents/`:
+Instruction-driven: each case folder's `_project/instructions.md` tells Claude what to do. Rocky's code is pure plumbing — no hardcoded classification logic. Adding new behaviors means editing the case's instructions, not modifying `rocky.py`.
 
-1. Extracts text via the same `extract_text_from_attachment` path used by the email classifier
-2. Asks Claude to pick a target subfolder from the case's **DYNAMICALLY DISCOVERED** subfolders (whatever directories exist in the case folder, excluding `Raw Documents`). This adapts to whatever schema the case uses — RRID-0001's litigation-case-setup structure (`Drafts`/`Fact Research`/`Legal Research`/`Miscellaneous`/`Pleadings`) and the BUILD_REFERENCE schema both work without code changes
-3. **Copies** raw → target subfolder (preserves raw as immutable record). Filename collision handling appends `(1)`, `(2)`, etc.
-4. Records `{path, category, target_folder, source_raw, processed_at, summary, confidence, filed_by}` to `master_file_index.json`
-5. Appends `document_filed` event to `activity.jsonl`
+For each case folder with `_project/instructions.md`:
 
-Document classifier uses a separate system prompt (`DOC_CLASSIFIER_SYSTEM_PROMPT`) and validates Claude's `target_folder` is in the available list (falls back to Miscellaneous if not).
+1. Reads the case-specific instructions
+2. Gathers context: new unprocessed files in `Raw Documents/` (with extracted text), available subfolders, recent activity (last 48h)
+3. **One Claude call per case** with the instructions + context → JSON response: `{analysis, file_actions[], recommendations[]}`
+4. Executes `file_actions`: **copies** raw → target subfolder (preserves raw as immutable record). Filename collision handling appends `(1)`, `(2)`, etc.
+5. Logs a `daily_run` event (analysis + recommendations) to `activity.jsonl`
+6. Logs each `document_filed` event to `activity.jsonl` and updates `master_file_index.json`
+
+Cases without `_project/instructions.md` are skipped. A default template is at `_templates/instructions.md` — copy it into a case's `_project/` folder to enable daily runs for that case.
 
 ### Stage 3: Daily case digest — IMPLEMENTED (`python rocky.py --daily-digest [RRID-XXXX] [--hours N]`)
 
@@ -409,7 +441,7 @@ The following deliverables were produced and may exist in James's working folder
 4. **Rocky logo files** — `.ico` (multi-resolution), `.png` (multiple sizes), with and without drop shadow
 5. **`rocky.py`, `instructions.md`, `requirements.txt`, `config.example.json`** — iteration 1 working code
 6. **`Rocky.docx`** — case management feature plan (source for Phase D detailed design in this document)
-7. **`run_rocky.py`** (added 2026-05-02) — supervisor wrapper for the production laptop. Loops `git pull`, restarts Rocky on code change or crash. Launched at boot via Task Scheduler.
+7. **`run_rocky.py`** (added 2026-05-02, simplified 2026-05-06) — optional crash-recovery wrapper for the production laptop. Restarts Rocky on crash. Launched at boot via Task Scheduler. No longer does git pull (OneDrive handles sync).
 8. **`permissions.py`, `outbound.py`, `kill_switch.py`** (added 2026-05-02) — Phase A safety modules. See "Production architecture (Phase A target)" section.
 9. **`.gitignore`** (added 2026-05-02) — keeps `config.json`, `state/`, `*.log`, `*.jsonl`, `Azure ID Info.txt`, OS junk, and `__pycache__/` out of version control. `!Icon/*.png` and `!Icon/*.ico` are explicit allowlist exceptions for the legitimate logo files.
 10. **`TASKS.md`** (added 2026-05-02) — ordered Phase 1 task list (IT pre-reqs, GitHub setup, Rocky-laptop install, validation). The active to-do list as of late 2026-05-02.

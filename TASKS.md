@@ -16,7 +16,7 @@ Tasks below are split by owner. **🧑‍⚖️ JAMES** = developer / decision-m
 
 ## Code status as of 2026-05-02
 
-All code is in `C:\Users\jbragdon\Desktop\Rocky\` and tested offline. NOT YET pushed to GitHub. Done:
+All code is in `C:\Users\jbragdon\Desktop\Rocky\` and tested offline. Pushed to GitHub 2026-05-03. Done:
 
 - ✅ Iteration 1 classifier (Mail.Read, RRID matching, case-index lookup)
 - ✅ Iteration 2 attachment text extraction (PDF / DOCX / XLSX / TXT)
@@ -27,7 +27,7 @@ All code is in `C:\Users\jbragdon\Desktop\Rocky\` and tested offline. NOT YET pu
 - ✅ `run_rocky.py` supervisor wrapper for the Rocky laptop
 - ✅ `.gitignore` covering all secrets and runtime state
 
-Pending: GitHub push, IT pre-reqs, Rocky-laptop install, live validation.
+Pending: IT pre-reqs (Conditional Access exception), Rocky-laptop install, live validation.
 
 ---
 
@@ -39,7 +39,7 @@ Pending: GitHub push, IT pre-reqs, Rocky-laptop install, live validation.
 - [x] **Confirm Rocky laptop is provisioned** (Windows 10/11, on the firm domain, hardware ready) — done 2026-05-02
 - [x] **Azure AD app registration "Rocky"** — done 2026-05-03. Delegated Microsoft Graph permissions granted with admin consent: `Mail.ReadWrite` and `Calendars.ReadWrite` (covers full build: reading mail, saving drafts, calendar read/create). `Mail.Send` intentionally NOT granted — Rocky is drafts-only.
 - [x] **Grant `rocky@gallagherllp.com` delegation on James's mailbox + calendar** — done 2026-05-03. Full Access on mailbox (covers Drafts) and Calendar delegate access granted via Exchange admin.
-- [ ] **Conditional Access exception** for device code flow on `rocky@gallagherllp.com` (firm policy blocks it by default — confirm exception is in place before attempting first device code login)
+- [ ] **Conditional Access exception** for device code flow on `rocky@gallagherllp.com` — Jeff to add, see §3 below (firm policy blocks device code flow by default; without this exception, Rocky's first login will fail with AADSTS53003)
 
 ### 2. Set up the git deployment pipeline
 
@@ -53,24 +53,24 @@ This is the FIRST technical step before any Rocky code runs in production. Tasks
 - [x] ~~Install Git for Windows + `git config --global user.name` / `user.email`~~ — done 2026-05-03
 - [x] ~~Create private GitHub repo `jbragdon21/rocky`~~ — done 2026-05-03
 - [x] ~~`git init` + `.gitignore` + first push of Rocky code~~ — done 2026-05-03
-- [ ] **Push the latest Rocky changes** (multi-mailbox migration, remy_runner, classifier prompt update). Run `git status` first — verify `config.json`, `state/`, `*.log`, `*.jsonl` are NOT staged. Then `git add .`, `git commit -m "..."`, `git push`.
-- [ ] **Push Remy to GitHub** (private repo `jbragdon21/remy`):
-  - In the Remy folder: confirm `batch_rent_complaint.py` and `batch_dc_rent_notices.py` no longer hardcode the API key (Remy refactored these in commit 8f0104a — verify).
-  - Confirm `.gitignore` covers `config.json`, `output/`, `*.log`, `__pycache__/`.
-  - **Rotate the leaked Anthropic API key** in the Anthropic console BEFORE pushing — the old key was sitting in plaintext in two .py files.
-  - Run `git status`, verify no secrets are staged, then push.
+- [x] ~~**Push the latest Rocky changes**~~ — done 2026-05-03. Verified: `config.json`, `state/`, logs all gitignored.
+- [x] ~~**Push Remy to GitHub**~~ (private repo `jbragdon21/remy`) — done 2026-05-03. API key removed from batch scripts (commit 8f0104a), `config.json` gitignored, no secrets in tracked files.
+  - ~~**Rotate the leaked Anthropic API key**~~ — done 2026-05-03.
 
 #### 🧑‍⚖️ JAMES → 🛠️ JEFF — credentials handoff
 
-Send Jeff this information securely (e.g. encrypted message, in-person, or 1Password vault — NOT plain email):
+- [x] ~~**Azure AD `client_id` and `tenant_id`**~~ — sent securely 2026-05-03
+- [x] ~~**Anthropic API key**~~ — sent securely 2026-05-03 (used by both Rocky and Remy `config.json` files)
+- [x] ~~**`rocky@gallagherllp.com` password**~~ — Jeff has it securely 2026-05-03
+- [ ] **Get Jeff's GitHub username** — Jeff to create a free GitHub account and send the username (see Jeff's task list, step 1)
+- [ ] **Add Jeff as a collaborator** on both private repos (Settings → Collaborators on `jbragdon21/rocky` and `jbragdon21/remy`) once he sends his username
 
-- [ ] **GitHub repo URLs:** `https://github.com/jbragdon21/rocky.git` and `https://github.com/jbragdon21/remy.git`
-- [ ] **GitHub access:** add Jeff as a collaborator on both private repos (Settings → Collaborators on each repo), or generate a deploy token / personal access token for Jeff to clone with.
-- [ ] **Azure AD `client_id`** — from the "Rocky" app registration Overview tab
-- [ ] **Azure AD `tenant_id`** — from the "Rocky" app registration Overview tab
-- [ ] **Anthropic API key** — the freshly-rotated one (used by both Rocky and Remy `config.json` files)
-- [ ] **`rocky@gallagherllp.com` password** — needed for the device-code login step. Either share securely OR plan to be on a screen-share/call when Jeff hits that step so James types the password live without sharing it.
-- [ ] **Confirm Conditional Access exception is in place** (the only remaining IT pre-req from §1) — Jeff's first device-code login will fail without it.
+---
+
+#### 🛠️ JEFF — pre-reqs (do these FIRST, before laptop setup)
+
+- [ ] **Create a GitHub account** (free tier is fine) and send the username to James. James will add it as a collaborator on the two private repos so you can clone them.
+- [ ] **Add Conditional Access exception for device code flow on `rocky@gallagherllp.com`.** Firm's default Conditional Access policy blocks device code flow tenant-wide. Rocky's Python program authenticates via device code flow (no human at the keyboard most of the time), so we need a narrowly-scoped exception for this one account only. In the Entra/Azure admin portal: add `rocky@gallagherllp.com` to the exclusion list of the policy that blocks `authenticationFlows / deviceCodeFlow`, OR create a new CA policy that explicitly grants device code flow to this single account. Without this, the first `python rocky.py` run will fail with `AADSTS53003` ("Access has been blocked by Conditional Access policies").
 
 ---
 
@@ -129,9 +129,18 @@ Note: log into the Rocky laptop with whatever credentials IT gave you. The `rock
 
 Decision 2026-05-03: skip the original ≥90%-accuracy validation gate. Drafts are reversible, so the cost of a misclassification is low (a deleted Word file). Faster to learn from real production mistakes than to grade in vitro. This is a James task — no Jeff involvement.
 
-- [ ] Spot-check `classifications.jsonl` weekly to catch **false negatives** — real Remy requests Rocky missed. False negatives are silent; false positives surface as bad drafts you'll see anyway. (You'll need to either RDP into the Rocky laptop or ask Jeff to copy the file over periodically — Tailscale + RDP is the cleanest path. See Operational reminders below.)
+- [ ] Spot-check `classifications.jsonl` weekly to catch **false negatives** — real Remy requests Rocky missed. With the pre-Claude triage gate (added 2026-05-03), most emails now log with `claude_called=false` and a `skip_reason`. The misses to look for: emails where `skip_reason` is `no_remy_signal` but the email actually was a Remy request. Those reveal a gap in `REMY_SENDER_DOMAINS` or `REMY_KEYWORDS` (in `rocky.py`). False positives still surface as bad drafts you'll see anyway. (You'll need to either RDP into the Rocky laptop or ask Jeff to copy the file over periodically — Tailscale + RDP is the cleanest path. See Operational reminders below.)
+- [ ] **Refine the Remy triage gate** as misses accumulate. Current gate: bozzuto.com sender + one of a small keyword list. Expand `REMY_SENDER_DOMAINS` when new property managers come online; expand `REMY_KEYWORDS` when you spot a missed request whose body uses a phrasing not yet on the list. Edit on the dev laptop, commit, push.
 - [ ] When you spot misclassifications, edit `instructions.md` on your dev laptop, commit, push. The Rocky laptop picks up the change within 30 minutes — Jeff doesn't need to touch anything.
 - [ ] No accuracy bar to clear before moving to Phase 2 — Phase 2 activation can begin whenever you're ready.
+
+### 4. Case-management Claude call (🧑‍⚖️ JAMES — future work)
+
+Currently case-matched emails are saved to the case folder + logged but skip Claude entirely (`skip_reason=case_matched`). The next iteration adds a dedicated Claude call for this bucket, focused on case management — not Remy classification.
+
+- [ ] Design the call: distinct system prompt (case posture, what changed, suggested next steps, deadline extraction). Likely takes the matched case context + email body + most-recent Case Status Memorandum text as input.
+- [ ] Decide what the output drives: just enrich the case digest? Append a per-case "pending items" list? Generate a draft response in James's Drafts folder (Phase B territory — gated on `Mail.ReadWrite`)?
+- [ ] Implement and wire into the main loop's bucket-1 branch, replacing the current `claude_called=False, skip_reason='case_matched'` skip.
 
 ---
 
@@ -142,7 +151,7 @@ Decoupled from case management on purpose. The two pipelines never overlap: Remy
 Pre-requisites:
 - ✅ Azure: `Mail.ReadWrite` and `Calendars.ReadWrite` granted (done 2026-05-03)
 - ✅ `remy_cli.py` headless entry point built and tested standalone (done 2026-05-03)
-- [ ] Remy code on GitHub (private repo, secrets stripped, leaked key rotated)
+- [x] ~~Remy code on GitHub (private repo, secrets stripped, leaked key rotated)~~ — done 2026-05-03
 - [ ] Remy cloned to `C:\Remy\` on the Rocky laptop, deps installed (`pip install -r requirements.txt` in `C:\Remy`)
 - ✅ `run_rocky.py` extended to also `git pull` the Remy repo every cycle (done 2026-05-03)
 

@@ -24,6 +24,41 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-05-03 — Smarter local case matcher (no Claude in the matching path)
+
+**What changed**
+
+- **`rocky.py` matcher rewrite.** Replaced `match_email_to_case` with a five-tier matcher: conversation cache > RRID > case number > Match Keywords > sender identifier. All deterministic Python, no Claude call.
+- **Conversation cache.** Added `state/conversation_cache.json` (`{conversationId: {rrid, matched_at}}`, 90-day TTL). `load_conversation_cache` / `save_conversation_cache` mirror the `last_check` pattern. Loaded once per poll, mutated in-memory on each successful match, persisted at end of cycle. Replies in a thread auto-match the same case even if the RRID is stripped.
+- **Graph `$select` updated** to include `conversationId` (was missing — would've returned nothing for the cache).
+- **Open/Closed filter.** Open cases (or blank `Open/Closed`) are tried first. Closed cases are a fallback only for RRID + case-number tiers; keyword/sender are never tried against closed cases. Closed matches log a hint to reopen the index entry. `_is_open_case` accepts blank/"open"/"o"/"active".
+- **`Match Keywords` column** added to the case-index schema (optional). Comma-/semicolon-separated. Whole-word case-insensitive (`\b{re.escape(kw)}\b`) against subject+body. Looked up under either `Match Keywords (if applicable)` or `Match Keywords` to keep parity with the existing column-naming style.
+- **Ambiguity = no match.** Within any tier, if >1 case matches, that tier is skipped and a warning is logged. No silent guessing.
+- **Docs.** BUILD_REFERENCE.md § Stage 1 rewritten to describe the five tiers + ambiguity + Open/Closed semantics.
+
+**Decisions made**
+
+- **Match in Python, not Claude.** James was explicit: classification stays one Claude call; case identification is local and deterministic. Cheaper, faster, auditable, and the index is the single source of truth.
+- **"Don't stretch" matching.** Ambiguity returns None rather than picking one. Most emails won't auto-match at first; James will add RRIDs to subject lines or populate Match Keywords over time.
+- **Skipped property-address matching.** Case management work isn't tightly tied to specific addresses (unlike the litigation work). Adding a `Property Address` column would be noise for this workflow.
+- **Conversation cache persists** across restarts (disk-backed) rather than in-memory only. Threads can span days; an in-memory cache would lose every match on restart.
+- **Closed-case fallback is RRID/case# only.** A keyword or sender hit on a closed case is far more likely to be a new matter than a resumption of an old one.
+
+**Open items**
+
+- **`Match Keywords` column not yet added to `Rocky Case Index.xlsx`.** Code tolerates absence — matcher falls through to sender tier. James will populate as distinctive identifiers come up. Skip common surnames; only put things you'd be confident matching alone (e.g., uncommon last names, short docket titles, property nicknames).
+- **No live test yet** of the new matcher against real inbox traffic. Syntax verified; behavior tested by code inspection only.
+- **Conversation cache not warmed.** First few cycles after deploy will rely on the explicit-signal tiers; the cache populates as matches happen.
+
+**Watch-outs**
+
+- **`conversationId` requires the new `$select`.** If you ever revert that change, the cache silently stops working (every email would have `conversationId=None` and be ineligible for tier 0).
+- **Closed-case match logs at INFO, not WARNING.** It's expected behavior, not a bug — but if you start seeing it frequently, the index is drifting.
+- **Ambiguity warnings are the signal James cares about.** When two open cases share an RRID-less identifier (same opposing counsel, generic case number), Rocky logs the warning and returns no match. That's the correct behavior, but it means James needs to scan the log occasionally for these — they tell him which cases need a Match Keywords entry to disambiguate.
+- **`save_conversation_cache` mutates the in-memory dict** to drop pruned entries (so the next poll's `load` sees the same state if no disk reload happened). Not strictly necessary today since we reload each cycle, but keeps the contract clean if that ever changes.
+
+---
+
 ## Session 2026-05-02 — Big build: case mgmt (Phase D Stages 1/2/3), Phase A safety, deployment plan, Phase 0/A merge
 
 **What changed**

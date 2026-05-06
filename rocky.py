@@ -52,15 +52,24 @@ from kill_switch import check_emails_for_kill_switch, is_dormant
 # Configuration
 # =============================================================================
 
-# All paths relative to where rocky.py is run from.
-ROOT = Path(__file__).parent
-CONFIG_PATH = ROOT / "config.json"
-INSTRUCTIONS_PATH = ROOT / "instructions.md"
-CLASSIFICATIONS_PATH = ROOT / "classifications.jsonl"
-STATE_DIR = ROOT / "state"
+# When running as a PyInstaller .exe, the program lives on OneDrive but
+# runtime data (config, auth tokens, logs) stays local to each machine.
+if getattr(sys, "frozen", False):
+    PROGRAM_DIR = Path(sys.executable).parent   # OneDrive — .exe, instructions.md
+    DATA_DIR = Path(r"C:\Rocky")                # local — config, state, logs
+else:
+    PROGRAM_DIR = Path(__file__).parent          # dev mode — everything co-located
+    DATA_DIR = PROGRAM_DIR
+
+CONFIG_PATH = DATA_DIR / "config.json"
+INSTRUCTIONS_PATH = PROGRAM_DIR / "instructions.md"
+CLASSIFICATIONS_PATH = DATA_DIR / "classifications.jsonl"
+STATE_DIR = DATA_DIR / "state"
 TOKEN_CACHE_PATH = STATE_DIR / "token_cache.json"
 LAST_CHECK_PATH = STATE_DIR / "last_check.json"
-LOG_PATH = ROOT / "rocky.log"
+CONVERSATION_CACHE_PATH = STATE_DIR / "conversation_cache.json"
+CONVERSATION_CACHE_TTL_DAYS = 90
+LOG_PATH = DATA_DIR / "rocky.log"
 
 # Microsoft Graph scopes — READ ONLY for iteration 1.
 # Mail.Read is the minimum needed to read inbox. Notably absent:
@@ -89,6 +98,23 @@ CASE_INDEX_PATH = Path(
 
 # Matches "RRID-1234" anywhere in text, case-insensitive.
 RRID_PATTERN = re.compile(r"\bRRID-\d{4}\b", re.IGNORECASE)
+
+# Pre-Claude triage: which senders, and which keywords, qualify an email as a
+# "possible Remy request" worth spending a Claude call on. Anything that fails
+# this gate is logged but not classified. Expand the senders list as new property
+# managers come online; expand keywords as we observe misses.
+REMY_SENDER_DOMAINS = ("bozzuto.com",)
+REMY_KEYWORDS = (
+    "lease violation",
+    "nonrenewal",
+    "non-renewal",
+    "non renewal",
+    "delinquency",
+    "breach",
+    "incident",
+    "termination",
+    "resident",
+)
 
 # Rocky Cases folder root (for saving RRID-matched emails into case folders).
 # Derived from CASE_INDEX_PATH so they always agree.
@@ -234,7 +260,7 @@ def fetch_new_emails(token: str, user_email: str, since: datetime) -> list[dict]
         "$filter": f"receivedDateTime gt {since_iso}",
         "$orderby": "receivedDateTime asc",
         "$top": "50",  # Page size; iteration 1 doesn't paginate further.
-        "$select": "id,subject,from,toRecipients,receivedDateTime,bodyPreview,body,hasAttachments,internetMessageId",
+        "$select": "id,subject,from,toRecipients,receivedDateTime,bodyPreview,body,hasAttachments,internetMessageId,conversationId",
     }
     headers = {
         "Authorization": f"Bearer {token}",
@@ -385,7 +411,11 @@ def save_last_check_times(timestamps: dict[str, datetime]) -> None:
 # Expected columns in Rocky Case Index.xlsx (first row = headers):
 #   RRID#, File Name, C/M, Client, Description,
 #   Case No. Identifier (if applicable), Sender Identifiers (if applicable),
-#   Open/Closed
+#   Match Keywords (if applicable), Open/Closed
+#
+# Match Keywords is an optional column for distinctive search terms (last names,
+# property nicknames, docket short titles, etc.). Comma- or semicolon-separated.
+# Whole-word, case-insensitive match against subject+body. Skip generic terms.
 #
 # The matcher tolerates missing/renamed columns: it looks up by header name and
 # returns None for anything not present, so adding columns doesn't break things.
@@ -442,47 +472,228 @@ def find_rrids_in_text(text: str) -> list[str]:
     return sorted({m.upper() for m in RRID_PATTERN.findall(text)})
 
 
-def match_email_to_case(email: dict, cases: list[dict]) -> dict | None:
+def is_possible_remy_request(email: dict) -> tuple[bool, str | None]:
     """
-    Try to match an email to a case in the index. Returns a dict with case
-    fields plus _match_method and _match_value, or None if no match.
+    Cheap pre-Claude triage: is this email worth sending to the classifier?
 
-    Match priority: RRID > case number > sender identifier.
+    Returns (passes_gate, matched_keyword_or_none). Currently: sender domain
+    must be in REMY_SENDER_DOMAINS AND subject+body must contain at least one
+    keyword in REMY_KEYWORDS. Anything else is logged and skipped.
     """
-    if not cases:
+    sender_addr = (
+        ((email.get("from") or {}).get("emailAddress") or {}).get("address") or ""
+    ).lower()
+    if not any(sender_addr.endswith("@" + d) or sender_addr.endswith("." + d)
+               for d in REMY_SENDER_DOMAINS):
+        return (False, None)
+
+    subject = email.get("subject") or ""
+    body = (email.get("body") or {}).get("content") or email.get("bodyPreview") or ""
+    haystack = f"{subject}\n{body}".lower()
+    for kw in REMY_KEYWORDS:
+        if kw in haystack:
+            return (True, kw)
+    return (False, None)
+
+
+def load_conversation_cache() -> dict:
+    """
+    Load {conversationId: {"rrid": str, "matched_at": iso8601}} from disk.
+    Returns {} on any failure (matcher still works without the cache).
+    """
+    if not CONVERSATION_CACHE_PATH.exists():
+        return {}
+    try:
+        with open(CONVERSATION_CACHE_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        log.warning(f"Could not read conversation cache: {e}")
+        return {}
+
+
+def save_conversation_cache(cache: dict) -> None:
+    """Write the conversation cache, pruning entries older than TTL."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=CONVERSATION_CACHE_TTL_DAYS)
+    pruned = {}
+    for cid, entry in cache.items():
+        try:
+            matched_at = datetime.fromisoformat(entry["matched_at"])
+            if matched_at >= cutoff:
+                pruned[cid] = entry
+        except Exception:
+            continue  # drop malformed entries
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(CONVERSATION_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(pruned, f, indent=2)
+        cache.clear()
+        cache.update(pruned)
+    except Exception as e:
+        log.warning(f"Could not save conversation cache: {e}")
+
+
+def _is_open_case(case: dict) -> bool:
+    status = str(case.get("Open/Closed") or "").strip().lower()
+    # Treat blank as open (don't penalize incomplete rows).
+    return status in ("", "open", "o", "active")
+
+
+def _find_keyword_hit(case: dict, haystack_lower: str) -> str | None:
+    """Whole-word, case-insensitive match against the Match Keywords column."""
+    field = str(case.get("Match Keywords (if applicable)") or case.get("Match Keywords") or "").strip()
+    if not field:
         return None
+    for raw in re.split(r"[,;\n]+", field):
+        kw = raw.strip().lower()
+        if not kw:
+            continue
+        if re.search(rf"\b{re.escape(kw)}\b", haystack_lower):
+            return kw
+    return None
 
+
+def _match_in_pool(email: dict, pool: list[dict]) -> tuple[dict | None, str | None]:
+    """
+    Run the tiered matcher against a candidate pool. Returns (case, ambiguity_note).
+    Within each tier, if multiple cases match, the tier is skipped and an
+    ambiguity note is recorded — we never silently pick one.
+    """
     subject = email.get("subject") or ""
     body = (email.get("body") or {}).get("content") or email.get("bodyPreview") or ""
     sender_addr = (
         ((email.get("from") or {}).get("emailAddress") or {}).get("address") or ""
     ).lower()
-
     haystack = f"{subject}\n{body}"
     haystack_lower = haystack.lower()
 
-    rrids_in_email = find_rrids_in_text(haystack)
-    for case in cases:
-        rrid = (str(case.get("RRID#") or "")).strip().upper()
-        if rrid and rrid in rrids_in_email:
-            return {**case, "_match_method": "rrid", "_match_value": rrid}
+    ambiguity: str | None = None
 
-    for case in cases:
-        case_no = str(case.get("Case No. Identifier (if applicable)") or "").strip()
+    # Tier 1: RRID
+    rrids_in_email = set(find_rrids_in_text(haystack))
+    if rrids_in_email:
+        hits = [c for c in pool if (str(c.get("RRID#") or "")).strip().upper() in rrids_in_email]
+        if len(hits) == 1:
+            rrid = (str(hits[0].get("RRID#") or "")).strip().upper()
+            return ({**hits[0], "_match_method": "rrid", "_match_value": rrid}, None)
+        if len(hits) > 1:
+            ambiguity = f"rrid tier: {len(hits)} cases matched RRIDs {sorted(rrids_in_email)}"
+
+    # Tier 2: case number
+    hits = []
+    for c in pool:
+        case_no = str(c.get("Case No. Identifier (if applicable)") or "").strip()
         if case_no and case_no.lower() in haystack_lower:
-            return {**case, "_match_method": "case_number", "_match_value": case_no}
+            hits.append((c, case_no))
+    if len(hits) == 1:
+        c, case_no = hits[0]
+        return ({**c, "_match_method": "case_number", "_match_value": case_no}, ambiguity)
+    if len(hits) > 1:
+        ambiguity = ambiguity or f"case_number tier: {len(hits)} cases matched"
 
+    # Tier 3: keywords
+    hits = []
+    for c in pool:
+        kw = _find_keyword_hit(c, haystack_lower)
+        if kw:
+            hits.append((c, kw))
+    if len(hits) == 1:
+        c, kw = hits[0]
+        return ({**c, "_match_method": "keyword", "_match_value": kw}, ambiguity)
+    if len(hits) > 1:
+        ambiguity = ambiguity or f"keyword tier: {len(hits)} cases matched"
+
+    # Tier 4: sender identifier
     if sender_addr:
-        for case in cases:
-            senders_field = str(case.get("Sender Identifiers (if applicable)") or "").strip()
+        hits = []
+        for c in pool:
+            senders_field = str(c.get("Sender Identifiers (if applicable)") or "").strip()
             if not senders_field:
                 continue
-            tokens = [t.strip().lower() for t in re.split(r"[,;\n]+", senders_field) if t.strip()]
-            for tok in tokens:
+            for raw in re.split(r"[,;\n]+", senders_field):
+                tok = raw.strip().lower()
                 if tok and tok in sender_addr:
-                    return {**case, "_match_method": "sender", "_match_value": tok}
+                    hits.append((c, tok))
+                    break
+        if len(hits) == 1:
+            c, tok = hits[0]
+            return ({**c, "_match_method": "sender", "_match_value": tok}, ambiguity)
+        if len(hits) > 1:
+            ambiguity = ambiguity or f"sender tier: {len(hits)} cases matched"
+
+    return (None, ambiguity)
+
+
+def match_email_to_case(
+    email: dict,
+    cases: list[dict],
+    conversation_cache: dict | None = None,
+) -> dict | None:
+    """
+    Try to match an email to a case in the index. Returns a dict with case
+    fields plus _match_method and _match_value, or None if no match.
+
+    Priority: conversation cache > RRID > case number > keywords > sender.
+    Within each tier, ambiguous matches (>1 case) are skipped — we never
+    silently guess. Open cases are tried first; closed cases are a fallback
+    only for the strong tiers (RRID, case number).
+    """
+    if not cases:
+        return None
+
+    cache = conversation_cache if conversation_cache is not None else {}
+
+    # Tier 0: conversation cache. Resolve cached RRID against the live index
+    # so renamed/closed cases stay current.
+    conv_id = email.get("conversationId")
+    if conv_id and conv_id in cache:
+        cached_rrid = (cache[conv_id].get("rrid") or "").strip().upper()
+        if cached_rrid:
+            for c in cases:
+                if (str(c.get("RRID#") or "")).strip().upper() == cached_rrid:
+                    return {**c, "_match_method": "conversation", "_match_value": cached_rrid}
+
+    open_pool = [c for c in cases if _is_open_case(c)]
+
+    # First pass: open cases only.
+    match, ambiguity = _match_in_pool(email, open_pool)
+    if match:
+        _record_conversation_match(cache, conv_id, match)
+        return match
+
+    # Fallback: closed cases, but only for explicit-signal tiers (RRID, case#).
+    # Skip keyword/sender matches against closed cases — too noisy.
+    closed_pool = [c for c in cases if not _is_open_case(c)]
+    if closed_pool:
+        match, closed_ambiguity = _match_in_pool(email, closed_pool)
+        if match and match.get("_match_method") in ("rrid", "case_number"):
+            log.info(
+                f"Matched email to CLOSED case {match.get('RRID#')} via "
+                f"{match['_match_method']}={match['_match_value']}. "
+                f"Reopen the case in the index if work is resuming."
+            )
+            _record_conversation_match(cache, conv_id, match)
+            return match
+        ambiguity = ambiguity or closed_ambiguity
+
+    if ambiguity:
+        subj = (email.get("subject") or "")[:80]
+        log.warning(f"Ambiguous case match — {ambiguity}. Email subject: {subj!r}. No match returned.")
 
     return None
+
+
+def _record_conversation_match(cache: dict, conv_id: str | None, match: dict) -> None:
+    """Persist a successful match to the conversation cache (in-memory)."""
+    if not conv_id:
+        return
+    rrid = (str(match.get("RRID#") or "")).strip().upper()
+    if not rrid:
+        return
+    cache[conv_id] = {
+        "rrid": rrid,
+        "matched_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 # =============================================================================
@@ -765,50 +976,45 @@ def save_email_to_case(
 
 
 # =============================================================================
-# Phase D Stage 2 — daily folder-update skill
+# Phase D Stage 2 — daily run (instruction-driven)
 # =============================================================================
-# Triggered manually with `python rocky.py --folder-update` (or scheduled by
-# Windows Task Scheduler at 5pm). For each case folder under Rocky Cases,
-# scans Raw Documents/ for files we haven't filed yet, asks Claude which
-# existing subfolder each belongs in, copies to that subfolder, and records
-# the action in the case's master_file_index.json + activity.jsonl.
+# Triggered with `python rocky.py --daily-run` (scheduled by Task Scheduler
+# at 4pm). For each case folder that has _project/instructions.md, Rocky
+# reads those instructions, gathers context (new raw files, subfolders,
+# recent activity), makes one Claude call, and executes any file_actions
+# from the response. All results logged to activity.jsonl.
 #
-# Idempotent: if a raw file's name already appears in master_file_index.json
-# under "source_raw", it's skipped on the next run.
+# The intelligence lives in each case's instructions.md, not in Rocky's code.
+# Adding new behaviors = editing instructions, not modifying rocky.py.
+#
+# File actions are idempotent: if a raw file's name already appears in
+# master_file_index.json under "source_raw", it won't be shown to Claude.
 
-DOC_CLASSIFIER_SYSTEM_PROMPT = """You are Rocky, a litigation paralegal sorting incoming case-file documents into the correct subfolder.
+DAILY_RUN_SYSTEM_PROMPT = """You are Rocky, a litigation paralegal running a daily review of a case folder for James Bragdon at Gallagher LLP.
 
-For each document, you receive:
-- The case description (parties, jurisdiction, posture)
-- The filename
-- Extracted text from the document (may be empty for images/binaries)
-- The list of AVAILABLE SUBFOLDERS for this specific case
+You receive:
+1. CASE-SPECIFIC INSTRUCTIONS from _project/instructions.md (your primary directives)
+2. CASE CONTEXT: description, available subfolders, new unprocessed files with extracted text, recent activity
 
-Your job: pick exactly one subfolder from the AVAILABLE SUBFOLDERS list. Do NOT invent folder names.
-
-Common categories to think with (map to whichever AVAILABLE folder fits best):
-- Pleadings: filings WITH the court (motions, briefs, complaints, answers, oppositions, replies)
-- Court Documents / Court Orders: filings BY the court (orders, scheduling orders, hearing notices, clerk notices)
-- Correspondence: letters/emails between counsel, parties, clients (cover letters, demand letters, settlement comms)
-- Legal Research: case law printouts, statutes, articles, treatises, secondary sources
-- Fact Research: documents about underlying facts (witness statements, photos, leases, ledgers, contracts, medical records)
-- Drafts: works-in-progress (Rocky-generated or attorney-generated drafts not yet filed)
-- Miscellaneous: anything that doesn't fit cleanly
-
-If the case folder uses different naming (e.g., it has "Miscellaneous" but no "Correspondence"), pick the closest available match. If nothing fits well, pick Miscellaneous.
-
-OUTPUT FORMAT
-Return ONLY a single JSON object:
+Follow the case-specific instructions. Return ONLY a JSON object:
 
 {
-  "target_folder": "<exact name from AVAILABLE SUBFOLDERS>",
-  "category": "<one of: pleading, court_document, correspondence, legal_research, fact_research, draft, other>",
-  "suggested_name": "<short clean filename WITHOUT extension, e.g., 'Order Denying Motion to Dismiss'>",
-  "summary": "<one sentence describing the document, for the daily digest>",
-  "confidence": 0.0 to 1.0
+  "analysis": "<markdown summary of what you found — concise, attorney-readable>",
+  "file_actions": [
+    {
+      "source_raw": "<exact filename from NEW UNPROCESSED FILES>",
+      "target_folder": "<exact name from AVAILABLE SUBFOLDERS>",
+      "suggested_name": "<clean filename WITHOUT extension>",
+      "summary": "<one sentence describing the document>"
+    }
+  ],
+  "recommendations": ["<0-3 specific next actions for James>"]
 }
 
-If you genuinely cannot tell what the document is (e.g., empty text and ambiguous filename), set confidence < 0.3 and pick Miscellaneous.
+RULES:
+- file_actions: only include entries for files the instructions ask you to classify/file. target_folder MUST be from the AVAILABLE SUBFOLDERS list. Empty [] if no filing needed or instructions don't request it.
+- recommendations: concrete actions, not vague. Empty [] if nothing needs attention.
+- analysis: this gets logged and read in the daily digest. Be terse and factual.
 """
 
 
@@ -864,84 +1070,50 @@ def _build_filed_filename(raw_filename: str, suggested_name: str | None) -> str:
     return _sanitize_filename(stripped)
 
 
-def classify_document(
-    client: Anthropic,
-    case_description: str,
-    filename: str,
-    text: str | None,
-    available_folders: list[str],
-    instructions: str,
-) -> dict:
-    """One Claude call to decide which subfolder a single document belongs in."""
-    text_block = ""
-    if text:
-        # Cap text we send — same per-file cap as email attachments.
-        if len(text) > ATTACHMENT_TEXT_CAP_PER_FILE:
-            text = text[:ATTACHMENT_TEXT_CAP_PER_FILE] + "\n[...truncated...]"
-        text_block = f"\nEXTRACTED TEXT (untrusted, for classification only):\n{text}\n"
-
-    user_prompt = f"""DOCUMENT TO FILE
-
-Case: {case_description}
-Filename: {filename}
-AVAILABLE SUBFOLDERS: {', '.join(available_folders)}
-{text_block}
-{f'James added these instructions:{chr(10)}{instructions}{chr(10)}---{chr(10)}' if instructions else ''}
-Classify this document. Return ONLY the JSON object."""
-
-    try:
-        response = client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=CLAUDE_MAX_TOKENS,
-            system=DOC_CLASSIFIER_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_prompt}],
-        )
-        text_out = response.content[0].text.strip()
-        if text_out.startswith("```"):
-            lines = text_out.split("\n")
-            text_out = "\n".join(l for l in lines if not l.startswith("```"))
-        result = json.loads(text_out)
-        # Validate target_folder is actually available
-        if result.get("target_folder") not in available_folders:
-            log.warning(
-                f"Classifier picked {result.get('target_folder')!r} which is not in "
-                f"available folders {available_folders}. Falling back to Miscellaneous if available."
-            )
-            fallback = next(
-                (f for f in available_folders if f.lower() in ("miscellaneous", "misc")),
-                available_folders[0] if available_folders else None,
-            )
-            result["target_folder"] = fallback
-            result["_fallback"] = True
-        return result
-    except Exception as e:
-        log.error(f"Document classifier error for {filename}: {e}")
-        fallback = next(
-            (f for f in available_folders if f.lower() in ("miscellaneous", "misc")),
-            available_folders[0] if available_folders else None,
-        )
-        return {
-            "target_folder": fallback,
-            "category": "other",
-            "suggested_name": None,
-            "summary": f"Classification failed: {e}",
-            "confidence": 0.0,
-            "_error": str(e),
-        }
-
-
 def process_case_folder(
     client: Anthropic,
     case_folder: Path,
     case_description: str,
     rrid: str,
-    instructions: str,
+    global_instructions: str,
 ) -> dict:
-    """Process one case folder. Returns a result summary."""
-    raw_dir = case_folder / "Raw Documents"
-    if not raw_dir.exists():
-        return {"rrid": rrid, "processed": 0, "skipped": 0, "errors": 0, "reason": "no_raw_dir"}
+    """
+    Run the daily review for one case folder. Reads _project/instructions.md
+    for case-specific directives; gathers context (new raw files, subfolders,
+    recent activity); makes one Claude call; executes any file_actions from
+    the response; logs everything to activity.jsonl.
 
+    Returns a result summary dict.
+    """
+    # Read case-specific instructions. Skip folder entirely if missing.
+    project_dir = case_folder / "_project"
+    instructions_path = project_dir / "instructions.md"
+    if not instructions_path.exists():
+        log.info(f"[{rrid}] No _project/instructions.md — skipping daily run.")
+        return {"rrid": rrid, "processed": 0, "skipped": 0, "errors": 0,
+                "reason": "no_instructions"}
+
+    try:
+        case_instructions = instructions_path.read_text(encoding="utf-8").strip()
+    except OSError as e:
+        log.warning(f"[{rrid}] Could not read instructions: {e}")
+        return {"rrid": rrid, "processed": 0, "skipped": 0, "errors": 0,
+                "reason": f"instructions_unreadable: {e}"}
+
+    if not case_instructions:
+        log.info(f"[{rrid}] _project/instructions.md is empty — skipping.")
+        return {"rrid": rrid, "processed": 0, "skipped": 0, "errors": 0,
+                "reason": "instructions_empty"}
+
+    # Discover available subfolders (everything except Raw Documents and dotfiles).
+    available_folders = sorted(
+        d.name for d in case_folder.iterdir()
+        if d.is_dir() and d.name not in ("Raw Documents", "_project", "_archived")
+        and not d.name.startswith(".")
+    )
+
+    # Gather new raw files (not yet in master_file_index.json).
+    raw_dir = case_folder / "Raw Documents"
     index_path = case_folder / "master_file_index.json"
     index = load_master_index(index_path, rrid)
     already_processed = {
@@ -950,44 +1122,149 @@ def process_case_folder(
         if entry.get("source_raw")
     }
 
-    # Discover available subfolders in THIS case (not Raw Documents itself).
-    available_folders = sorted(
-        d.name for d in case_folder.iterdir()
-        if d.is_dir() and d.name != "Raw Documents" and not d.name.startswith(".")
-    )
-    if not available_folders:
-        log.warning(f"{case_folder.name} has no subfolders to file into; skipping.")
-        return {"rrid": rrid, "processed": 0, "skipped": 0, "errors": 0, "reason": "no_subfolders"}
+    new_raws: list[tuple[Path, str | None]] = []
+    if raw_dir.exists():
+        for f in sorted(raw_dir.iterdir()):
+            if f.is_file() and f.name not in already_processed:
+                text = extract_text_from_path(f)
+                new_raws.append((f, text))
 
-    raws = sorted(f for f in raw_dir.iterdir() if f.is_file())
-    new_raws = [f for f in raws if f.name not in already_processed]
+    # Build file-text blocks for the prompt (capped).
+    file_blocks: list[str] = []
+    total_chars = 0
+    for f, text in new_raws:
+        block = f"- **{f.name}**"
+        if text:
+            capped = text[:ATTACHMENT_TEXT_CAP_PER_FILE]
+            if len(text) > ATTACHMENT_TEXT_CAP_PER_FILE:
+                capped += "\n[...truncated...]"
+            block += f"\n```\n{capped}\n```"
+        file_blocks.append(block)
+        total_chars += len(block)
+        if total_chars > ATTACHMENT_TEXT_CAP_TOTAL:
+            file_blocks.append(f"[{len(new_raws) - len(file_blocks)} more file(s) omitted — total cap reached]")
+            break
 
-    log.info(
-        f"[{rrid}] {len(raws)} raw file(s), {len(new_raws)} new to process. "
-        f"Available folders: {available_folders}"
-    )
+    # Recent activity (last 48h) for context.
+    recent_cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
+    recent_activity = _read_activity_since(case_folder, recent_cutoff)
+    activity_summary = ""
+    if recent_activity:
+        lines = []
+        for ev in recent_activity[-20:]:  # cap to last 20 events
+            lines.append(f"- [{ev.get('timestamp', '?')}] {ev.get('event')}: {ev.get('summary') or ev.get('subject') or ''}")
+        activity_summary = "\n".join(lines)
 
+    user_prompt = f"""CASE-SPECIFIC INSTRUCTIONS (from _project/instructions.md):
+{case_instructions}
+
+---
+
+CASE CONTEXT:
+Case: {case_description}
+RRID: {rrid}
+AVAILABLE SUBFOLDERS: {', '.join(available_folders) if available_folders else '(none)'}
+
+NEW UNPROCESSED FILES IN Raw Documents/ ({len(new_raws)} file(s)):
+{chr(10).join(file_blocks) if file_blocks else '(none)'}
+
+RECENT ACTIVITY (last 48h):
+{activity_summary if activity_summary else '(none)'}
+
+{f'Global instructions from James:{chr(10)}{global_instructions}{chr(10)}---' if global_instructions else ''}
+
+Follow the case-specific instructions above. Return ONLY the JSON object."""
+
+    # One Claude call for the entire case.
+    try:
+        response = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=2048,
+            system=DAILY_RUN_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        text_out = response.content[0].text.strip()
+        if text_out.startswith("```"):
+            lines = text_out.split("\n")
+            text_out = "\n".join(l for l in lines if not l.startswith("```"))
+        result = json.loads(text_out)
+    except json.JSONDecodeError as e:
+        log.error(f"[{rrid}] Could not parse daily-run response as JSON: {e}")
+        append_case_activity(case_folder, {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "actor": "rocky",
+            "event": "daily_run_error",
+            "rrid": rrid,
+            "error": f"JSON parse error: {e}",
+        })
+        return {"rrid": rrid, "processed": 0, "skipped": 0, "errors": 1,
+                "reason": f"json_parse_error: {e}"}
+    except Exception as e:
+        log.error(f"[{rrid}] Daily-run Claude call failed: {e}")
+        append_case_activity(case_folder, {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "actor": "rocky",
+            "event": "daily_run_error",
+            "rrid": rrid,
+            "error": str(e),
+        })
+        return {"rrid": rrid, "processed": 0, "skipped": 0, "errors": 1,
+                "reason": f"claude_error: {e}"}
+
+    analysis = result.get("analysis", "")
+    file_actions = result.get("file_actions", [])
+    recommendations = result.get("recommendations", [])
+
+    # Log the analysis + recommendations as a daily_run event.
+    append_case_activity(case_folder, {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "actor": "rocky",
+        "event": "daily_run",
+        "rrid": rrid,
+        "analysis": analysis,
+        "recommendations": recommendations,
+        "file_actions_requested": len(file_actions),
+        "new_raw_files_seen": len(new_raws),
+    })
+
+    log.info(f"[{rrid}] Daily run: {analysis[:120]}")
+    if recommendations:
+        for rec in recommendations:
+            log.info(f"[{rrid}]   recommendation: {rec}")
+
+    # Execute file actions — same copy-to-subfolder mechanics as before.
+    import shutil
     processed = 0
     errors = 0
     skipped = 0
+    raw_names = {f.name for f, _ in new_raws}
 
-    for raw_file in new_raws:
-        text = extract_text_from_path(raw_file)
-        try:
-            decision = classify_document(
-                client, case_description, raw_file.name, text, available_folders, instructions
-            )
-        except Exception as e:
-            log.error(f"[{rrid}] Failed to classify {raw_file.name}: {e}")
-            errors += 1
-            continue
+    for action in file_actions:
+        source_name = action.get("source_raw", "")
+        target_folder_name = action.get("target_folder", "")
 
-        target_folder_name = decision.get("target_folder")
-        if not target_folder_name:
-            log.warning(f"[{rrid}] No target folder chosen for {raw_file.name}; skipping.")
+        if source_name not in raw_names:
+            log.warning(f"[{rrid}] file_action references unknown file {source_name!r}; skipping.")
             skipped += 1
             continue
 
+        if target_folder_name not in available_folders:
+            fallback = next(
+                (f for f in available_folders if f.lower() in ("miscellaneous", "misc")),
+                available_folders[0] if available_folders else None,
+            )
+            if fallback:
+                log.warning(
+                    f"[{rrid}] target_folder {target_folder_name!r} not available; "
+                    f"falling back to {fallback!r}."
+                )
+                target_folder_name = fallback
+            else:
+                log.warning(f"[{rrid}] No valid target folder for {source_name!r}; skipping.")
+                skipped += 1
+                continue
+
+        raw_file = raw_dir / source_name
         target_dir = case_folder / target_folder_name
         try:
             target_dir.mkdir(exist_ok=True)
@@ -996,9 +1273,8 @@ def process_case_folder(
             errors += 1
             continue
 
-        target_name = _build_filed_filename(raw_file.name, decision.get("suggested_name"))
+        target_name = _build_filed_filename(raw_file.name, action.get("suggested_name"))
         target_path = target_dir / target_name
-        # Avoid overwriting existing filed files: if collision, append a counter.
         counter = 1
         while target_path.exists():
             stem = Path(target_name).stem
@@ -1007,26 +1283,21 @@ def process_case_folder(
             counter += 1
 
         try:
-            import shutil
             shutil.copy2(raw_file, target_path)
         except OSError as e:
-            log.error(f"[{rrid}] Could not copy {raw_file.name} → {target_path}: {e}")
+            log.error(f"[{rrid}] Could not copy {raw_file.name} -> {target_path}: {e}")
             errors += 1
             continue
 
-        # Update master index.
         index.setdefault("files", []).append({
             "path": str(target_path.relative_to(case_folder)).replace("\\", "/"),
-            "category": decision.get("category"),
             "target_folder": target_folder_name,
             "source_raw": raw_file.name,
             "processed_at": datetime.now(timezone.utc).isoformat(),
-            "summary": decision.get("summary"),
-            "confidence": decision.get("confidence"),
+            "summary": action.get("summary"),
             "filed_by": "rocky",
         })
 
-        # Activity log.
         append_case_activity(case_folder, {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "actor": "rocky",
@@ -1034,28 +1305,24 @@ def process_case_folder(
             "rrid": rrid,
             "source_raw": raw_file.name,
             "target_path": str(target_path.relative_to(case_folder)).replace("\\", "/"),
-            "category": decision.get("category"),
-            "summary": decision.get("summary"),
-            "confidence": decision.get("confidence"),
+            "summary": action.get("summary"),
         })
 
-        log.info(
-            f"[{rrid}] filed {raw_file.name} → {target_folder_name}/{target_path.name} "
-            f"({decision.get('category')}, conf {decision.get('confidence', 0):.2f})"
-        )
+        log.info(f"[{rrid}] filed {raw_file.name} -> {target_folder_name}/{target_path.name}")
         processed += 1
 
     save_master_index(index_path, index)
     return {"rrid": rrid, "processed": processed, "skipped": skipped, "errors": errors}
 
 
-def daily_folder_update(
+def daily_run(
     client: Anthropic,
     instructions: str,
     target_rrid: str | None = None,
 ) -> list[dict]:
     """
-    Run the folder-update skill across all case folders (or just one).
+    Run per-case instructions across all case folders (or just one).
+    Each case's _project/instructions.md tells Claude what to do.
 
     Returns a list of per-case result summaries.
     """
@@ -1443,6 +1710,7 @@ def classify_email(
     email: dict,
     instructions: str,
     case_match: dict | None = None,
+    include_attachments: bool = True,
 ) -> dict:
     """
     Send the email to Claude with the classifier prompt.
@@ -1470,7 +1738,7 @@ def classify_email(
         if attachments
         else "none"
     )
-    attachment_text = build_attachment_text_block(attachments)
+    attachment_text = build_attachment_text_block(attachments) if include_attachments else ""
 
     if case_match:
         case_block = (
@@ -1562,6 +1830,8 @@ def log_classification(
     rrids_found: list[str] | None = None,
     save_result: dict | None = None,
     mailbox: str | None = None,
+    claude_called: bool = True,
+    skip_reason: str | None = None,
 ) -> None:
     """Append a single classification record to classifications.jsonl."""
     sender = email.get("from", {}).get("emailAddress", {})
@@ -1592,6 +1862,9 @@ def log_classification(
         "case_save_status": (save_result or {}).get("saved"),
         "case_files_saved": (save_result or {}).get("files_saved", []),
         "case_save_reason": (save_result or {}).get("reason"),
+        # Pre-Claude triage: whether the classifier was actually called.
+        "claude_called": claude_called,
+        "skip_reason": skip_reason,
     }
     if "_error" in classification:
         record["_error"] = classification["_error"]
@@ -1600,6 +1873,11 @@ def log_classification(
         f.write(json.dumps(record) + "\n")
 
     # Also log a one-line summary to the console.
+    if not claude_called:
+        log.info(
+            f"[skip:{skip_reason}] {email.get('subject', '(no subject)')[:80]}"
+        )
+        return
     if classification.get("is_remy_request"):
         cat = classification.get("project_category") or "?"
         juris = classification.get("jurisdiction")
@@ -1633,10 +1911,10 @@ def log_classification(
 # =============================================================================
 
 def main():
-    # Sub-command: one-shot folder update (Phase D Stage 2). Doesn't authenticate
-    # to Graph because it works on local OneDrive files only.
-    if "--folder-update" in sys.argv:
-        run_folder_update_cli()
+    # Sub-command: one-shot daily run (Phase D Stage 2). Reads each case's
+    # _project/instructions.md and runs Claude. Local OneDrive files only.
+    if "--daily-run" in sys.argv:
+        run_daily_run_cli()
         return
 
     # Sub-command: one-shot daily digest (Phase D Stage 3). Local-files only.
@@ -1644,8 +1922,13 @@ def main():
         run_daily_digest_cli()
         return
 
+    # Ensure local data directory exists (only matters in frozen/.exe mode).
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
     log.info("=" * 60)
     log.info("Rocky starting up — iteration 1, classifier-only mode")
+    log.info(f"Program dir: {PROGRAM_DIR}")
+    log.info(f"Data dir:    {DATA_DIR}")
     log.info("=" * 60)
 
     config = load_config()
@@ -1702,6 +1985,7 @@ def main():
             # Reload case index each poll — file is tiny, changes are rare but
             # we want new RRIDs picked up without restarting Rocky.
             cases = load_case_index()
+            conversation_cache = load_conversation_cache()
 
             # Fetch new mail from every configured mailbox, tagging each email
             # with its source mailbox for downstream logging.
@@ -1770,11 +2054,12 @@ def main():
             for email in new_emails:
                 mailbox = email.get("_mailbox")
 
-                # Match to a case (RRID > case number > sender) before classifying.
+                # Match to a case before classifying. Tiers:
+                # conversation cache > RRID > case number > keywords > sender.
                 subject = email.get("subject") or ""
                 body_text = (email.get("body") or {}).get("content") or email.get("bodyPreview") or ""
                 rrids_found = find_rrids_in_text(f"{subject}\n{body_text}")
-                case_match = match_email_to_case(email, cases)
+                case_match = match_email_to_case(email, cases, conversation_cache)
 
                 # Phase D Stage 1: if matched, save email + attachments to the case folder.
                 # Done BEFORE classification so we capture even if the classifier errors out.
@@ -1782,10 +2067,45 @@ def main():
                 if case_match:
                     save_result = save_email_to_case(email, case_match, rrids_found)
 
-                # Classify (with case context + extracted attachment text).
-                classification = classify_email(
-                    anthropic_client, email, instructions, case_match=case_match
-                )
+                # Pre-Claude triage. Three buckets:
+                #   1. Case-matched → already saved above; skip Claude (case-mgmt
+                #      Claude call is future work).
+                #   2. Unmatched + Bozzuto sender + Remy keyword → Claude classifier
+                #      with body only (no attachment text).
+                #   3. Else → log and skip.
+                # Build the empty-classification skeleton up front so we can log
+                # consistently regardless of which branch we take.
+                empty_classification = {
+                    "is_remy_request": None,
+                    "confidence": None,
+                    "reasoning": None,
+                    "documents_referenced": [],
+                    "project_category": None,
+                    "jurisdiction": None,
+                    "subtype": None,
+                }
+
+                if case_match:
+                    classification = empty_classification
+                    claude_called = False
+                    skip_reason = "case_matched"
+                else:
+                    is_remy, matched_kw = is_possible_remy_request(email)
+                    if is_remy:
+                        classification = classify_email(
+                            anthropic_client,
+                            email,
+                            instructions,
+                            case_match=None,
+                            include_attachments=False,
+                        )
+                        claude_called = True
+                        skip_reason = None
+                    else:
+                        classification = empty_classification
+                        claude_called = False
+                        skip_reason = "no_remy_signal"
+
                 log_classification(
                     email,
                     classification,
@@ -1793,6 +2113,8 @@ def main():
                     rrids_found=rrids_found,
                     save_result=save_result,
                     mailbox=mailbox,
+                    claude_called=claude_called,
+                    skip_reason=skip_reason,
                 )
 
                 # Remy invocation — decoupled from case management on purpose.
@@ -1817,6 +2139,8 @@ def main():
                 last_check_by_mb = high_water_by_mb
                 save_last_check_times(last_check_by_mb)
 
+            save_conversation_cache(conversation_cache)
+
         except KeyboardInterrupt:
             log.info("Shutdown requested. Goodbye.")
             sys.exit(0)
@@ -1826,10 +2150,11 @@ def main():
         time.sleep(POLL_INTERVAL_SECONDS)
 
 
-def run_folder_update_cli() -> None:
-    """Entry point for `python rocky.py --folder-update [RRID-XXXX]`."""
+def run_daily_run_cli() -> None:
+    """Entry point for `python rocky.py --daily-run [RRID-XXXX]`."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     log.info("=" * 60)
-    log.info("Rocky — daily folder update (Phase D Stage 2)")
+    log.info("Rocky — daily run (Phase D Stage 2)")
     log.info("=" * 60)
 
     config = load_config()
@@ -1846,12 +2171,12 @@ def run_folder_update_cli() -> None:
     if target_rrid:
         log.info(f"Target: {target_rrid} only")
     else:
-        log.info("Target: all case folders under Rocky Cases")
+        log.info("Target: all case folders with _project/instructions.md")
 
-    results = daily_folder_update(anthropic_client, instructions, target_rrid=target_rrid)
+    results = daily_run(anthropic_client, instructions, target_rrid=target_rrid)
 
     log.info("-" * 60)
-    log.info("Folder update complete.")
+    log.info("Daily run complete.")
     total_processed = sum(r.get("processed", 0) for r in results)
     total_errors = sum(r.get("errors", 0) for r in results)
     for r in results:
@@ -1865,6 +2190,7 @@ def run_folder_update_cli() -> None:
 
 def run_daily_digest_cli() -> None:
     """Entry point for `python rocky.py --daily-digest [RRID-XXXX] [--hours N]`."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     log.info("=" * 60)
     log.info("Rocky — daily case digest (Phase D Stage 3)")
     log.info("=" * 60)
