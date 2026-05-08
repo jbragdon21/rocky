@@ -406,7 +406,13 @@ def run(email: dict, classification: dict, config: dict) -> dict:
             log.warning(f"Skipping Remy: {result['reason']}")
             return result
 
-        cmd = [sys.executable, str(cli_path), cli_sub, *args]
+        # When Rocky is a frozen .exe, sys.executable is rocky.exe — not Python.
+        # Use config.remy_python_path if set, otherwise find python on PATH.
+        if getattr(sys, "frozen", False):
+            python = config.get("remy_python_path", "python")
+        else:
+            python = sys.executable
+        cmd = [python, str(cli_path), cli_sub, *args]
         log.info(f"Invoking Remy: {cli_sub} with {len(atts)} attachment(s)")
         log.debug(f"Full command: {cmd}")
 
