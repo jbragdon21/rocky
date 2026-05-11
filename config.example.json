@@ -8,6 +8,9 @@
   "rocky_email": "rocky@gallagherllp.com",
   "anthropic_api_key": "sk-ant-PASTE-YOUR-ANTHROPIC-KEY-HERE",
 
+  "_cases_root_comment": "Path to the Rocky Cases folder on OneDrive. Omit to use the default (James's dev laptop path).",
+  "cases_root": "C:\\Users\\jbragdon\\OneDrive\\OneDrive - gejlaw.com\\Rocky Cases",
+
   "_remy_comment": "Remy invocation paths. remy_cli_path is where remy_cli.py lives on disk. remy_outputs_path is where generated drafts get written.",
   "enable_remy_invocation": false,
   "remy_cli_path": "C:\\Remy\\remy_cli.py",

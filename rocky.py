@@ -67,19 +67,22 @@ GRAPH_API_BASE = "https://graph.microsoft.com/v1.0"
 CLAUDE_MODEL = "claude-sonnet-4-5"
 CLAUDE_MAX_TOKENS = 1024
 
-# Case index — read from OneDrive each poll. Tiny file; cheap to reload.
-# Note: the OneDrive sync folder is "OneDrive - gejlaw.com" (legacy name from
-# before the firm renamed to gallagherllp.com). Do not "fix" this path.
-CASE_INDEX_PATH = Path(
-    r"C:\Users\jbragdon\OneDrive\OneDrive - gejlaw.com\Rocky Cases\Rocky Case Index.xlsx"
-)
+# Case index and cases root — resolved after config is loaded.
+# Set by _init_cases_paths() at startup; defaults below are for James's dev laptop.
+_DEFAULT_CASES_ROOT = r"C:\Users\jbragdon\OneDrive\OneDrive - gejlaw.com\Rocky Cases"
+CASE_INDEX_PATH: Path = Path(_DEFAULT_CASES_ROOT) / "Rocky Case Index.xlsx"
+ROCKY_CASES_ROOT: Path = Path(_DEFAULT_CASES_ROOT)
 
 # Matches "RRID-1234" anywhere in text, case-insensitive.
 RRID_PATTERN = re.compile(r"\bRRID-\d{4}\b", re.IGNORECASE)
 
-# Rocky Cases folder root (for saving RRID-matched emails into case folders).
-# Derived from CASE_INDEX_PATH so they always agree.
-ROCKY_CASES_ROOT = CASE_INDEX_PATH.parent
+
+def _init_cases_paths(config: dict) -> None:
+    """Set CASE_INDEX_PATH and ROCKY_CASES_ROOT from config, if provided."""
+    global CASE_INDEX_PATH, ROCKY_CASES_ROOT
+    root = config.get("cases_root", _DEFAULT_CASES_ROOT)
+    ROCKY_CASES_ROOT = Path(root)
+    CASE_INDEX_PATH = ROCKY_CASES_ROOT / "Rocky Case Index.xlsx"
 
 # Attachment handling caps.
 # Skip downloading attachments larger than this (16 MB). Most leases/ledgers are <2 MB.
@@ -131,6 +134,8 @@ def load_config() -> dict:
             config["user_emails"] = [config["user_email"]]
         else:
             config["user_emails"] = []
+
+    _init_cases_paths(config)
 
     return config
 
