@@ -129,8 +129,7 @@ Note: log into the Rocky laptop with whatever credentials IT gave you. The `rock
 
 Decision 2026-05-03: skip the original ≥90%-accuracy validation gate. Drafts are reversible, so the cost of a misclassification is low (a deleted Word file). Faster to learn from real production mistakes than to grade in vitro. This is a James task — no Jeff involvement.
 
-- [ ] Spot-check `classifications.jsonl` weekly to catch **false negatives** — real Remy requests Rocky missed. With the pre-Claude triage gate (added 2026-05-03), most emails now log with `claude_called=false` and a `skip_reason`. The misses to look for: emails where `skip_reason` is `no_remy_signal` but the email actually was a Remy request. Those reveal a gap in `REMY_SENDER_DOMAINS` or `REMY_KEYWORDS` (in `rocky.py`). False positives still surface as bad drafts you'll see anyway. (You'll need to either RDP into the Rocky laptop or ask Jeff to copy the file over periodically — Tailscale + RDP is the cleanest path. See Operational reminders below.)
-- [ ] **Refine the Remy triage gate** as misses accumulate. Current gate: bozzuto.com sender + one of a small keyword list. Expand `REMY_SENDER_DOMAINS` when new property managers come online; expand `REMY_KEYWORDS` when you spot a missed request whose body uses a phrasing not yet on the list. Edit on the dev laptop, commit, push.
+- [ ] Spot-check `classifications.jsonl` weekly to catch **false negatives** — Remy requests Rocky misclassified. Since 2026-05-11, Rocky only classifies emails sent to her own mailbox (`rocky_email` in config); James's inbox emails are case-matched only. False positives still surface as bad drafts you'll see anyway.
 - [ ] When you spot misclassifications, edit `instructions.md` on your dev laptop, commit, push. The Rocky laptop picks up the change within 30 minutes — Jeff doesn't need to touch anything.
 - [ ] No accuracy bar to clear before moving to Phase 2 — Phase 2 activation can begin whenever you're ready.
 

@@ -1,27 +1,21 @@
 """
-Rocky — Iteration 1: Remy Request Classifier
+Rocky — Virtual Paralegal
 =================================================
 
-A read-only program that watches James's Outlook inbox, classifies each new
-email as either a "Remy request" or "not a Remy request," and logs every
-classification to a JSONL file for review.
+A set of scheduled one-shot commands for James Bragdon at Gallagher LLP:
 
-This is iteration 1 of Rocky's workshop phase. He does NOT:
-- Read email attachments (just notes their existence)
-- Draft replies
-- Send any mail
-- Modify the inbox in any way
-- Run Remy or any other skill
+  python rocky.py --daily-cases [RRID-XXXX]        (4:00 PM)
+      Pull today's emails from each case's Outlook folder, summarize via
+      Claude, save documents to the case folder.
 
-He ONLY reads incoming mail and records what he thinks each one is.
+  python rocky.py --daily-run [RRID-XXXX]          (4:30 PM)
+      Run per-case _project/instructions.md skills (Phase D Stage 2).
 
-To run:
-    python rocky.py
+  python rocky.py --daily-digest [RRID-XXXX] [--hours N]  (5:00 PM)
+      Generate a consolidated daily case digest (Phase D Stage 3).
 
 On first run, you'll be prompted to authenticate via device code flow.
 Subsequent runs use the cached refresh token automatically.
-
-To stop: Ctrl+C in the terminal.
 """
 
 import base64
@@ -29,10 +23,9 @@ import hashlib
 import io
 import json
 import logging
-import os
 import re
+import shutil
 import sys
-import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -40,13 +33,7 @@ import msal
 import requests
 from anthropic import Anthropic
 
-import remy_runner
-
-# Phase A safety modules. Permissions audit runs at startup; kill switch is
-# checked every poll; outbound is the single guarded entry point for any
-# future code that sends mail.
 from permissions import audit_token_scopes
-from kill_switch import check_emails_for_kill_switch, is_dormant
 
 # =============================================================================
 # Configuration
@@ -66,24 +53,10 @@ INSTRUCTIONS_PATH = PROGRAM_DIR / "instructions.md"
 CLASSIFICATIONS_PATH = DATA_DIR / "classifications.jsonl"
 STATE_DIR = DATA_DIR / "state"
 TOKEN_CACHE_PATH = STATE_DIR / "token_cache.json"
-LAST_CHECK_PATH = STATE_DIR / "last_check.json"
-CONVERSATION_CACHE_PATH = STATE_DIR / "conversation_cache.json"
-CONVERSATION_CACHE_TTL_DAYS = 90
 LOG_PATH = DATA_DIR / "rocky.log"
 
-# Microsoft Graph scopes — READ ONLY for iteration 1.
-# Mail.Read is the minimum needed to read inbox. Notably absent:
-# - Mail.ReadWrite (would allow draft creation — not needed yet)
-# - Mail.Send (would allow sending — explicitly never granted)
-GRAPH_SCOPES = ["Mail.Read"]
-GRAPH_AUTHORITY = "https://login.microsoftonline.com/common"
+GRAPH_SCOPES = ["Mail.Read", "Mail.Send"]
 GRAPH_API_BASE = "https://graph.microsoft.com/v1.0"
-
-# How often to poll the inbox for new mail.
-POLL_INTERVAL_SECONDS = 300
-
-# How far back to look on the very first run.
-INITIAL_LOOKBACK_HOURS = 24
 
 # Claude model and parameters.
 CLAUDE_MODEL = "claude-sonnet-4-5"
@@ -98,23 +71,6 @@ CASE_INDEX_PATH = Path(
 
 # Matches "RRID-1234" anywhere in text, case-insensitive.
 RRID_PATTERN = re.compile(r"\bRRID-\d{4}\b", re.IGNORECASE)
-
-# Pre-Claude triage: which senders, and which keywords, qualify an email as a
-# "possible Remy request" worth spending a Claude call on. Anything that fails
-# this gate is logged but not classified. Expand the senders list as new property
-# managers come online; expand keywords as we observe misses.
-REMY_SENDER_DOMAINS = ("bozzuto.com",)
-REMY_KEYWORDS = (
-    "lease violation",
-    "nonrenewal",
-    "non-renewal",
-    "non renewal",
-    "delinquency",
-    "breach",
-    "incident",
-    "termination",
-    "resident",
-)
 
 # Rocky Cases folder root (for saving RRID-matched emails into case folders).
 # Derived from CASE_INDEX_PATH so they always agree.
@@ -158,20 +114,18 @@ def load_config() -> dict:
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         config = json.load(f)
 
-    required = ["client_id", "tenant_id", "user_emails", "anthropic_api_key"]
+    required = ["client_id", "tenant_id", "anthropic_api_key"]
     missing = [k for k in required if not config.get(k)]
-    if missing:
-        # Backward-compat: accept the old single-mailbox `user_email` key.
-        if "user_emails" in missing and config.get("user_email"):
-            config["user_emails"] = [config["user_email"]]
-            missing = [k for k in missing if k != "user_emails"]
     if missing:
         log.error(f"Missing config fields: {missing}")
         sys.exit(1)
 
-    if not isinstance(config["user_emails"], list) or not config["user_emails"]:
-        log.error("config.user_emails must be a non-empty list of mailbox addresses.")
-        sys.exit(1)
+    # Normalize user_email(s) for subcommands that need a mailbox identity.
+    if not config.get("user_emails"):
+        if config.get("user_email"):
+            config["user_emails"] = [config["user_email"]]
+        else:
+            config["user_emails"] = []
 
     return config
 
@@ -245,39 +199,84 @@ def acquire_token(app: msal.PublicClientApplication) -> str:
 # Graph API: reading mail
 # =============================================================================
 
-def fetch_new_emails(token: str, user_email: str, since: datetime) -> list[dict]:
+def resolve_folder_path(token: str, user_email: str, folder_path: str) -> str | None:
     """
-    Fetch emails from the user's inbox received after `since`.
-    Returns a list of email metadata dicts (subject, from, body, attachments).
+    Resolve a human-readable folder path like "Inbox\\__Bozzuto\\Smith v Jones"
+    to a Graph API folder ID by walking the folder tree segment by segment.
+    Handles backslashes, forward slashes, and URL-encoded characters (%2F etc.).
+    Returns the folder ID, or None if any segment isn't found.
     """
-    # Format the timestamp for Graph's $filter parameter.
-    since_iso = since.strftime("%Y-%m-%dT%H:%M:%SZ")
+    from urllib.parse import unquote
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    normalized = unquote(folder_path).replace("\\", "/")
+    segments = [s.strip() for s in normalized.strip("/").split("/") if s.strip()]
+    if not segments:
+        return None
 
-    # Request: get messages from inbox, filtered by receivedDateTime, sorted oldest first.
-    # We select only the fields we need to keep responses small.
-    url = f"{GRAPH_API_BASE}/users/{user_email}/mailFolders/inbox/messages"
+    parent_id = None
+    for segment in segments:
+        if parent_id:
+            url = f"{GRAPH_API_BASE}/users/{user_email}/mailFolders/{parent_id}/childFolders"
+        else:
+            url = f"{GRAPH_API_BASE}/users/{user_email}/mailFolders"
+
+        params = {
+            "$filter": f"displayName eq '{segment}'",
+            "$select": "id,displayName",
+            "$top": "5",
+        }
+        try:
+            resp = requests.get(url, headers=headers, params=params, timeout=30)
+        except requests.RequestException as e:
+            log.warning(f"Folder resolve failed at '{segment}': {e}")
+            return None
+
+        if resp.status_code != 200:
+            log.warning(f"Folder resolve failed at '{segment}': HTTP {resp.status_code}")
+            return None
+
+        folders = resp.json().get("value", [])
+        match = next(
+            (f for f in folders if (f.get("displayName") or "").lower() == segment.lower()),
+            None,
+        )
+        if not match:
+            log.warning(f"Folder not found: '{segment}' (in path '{folder_path}')")
+            return None
+        parent_id = match["id"]
+
+    return parent_id
+
+
+def fetch_folder_emails(
+    token: str, user_email: str, folder_id: str, since: datetime,
+) -> list[dict]:
+    """
+    Fetch emails from a specific Outlook folder received after `since`.
+    Returns a list of email dicts with attachments populated.
+    """
+    since_iso = since.strftime("%Y-%m-%dT%H:%M:%SZ")
+    url = f"{GRAPH_API_BASE}/users/{user_email}/mailFolders/{folder_id}/messages"
     params = {
         "$filter": f"receivedDateTime gt {since_iso}",
         "$orderby": "receivedDateTime asc",
-        "$top": "50",  # Page size; iteration 1 doesn't paginate further.
-        "$select": "id,subject,from,toRecipients,receivedDateTime,bodyPreview,body,hasAttachments,internetMessageId,conversationId",
+        "$top": "50",
+        "$select": "id,subject,from,toRecipients,receivedDateTime,bodyPreview,body,hasAttachments,internetMessageId",
     }
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/json",
-        "Prefer": 'outlook.body-content-type="text"',  # Get plain text body, not HTML.
+        "Prefer": 'outlook.body-content-type="text"',
     }
 
     response = requests.get(url, headers=headers, params=params, timeout=30)
     if response.status_code != 200:
-        log.error(f"Graph API error {response.status_code}: {response.text}")
+        log.error(f"Graph API error {response.status_code} for folder {folder_id}: {response.text}")
         return []
 
     messages = response.json().get("value", [])
-    log.debug(f"Fetched {len(messages)} new messages since {since_iso}")
+    log.debug(f"Fetched {len(messages)} messages from folder {folder_id} since {since_iso}")
 
-    # For each message, fetch attachments WITH contents (iteration 2).
-    # Bytes are used for both classifier text extraction and case-folder saves.
     enriched = []
     for msg in messages:
         if msg.get("hasAttachments"):
@@ -359,66 +358,21 @@ def fetch_attachments(token: str, user_email: str, message_id: str) -> list[dict
 
 
 # =============================================================================
-# State management
-# =============================================================================
-
-def _load_last_check_file() -> dict:
-    """Internal: read the last_check.json shape (handles legacy single-key form)."""
-    if not LAST_CHECK_PATH.exists():
-        return {}
-    with open(LAST_CHECK_PATH, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    # Legacy shape: {"last_check": "..."} — promote to a single-key per-mailbox map
-    # using a placeholder. The caller will resolve to actual mailbox keys.
-    if "last_check" in data and isinstance(data["last_check"], str):
-        return {"_legacy": data["last_check"]}
-    return data
-
-
-def get_last_check_times(mailboxes: list[str]) -> dict[str, datetime]:
-    """Return {mailbox: last_check_datetime} for each requested mailbox."""
-    raw = _load_last_check_file()
-    legacy_ts = raw.pop("_legacy", None)
-    default = datetime.now(timezone.utc) - timedelta(hours=INITIAL_LOOKBACK_HOURS)
-
-    result: dict[str, datetime] = {}
-    for mb in mailboxes:
-        if mb in raw:
-            result[mb] = datetime.fromisoformat(raw[mb])
-        elif legacy_ts:
-            # First run after the multi-mailbox migration: seed every mailbox
-            # with the old single timestamp so we don't re-scan the world.
-            result[mb] = datetime.fromisoformat(legacy_ts)
-            log.info(f"Migrated legacy last_check → {mb}")
-        else:
-            result[mb] = default
-            log.info(f"No last_check for {mb}. Starting from {default.isoformat()}.")
-    return result
-
-
-def save_last_check_times(timestamps: dict[str, datetime]) -> None:
-    """Persist the per-mailbox high-water-mark timestamps."""
-    STATE_DIR.mkdir(exist_ok=True)
-    serializable = {mb: ts.isoformat() for mb, ts in timestamps.items()}
-    with open(LAST_CHECK_PATH, "w", encoding="utf-8") as f:
-        json.dump(serializable, f)
-
-
-# =============================================================================
-# Case index — RRID lookup
+# Case index
 # =============================================================================
 
 # Expected columns in Rocky Case Index.xlsx (first row = headers):
-#   RRID#, File Name, C/M, Client, Description,
-#   Case No. Identifier (if applicable), Sender Identifiers (if applicable),
-#   Match Keywords (if applicable), Open/Closed
+#   RRID#, File Name, Case Folder, C/M, Client, Description,
+#   Any other GEJ lawyers to include on digest email, Open/Closed
 #
-# Match Keywords is an optional column for distinctive search terms (last names,
-# property nicknames, docket short titles, etc.). Comma- or semicolon-separated.
-# Whole-word, case-insensitive match against subject+body. Skip generic terms.
+# Case Folder: Outlook folder path for the case, e.g.
+#   "Inbox\__Bozzuto Management\__DC\Eden, Artemus (943)"
+# Rocky resolves the path to a folder ID via Graph API. Outlook Rules sort
+# incoming mail into per-case folders; James enters the folder path here.
+# Paths may use backslashes or forward slashes and may contain URL-encoded
+# characters like %2F — Rocky normalizes these at resolve time.
 #
-# The matcher tolerates missing/renamed columns: it looks up by header name and
-# returns None for anything not present, so adding columns doesn't break things.
+# Columns are looked up by header name — missing columns return None.
 
 def load_case_index() -> list[dict]:
     """
@@ -472,232 +426,8 @@ def find_rrids_in_text(text: str) -> list[str]:
     return sorted({m.upper() for m in RRID_PATTERN.findall(text)})
 
 
-def is_possible_remy_request(email: dict) -> tuple[bool, str | None]:
-    """
-    Cheap pre-Claude triage: is this email worth sending to the classifier?
-
-    Returns (passes_gate, matched_keyword_or_none). Currently: sender domain
-    must be in REMY_SENDER_DOMAINS AND subject+body must contain at least one
-    keyword in REMY_KEYWORDS. Anything else is logged and skipped.
-    """
-    sender_addr = (
-        ((email.get("from") or {}).get("emailAddress") or {}).get("address") or ""
-    ).lower()
-    if not any(sender_addr.endswith("@" + d) or sender_addr.endswith("." + d)
-               for d in REMY_SENDER_DOMAINS):
-        return (False, None)
-
-    subject = email.get("subject") or ""
-    body = (email.get("body") or {}).get("content") or email.get("bodyPreview") or ""
-    haystack = f"{subject}\n{body}".lower()
-    for kw in REMY_KEYWORDS:
-        if kw in haystack:
-            return (True, kw)
-    return (False, None)
-
-
-def load_conversation_cache() -> dict:
-    """
-    Load {conversationId: {"rrid": str, "matched_at": iso8601}} from disk.
-    Returns {} on any failure (matcher still works without the cache).
-    """
-    if not CONVERSATION_CACHE_PATH.exists():
-        return {}
-    try:
-        with open(CONVERSATION_CACHE_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except Exception as e:
-        log.warning(f"Could not read conversation cache: {e}")
-        return {}
-
-
-def save_conversation_cache(cache: dict) -> None:
-    """Write the conversation cache, pruning entries older than TTL."""
-    cutoff = datetime.now(timezone.utc) - timedelta(days=CONVERSATION_CACHE_TTL_DAYS)
-    pruned = {}
-    for cid, entry in cache.items():
-        try:
-            matched_at = datetime.fromisoformat(entry["matched_at"])
-            if matched_at >= cutoff:
-                pruned[cid] = entry
-        except Exception:
-            continue  # drop malformed entries
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    try:
-        with open(CONVERSATION_CACHE_PATH, "w", encoding="utf-8") as f:
-            json.dump(pruned, f, indent=2)
-        cache.clear()
-        cache.update(pruned)
-    except Exception as e:
-        log.warning(f"Could not save conversation cache: {e}")
-
-
-def _is_open_case(case: dict) -> bool:
-    status = str(case.get("Open/Closed") or "").strip().lower()
-    # Treat blank as open (don't penalize incomplete rows).
-    return status in ("", "open", "o", "active")
-
-
-def _find_keyword_hit(case: dict, haystack_lower: str) -> str | None:
-    """Whole-word, case-insensitive match against the Match Keywords column."""
-    field = str(case.get("Match Keywords (if applicable)") or case.get("Match Keywords") or "").strip()
-    if not field:
-        return None
-    for raw in re.split(r"[,;\n]+", field):
-        kw = raw.strip().lower()
-        if not kw:
-            continue
-        if re.search(rf"\b{re.escape(kw)}\b", haystack_lower):
-            return kw
-    return None
-
-
-def _match_in_pool(email: dict, pool: list[dict]) -> tuple[dict | None, str | None]:
-    """
-    Run the tiered matcher against a candidate pool. Returns (case, ambiguity_note).
-    Within each tier, if multiple cases match, the tier is skipped and an
-    ambiguity note is recorded — we never silently pick one.
-    """
-    subject = email.get("subject") or ""
-    body = (email.get("body") or {}).get("content") or email.get("bodyPreview") or ""
-    sender_addr = (
-        ((email.get("from") or {}).get("emailAddress") or {}).get("address") or ""
-    ).lower()
-    haystack = f"{subject}\n{body}"
-    haystack_lower = haystack.lower()
-
-    ambiguity: str | None = None
-
-    # Tier 1: RRID
-    rrids_in_email = set(find_rrids_in_text(haystack))
-    if rrids_in_email:
-        hits = [c for c in pool if (str(c.get("RRID#") or "")).strip().upper() in rrids_in_email]
-        if len(hits) == 1:
-            rrid = (str(hits[0].get("RRID#") or "")).strip().upper()
-            return ({**hits[0], "_match_method": "rrid", "_match_value": rrid}, None)
-        if len(hits) > 1:
-            ambiguity = f"rrid tier: {len(hits)} cases matched RRIDs {sorted(rrids_in_email)}"
-
-    # Tier 2: case number
-    hits = []
-    for c in pool:
-        case_no = str(c.get("Case No. Identifier (if applicable)") or "").strip()
-        if case_no and case_no.lower() in haystack_lower:
-            hits.append((c, case_no))
-    if len(hits) == 1:
-        c, case_no = hits[0]
-        return ({**c, "_match_method": "case_number", "_match_value": case_no}, ambiguity)
-    if len(hits) > 1:
-        ambiguity = ambiguity or f"case_number tier: {len(hits)} cases matched"
-
-    # Tier 3: keywords
-    hits = []
-    for c in pool:
-        kw = _find_keyword_hit(c, haystack_lower)
-        if kw:
-            hits.append((c, kw))
-    if len(hits) == 1:
-        c, kw = hits[0]
-        return ({**c, "_match_method": "keyword", "_match_value": kw}, ambiguity)
-    if len(hits) > 1:
-        ambiguity = ambiguity or f"keyword tier: {len(hits)} cases matched"
-
-    # Tier 4: sender identifier
-    if sender_addr:
-        hits = []
-        for c in pool:
-            senders_field = str(c.get("Sender Identifiers (if applicable)") or "").strip()
-            if not senders_field:
-                continue
-            for raw in re.split(r"[,;\n]+", senders_field):
-                tok = raw.strip().lower()
-                if tok and tok in sender_addr:
-                    hits.append((c, tok))
-                    break
-        if len(hits) == 1:
-            c, tok = hits[0]
-            return ({**c, "_match_method": "sender", "_match_value": tok}, ambiguity)
-        if len(hits) > 1:
-            ambiguity = ambiguity or f"sender tier: {len(hits)} cases matched"
-
-    return (None, ambiguity)
-
-
-def match_email_to_case(
-    email: dict,
-    cases: list[dict],
-    conversation_cache: dict | None = None,
-) -> dict | None:
-    """
-    Try to match an email to a case in the index. Returns a dict with case
-    fields plus _match_method and _match_value, or None if no match.
-
-    Priority: conversation cache > RRID > case number > keywords > sender.
-    Within each tier, ambiguous matches (>1 case) are skipped — we never
-    silently guess. Open cases are tried first; closed cases are a fallback
-    only for the strong tiers (RRID, case number).
-    """
-    if not cases:
-        return None
-
-    cache = conversation_cache if conversation_cache is not None else {}
-
-    # Tier 0: conversation cache. Resolve cached RRID against the live index
-    # so renamed/closed cases stay current.
-    conv_id = email.get("conversationId")
-    if conv_id and conv_id in cache:
-        cached_rrid = (cache[conv_id].get("rrid") or "").strip().upper()
-        if cached_rrid:
-            for c in cases:
-                if (str(c.get("RRID#") or "")).strip().upper() == cached_rrid:
-                    return {**c, "_match_method": "conversation", "_match_value": cached_rrid}
-
-    open_pool = [c for c in cases if _is_open_case(c)]
-
-    # First pass: open cases only.
-    match, ambiguity = _match_in_pool(email, open_pool)
-    if match:
-        _record_conversation_match(cache, conv_id, match)
-        return match
-
-    # Fallback: closed cases, but only for explicit-signal tiers (RRID, case#).
-    # Skip keyword/sender matches against closed cases — too noisy.
-    closed_pool = [c for c in cases if not _is_open_case(c)]
-    if closed_pool:
-        match, closed_ambiguity = _match_in_pool(email, closed_pool)
-        if match and match.get("_match_method") in ("rrid", "case_number"):
-            log.info(
-                f"Matched email to CLOSED case {match.get('RRID#')} via "
-                f"{match['_match_method']}={match['_match_value']}. "
-                f"Reopen the case in the index if work is resuming."
-            )
-            _record_conversation_match(cache, conv_id, match)
-            return match
-        ambiguity = ambiguity or closed_ambiguity
-
-    if ambiguity:
-        subj = (email.get("subject") or "")[:80]
-        log.warning(f"Ambiguous case match — {ambiguity}. Email subject: {subj!r}. No match returned.")
-
-    return None
-
-
-def _record_conversation_match(cache: dict, conv_id: str | None, match: dict) -> None:
-    """Persist a successful match to the conversation cache (in-memory)."""
-    if not conv_id:
-        return
-    rrid = (str(match.get("RRID#") or "")).strip().upper()
-    if not rrid:
-        return
-    cache[conv_id] = {
-        "rrid": rrid,
-        "matched_at": datetime.now(timezone.utc).isoformat(),
-    }
-
-
 # =============================================================================
-# Attachment text extraction (iteration 2)
+# Attachment text extraction
 # =============================================================================
 # Best-effort extractors for the formats that show up in landlord-tenant work:
 # leases (PDF/DOCX), ledgers (XLSX), text correspondence. Anything else returns
@@ -820,12 +550,11 @@ def build_attachment_text_block(attachments: list[dict]) -> str:
 
 
 # =============================================================================
-# Case folder ingestion (Phase D, Stage 1)
+# Case folder ingestion
 # =============================================================================
-# When an email matches a case (via RRID, case number, or sender), Rocky writes
-# the email body and attachments into the case's "Raw Documents" folder on
-# OneDrive. Phase D Stage 2 (the daily folder-update skill) will later
-# classify those files and move them to the right subfolders.
+# Rocky writes email bodies and attachments into each case's "Raw Documents"
+# folder on OneDrive. The daily-run skill (Stage 2) later classifies those
+# files and copies them to the right subfolders.
 #
 # Naming convention: every saved file is prefixed with the email's received
 # timestamp + an 8-char message-id hash. This makes the operation idempotent
@@ -979,7 +708,7 @@ def save_email_to_case(
 # Phase D Stage 2 — daily run (instruction-driven)
 # =============================================================================
 # Triggered with `python rocky.py --daily-run` (scheduled by Task Scheduler
-# at 4pm). For each case folder that has _project/instructions.md, Rocky
+# at 4:30pm). For each case folder that has _project/instructions.md, Rocky
 # reads those instructions, gathers context (new raw files, subfolders,
 # recent activity), makes one Claude call, and executes any file_actions
 # from the response. All results logged to activity.jsonl.
@@ -1232,8 +961,7 @@ Follow the case-specific instructions above. Return ONLY the JSON object."""
         for rec in recommendations:
             log.info(f"[{rrid}]   recommendation: {rec}")
 
-    # Execute file actions — same copy-to-subfolder mechanics as before.
-    import shutil
+    # Execute file actions — copy raw → target subfolder.
     processed = 0
     errors = 0
     skipped = 0
@@ -1536,16 +1264,51 @@ Write the three markdown subsections (What happened / Recommended next steps / U
         return f"**Error generating digest section:** {e}"
 
 
+def _get_digest_lawyers(case_meta: dict) -> list[str]:
+    """Extract co-counsel email addresses from the digest column."""
+    raw = str(case_meta.get("Any other GEJ lawyers to include on digest email") or "").strip()
+    if not raw:
+        return []
+    return [addr.strip().lower() for addr in re.split(r"[;,\s]+", raw) if "@" in addr]
+
+
+def _build_digest_text(sections: list[tuple[str, str]], hours_back: int) -> str:
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    parts = [
+        f"Rocky Daily Digest — {today}",
+        f"",
+        f"Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC. "
+        f"Window: last {hours_back} hours. "
+        f"{len(sections)} case(s) with activity.",
+        f"",
+    ]
+    for heading, body in sections:
+        parts.append(heading)
+        parts.append("")
+        parts.append(body)
+        parts.append("")
+        parts.append("---")
+        parts.append("")
+    return "\n".join(parts)
+
+
 def daily_digest(
     client: Anthropic,
     instructions: str,
+    token: str | None = None,
+    rocky_email: str | None = None,
+    james_email: str = "jbragdon@gallagherllp.com",
     target_rrid: str | None = None,
     hours_back: int = 24,
 ) -> dict:
     """
     Generate a consolidated daily digest. Writes to
-    Rocky Cases/Daily Digests/YYYY-MM-DD.md, or skips if no activity.
+    Rocky Cases/Daily Digests/YYYY-MM-DD.md. If token and rocky_email are
+    provided, also emails the digest to James and per-case digests to any
+    co-counsel lawyers listed in the case index.
     """
+    from outbound import send_mail_guarded
+
     if not ROCKY_CASES_ROOT.exists():
         log.error(f"Rocky Cases root not found: {ROCKY_CASES_ROOT}")
         return {"written": False, "reason": "no_root"}
@@ -1554,7 +1317,8 @@ def daily_digest(
     cases_index = load_case_index()
     cases_by_rrid = {str(c.get("RRID#") or "").upper(): c for c in cases_index}
 
-    sections: list[tuple[str, str]] = []  # (heading, body)
+    # (heading, body, rrid) — rrid tracked for co-counsel filtering.
+    sections: list[tuple[str, str, str]] = []
     cases_examined = 0
 
     for child in sorted(ROCKY_CASES_ROOT.iterdir()):
@@ -1584,7 +1348,7 @@ def daily_digest(
             f"## {meta.get('RRID#')} — {meta.get('File Name', child.name)} "
             f"({meta.get('Client', 'unknown client')})"
         )
-        sections.append((heading, body))
+        sections.append((heading, body, rrid))
 
     if not sections:
         log.info(
@@ -1593,6 +1357,7 @@ def daily_digest(
         )
         return {"written": False, "reason": "no_activity", "cases_examined": cases_examined}
 
+    # Write the file digest (all cases).
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     digest_path = DAILY_DIGESTS_DIR / f"{today}.md"
     try:
@@ -1601,34 +1366,64 @@ def daily_digest(
         log.error(f"Could not create {DAILY_DIGESTS_DIR}: {e}")
         return {"written": False, "reason": f"mkdir_failed: {e}"}
 
-    parts = [
-        f"# Rocky Daily Digest — {today}",
-        f"",
-        f"Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC. "
-        f"Window: last {hours_back} hours. "
-        f"{len(sections)} case(s) with activity.",
-        f"",
-    ]
-    for heading, body in sections:
-        parts.append(heading)
-        parts.append("")
-        parts.append(body)
-        parts.append("")
-        parts.append("---")
-        parts.append("")
+    all_sections_for_text = [(h, b) for h, b, _ in sections]
+    digest_text = _build_digest_text(all_sections_for_text, hours_back)
 
     try:
-        digest_path.write_text("\n".join(parts), encoding="utf-8")
+        digest_path.write_text(digest_text, encoding="utf-8")
     except OSError as e:
         log.error(f"Could not write {digest_path}: {e}")
         return {"written": False, "reason": f"write_failed: {e}"}
 
     log.info(f"Wrote digest: {digest_path}")
+
+    # Email the digest if we have credentials.
+    emails_sent: list[dict] = []
+    if token and rocky_email:
+        # Full digest to James.
+        result = send_mail_guarded(
+            token=token,
+            sender_mailbox=rocky_email,
+            to=[james_email],
+            subject=f"Rocky Daily Digest — {today}",
+            body=digest_text,
+        )
+        emails_sent.append({"to": james_email, **result})
+        if result.get("sent"):
+            log.info(f"Digest emailed to {james_email}")
+        else:
+            log.warning(f"Failed to email digest to {james_email}: {result.get('reason')}")
+
+        # Per-lawyer filtered digests.
+        lawyer_cases: dict[str, list[tuple[str, str]]] = {}
+        for heading, body, rrid in sections:
+            meta = cases_by_rrid.get(rrid, {})
+            for lawyer in _get_digest_lawyers(meta):
+                lawyer_cases.setdefault(lawyer, []).append((heading, body))
+
+        for lawyer_email, their_sections in lawyer_cases.items():
+            filtered_text = _build_digest_text(their_sections, hours_back)
+            result = send_mail_guarded(
+                token=token,
+                sender_mailbox=rocky_email,
+                to=[lawyer_email],
+                subject=f"Rocky Case Digest — {today} ({len(their_sections)} case(s))",
+                body=filtered_text,
+            )
+            emails_sent.append({"to": lawyer_email, **result})
+            if result.get("sent"):
+                log.info(f"Filtered digest ({len(their_sections)} cases) emailed to {lawyer_email}")
+            else:
+                log.warning(f"Failed to email digest to {lawyer_email}: {result.get('reason')}")
+    else:
+        log.info("No token/rocky_email provided — digest saved to file only, not emailed.")
+
     return {
         "written": True,
         "path": str(digest_path),
         "cases_with_activity": len(sections),
         "cases_examined": cases_examined,
+        "emails_sent": emails_sent,
     }
 
 
@@ -1715,10 +1510,6 @@ def classify_email(
     """
     Send the email to Claude with the classifier prompt.
     Returns the parsed JSON classification, or an error dict if classification fails.
-
-    `case_match`, if provided, is the result of match_email_to_case() — it gets
-    surfaced to the classifier as context (helps disambiguate "is this the same
-    case James is already working on?").
     """
     # Build a compact representation of the email for the prompt.
     sender = email.get("from", {}).get("emailAddress", {})
@@ -1907,247 +1698,264 @@ def log_classification(
 
 
 # =============================================================================
-# The main loop
+# Daily cases — fetch from Outlook folders, summarize, save, run skills
+# =============================================================================
+# Triggered with `python rocky.py --daily-cases [RRID-XXXX]`.
+# For each case in the index with an Case Folder path, fetches today's emails,
+# sends them to Claude for a summary, saves documents to the case folder, then
+# runs per-case folder skills (daily-run).
+
+CASE_EMAIL_SUMMARY_PROMPT = """You are Rocky, a litigation paralegal summarizing today's emails for one case belonging to James Bragdon at Gallagher LLP.
+
+You receive:
+- The case description (parties, client, RRID)
+- Today's emails from the case's Outlook folder (subject, sender, body text, attachment names + extracted text)
+
+Return ONLY a JSON object:
+{
+  "summary": "<markdown summary of today's emails for this case — concise, attorney-readable, grouped by theme if multiple emails>",
+  "key_documents": ["<list of attachment filenames that appear substantive (leases, notices, ledgers, letters) vs. routine (signatures, logos)>"],
+  "action_items": ["<0-3 concrete next actions James should consider, ordered by urgency>"]
+}
+
+RULES:
+- summary: terse and factual. Past-tense for events. No filler. If only one email, a couple sentences suffice.
+- key_documents: only list attachments that matter. Empty [] if none are substantive.
+- action_items: specific actions, not vague. Empty [] if nothing needs attention.
+"""
+
+
+def process_case_emails(
+    client: Anthropic,
+    token: str,
+    user_email: str,
+    case: dict,
+    case_folder: Path,
+    rrid: str,
+    since: datetime,
+    instructions: str,
+) -> dict:
+    """
+    Fetch today's emails from a case's Outlook folder, summarize via Claude,
+    save email bodies + attachments to the case's Raw Documents folder.
+    Returns a result summary dict.
+    """
+    folder_path = str(
+        case.get("Case Folder") or case.get("Outlook Folder") or ""
+    ).strip()
+    if not folder_path:
+        return {"rrid": rrid, "emails": 0, "saved": 0, "reason": "no_case_folder"}
+
+    folder_id = resolve_folder_path(token, user_email, folder_path)
+    if not folder_id:
+        log.warning(f"[{rrid}] Could not resolve Outlook folder path: {folder_path!r}")
+        return {"rrid": rrid, "emails": 0, "saved": 0, "reason": f"folder_not_found: {folder_path}"}
+
+    emails = fetch_folder_emails(token, user_email, folder_id, since)
+    if not emails:
+        return {"rrid": rrid, "emails": 0, "saved": 0, "reason": "no_emails_today"}
+
+    log.info(f"[{rrid}] Fetched {len(emails)} email(s) from Outlook folder")
+
+    case_description = (
+        f"{case.get('File Name', case_folder.name)} — Client: {case.get('Client', 'unknown')}. "
+        f"{case.get('Description', '')}"
+    ).strip()
+
+    # Build email blocks for the Claude summary prompt.
+    email_blocks: list[str] = []
+    for email in emails:
+        sender = email.get("from", {}).get("emailAddress", {})
+        body = (email.get("body") or {}).get("content") or email.get("bodyPreview") or ""
+        if len(body) > 10000:
+            body = body[:10000] + "\n[...truncated...]"
+
+        att_names = [a.get("name", "?") for a in email.get("attachments", [])]
+        att_text = build_attachment_text_block(email.get("attachments", []))
+
+        block = (
+            f"### Email\n"
+            f"Subject: {email.get('subject', '(no subject)')}\n"
+            f"From: {sender.get('name', '?')} <{sender.get('address', '?')}>\n"
+            f"Received: {email.get('receivedDateTime', '?')}\n"
+            f"Attachments: {', '.join(att_names) if att_names else 'none'}\n\n"
+            f"Body:\n{body}"
+        )
+        if att_text:
+            block += f"\n\nExtracted attachment text:\n{att_text}"
+        email_blocks.append(block)
+
+    user_prompt = f"""CASE: {case_description}
+RRID: {rrid}
+
+TODAY'S EMAILS ({len(emails)} total):
+
+{chr(10).join(email_blocks)}
+
+{f'James added these instructions:{chr(10)}{instructions}{chr(10)}---' if instructions else ''}
+
+Summarize these emails. Return ONLY the JSON object."""
+
+    # Claude summary call.
+    summary_result = {}
+    try:
+        response = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=2048,
+            system=CASE_EMAIL_SUMMARY_PROMPT,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        text_out = response.content[0].text.strip()
+        if text_out.startswith("```"):
+            lines = text_out.split("\n")
+            text_out = "\n".join(l for l in lines if not l.startswith("```"))
+        summary_result = json.loads(text_out)
+    except json.JSONDecodeError as e:
+        log.error(f"[{rrid}] Could not parse email summary as JSON: {e}")
+        summary_result = {"summary": f"(parse error: {e})", "key_documents": [], "action_items": []}
+    except Exception as e:
+        log.error(f"[{rrid}] Email summary Claude call failed: {e}")
+        summary_result = {"summary": f"(error: {e})", "key_documents": [], "action_items": []}
+
+    log.info(f"[{rrid}] Summary: {summary_result.get('summary', '')[:120]}")
+    if summary_result.get("action_items"):
+        for item in summary_result["action_items"]:
+            log.info(f"[{rrid}]   action: {item}")
+
+    # Save emails + attachments to the case's Raw Documents folder.
+    total_saved = 0
+    for email in emails:
+        # Synthesize a case_match dict for save_email_to_case compatibility.
+        case_match = {
+            **case,
+            "_match_method": "outlook_folder",
+            "_match_value": folder_id,
+        }
+        rrids_found = find_rrids_in_text(
+            f"{email.get('subject', '')}\n"
+            f"{(email.get('body') or {}).get('content') or ''}"
+        )
+        save_result = save_email_to_case(email, case_match, rrids_found)
+        if save_result.get("saved"):
+            total_saved += len(save_result.get("files_saved", []))
+
+    # Log the summary as an activity event.
+    append_case_activity(case_folder, {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "actor": "rocky",
+        "event": "daily_cases_email_summary",
+        "rrid": rrid,
+        "emails_fetched": len(emails),
+        "files_saved": total_saved,
+        "summary": summary_result.get("summary"),
+        "action_items": summary_result.get("action_items", []),
+    })
+
+    return {
+        "rrid": rrid,
+        "emails": len(emails),
+        "saved": total_saved,
+        "summary": summary_result.get("summary", ""),
+    }
+
+
+def daily_cases(
+    client: Anthropic,
+    token: str,
+    user_email: str,
+    instructions: str,
+    target_rrid: str | None = None,
+) -> list[dict]:
+    """
+    For each case with an Case Folder path, fetch today's emails, summarize,
+    and save to case folders.
+    """
+    if not ROCKY_CASES_ROOT.exists():
+        log.error(f"Rocky Cases root not found: {ROCKY_CASES_ROOT}")
+        return []
+
+    cases_index = load_case_index()
+    if not cases_index:
+        log.error("No cases loaded from index.")
+        return []
+
+    since = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    results: list[dict] = []
+
+    for case in cases_index:
+        rrid = str(case.get("RRID#") or "").strip().upper()
+        if not rrid:
+            continue
+        if target_rrid and rrid != target_rrid.upper():
+            continue
+
+        case_folder = find_case_folder(rrid)
+        if not case_folder:
+            log.warning(f"[{rrid}] Case folder not found under {ROCKY_CASES_ROOT}")
+            results.append({"rrid": rrid, "emails": 0, "saved": 0, "reason": "no_case_folder"})
+            continue
+
+        result = process_case_emails(
+            client, token, user_email, case, case_folder, rrid, since, instructions
+        )
+        results.append(result)
+
+    return results
+
+
+# =============================================================================
+# CLI entry points
 # =============================================================================
 
-def main():
-    # Sub-command: one-shot daily run (Phase D Stage 2). Reads each case's
-    # _project/instructions.md and runs Claude. Local OneDrive files only.
-    if "--daily-run" in sys.argv:
-        run_daily_run_cli()
-        return
-
-    # Sub-command: one-shot daily digest (Phase D Stage 3). Local-files only.
-    if "--daily-digest" in sys.argv:
-        run_daily_digest_cli()
-        return
-
-    # Ensure local data directory exists (only matters in frozen/.exe mode).
+def run_daily_cases_cli() -> None:
+    """Entry point for `python rocky.py --daily-cases [RRID-XXXX]`."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-
     log.info("=" * 60)
-    log.info("Rocky starting up — iteration 1, classifier-only mode")
-    log.info(f"Program dir: {PROGRAM_DIR}")
-    log.info(f"Data dir:    {DATA_DIR}")
+    log.info("Rocky — daily cases (email fetch + summarize)")
     log.info("=" * 60)
 
     config = load_config()
     instructions = load_instructions()
 
-    log.info(f"Mailboxes: {', '.join(config['user_emails'])}")
-    log.info(f"Polling every {POLL_INTERVAL_SECONDS}s")
-    log.info(f"Classifications will be written to: {CLASSIFICATIONS_PATH}")
-    if instructions:
-        log.info(f"Loaded {len(instructions)} chars of instructions")
+    user_email = config.get("user_email") or (config["user_emails"][0] if config.get("user_emails") else None)
+    if not user_email:
+        log.error("No user_email configured. Set user_email or user_emails in config.json.")
+        sys.exit(1)
 
-    # Authenticate.
     app = get_msal_app(config)
-    log.info("Acquiring initial token...")
     token = acquire_token(app)
-    log.info("Authenticated successfully.")
-
-    # Phase A safety: audit token scopes BEFORE any mail operation.
-    # Halts the program if forbidden scopes (Mail.Send variants) are present.
     audit_token_scopes(token)
 
-    # Set up Anthropic client.
     anthropic_client = Anthropic(api_key=config["anthropic_api_key"])
 
-    last_check_by_mb = get_last_check_times(config["user_emails"])
-    for mb, ts in last_check_by_mb.items():
-        log.info(f"Starting {mb} from: {ts.isoformat()}")
+    target_rrid = None
+    for arg in sys.argv[1:]:
+        if arg.upper().startswith("RRID-"):
+            target_rrid = arg.upper()
+            break
 
-    # Load case index once at startup (logged for visibility); reload each poll.
-    initial_cases = load_case_index()
-    if initial_cases:
-        log.info(
-            f"Loaded {len(initial_cases)} case(s) from index: "
-            + ", ".join(f"{c.get('RRID#')} ({c.get('File Name')})" for c in initial_cases)
-        )
+    if target_rrid:
+        log.info(f"Target: {target_rrid} only")
     else:
-        log.info("No case index loaded. RRID matching will be skipped this run.")
+        log.info("Target: all cases with Case Folder path in the index")
+    log.info(f"Mailbox: {user_email}")
 
-    log.info("Watching inbox. Ctrl+C to stop.")
-    print()
-
-    # Kill-switch: who can send "ROCKY STOP" / "ROCKY START". Defaults to all
-    # configured mailbox owners.
-    kill_switch_authorized = config.get(
-        "kill_switch_authorized", list(config["user_emails"])
+    # Step 1: fetch emails, summarize, save documents.
+    results = daily_cases(
+        anthropic_client, token, user_email, instructions, target_rrid=target_rrid
     )
-    log.info(f"Kill-switch authorized senders: {kill_switch_authorized}")
 
-    while True:
-        try:
-            # Refresh token if needed (acquire_token_silent will use cache if valid).
-            token = acquire_token(app)
+    log.info("-" * 40)
+    log.info("Email fetch + save complete:")
+    for r in results:
+        log.info(
+            f"  {r['rrid']}: {r.get('emails', 0)} email(s), "
+            f"{r.get('saved', 0)} file(s) saved"
+            + (f" — {r.get('reason')}" if r.get('reason') else "")
+        )
 
-            # Reload case index each poll — file is tiny, changes are rare but
-            # we want new RRIDs picked up without restarting Rocky.
-            cases = load_case_index()
-            conversation_cache = load_conversation_cache()
-
-            # Fetch new mail from every configured mailbox, tagging each email
-            # with its source mailbox for downstream logging.
-            per_mailbox_emails: list[tuple[str, list[dict]]] = []
-            for mb in config["user_emails"]:
-                try:
-                    emails = fetch_new_emails(token, mb, last_check_by_mb[mb])
-                except Exception as e:
-                    log.exception(f"Failed to fetch mail from {mb}: {e}. Skipping this mailbox this cycle.")
-                    emails = []
-                per_mailbox_emails.append((mb, emails))
-
-            # Flatten + dedup across mailboxes by internetMessageId. If the same
-            # message lands in both inboxes (e.g., someone CC'd rocky@), we
-            # process it once — the first mailbox in config wins.
-            seen_message_ids: set[str] = set()
-            new_emails: list[dict] = []
-            for mb, emails in per_mailbox_emails:
-                for email in emails:
-                    mid = email.get("internetMessageId")
-                    if mid and mid in seen_message_ids:
-                        log.info(
-                            f"Dedup: skipping duplicate of {mid!r} from {mb} "
-                            f"(already seen in another mailbox this cycle)"
-                        )
-                        continue
-                    if mid:
-                        seen_message_ids.add(mid)
-                    email["_mailbox"] = mb
-                    new_emails.append(email)
-
-            # Kill-switch check FIRST — before any classification or saving.
-            if new_emails:
-                check_emails_for_kill_switch(
-                    STATE_DIR, new_emails, kill_switch_authorized
-                )
-
-            # Compute per-mailbox high-water marks based on what we just fetched
-            # (BEFORE the dormant short-circuit — applies in either branch).
-            high_water_by_mb = dict(last_check_by_mb)
-            for mb, emails in per_mailbox_emails:
-                for email in emails:
-                    received = datetime.fromisoformat(
-                        email["receivedDateTime"].replace("Z", "+00:00")
-                    )
-                    if received > high_water_by_mb[mb]:
-                        high_water_by_mb[mb] = received
-
-            # If dormant, advance the high-water mark but skip all classification
-            # and case-folder work. Polling continues so we can wake on ROCKY START.
-            if is_dormant(STATE_DIR):
-                if new_emails:
-                    log.info(
-                        f"DORMANT — skipping classification/save for "
-                        f"{len(new_emails)} email(s)."
-                    )
-                if high_water_by_mb != last_check_by_mb:
-                    last_check_by_mb = high_water_by_mb
-                    save_last_check_times(last_check_by_mb)
-                time.sleep(POLL_INTERVAL_SECONDS)
-                continue
-
-            if new_emails:
-                log.info(f"Processing {len(new_emails)} new email(s) across {len(config['user_emails'])} mailbox(es).")
-
-            for email in new_emails:
-                mailbox = email.get("_mailbox")
-
-                # Match to a case before classifying. Tiers:
-                # conversation cache > RRID > case number > keywords > sender.
-                subject = email.get("subject") or ""
-                body_text = (email.get("body") or {}).get("content") or email.get("bodyPreview") or ""
-                rrids_found = find_rrids_in_text(f"{subject}\n{body_text}")
-                case_match = match_email_to_case(email, cases, conversation_cache)
-
-                # Phase D Stage 1: if matched, save email + attachments to the case folder.
-                # Done BEFORE classification so we capture even if the classifier errors out.
-                save_result = None
-                if case_match:
-                    save_result = save_email_to_case(email, case_match, rrids_found)
-
-                # Pre-Claude triage. Three buckets:
-                #   1. Case-matched → already saved above; skip Claude (case-mgmt
-                #      Claude call is future work).
-                #   2. Unmatched + Bozzuto sender + Remy keyword → Claude classifier
-                #      with body only (no attachment text).
-                #   3. Else → log and skip.
-                # Build the empty-classification skeleton up front so we can log
-                # consistently regardless of which branch we take.
-                empty_classification = {
-                    "is_remy_request": None,
-                    "confidence": None,
-                    "reasoning": None,
-                    "documents_referenced": [],
-                    "project_category": None,
-                    "jurisdiction": None,
-                    "subtype": None,
-                }
-
-                if case_match:
-                    classification = empty_classification
-                    claude_called = False
-                    skip_reason = "case_matched"
-                else:
-                    is_remy, matched_kw = is_possible_remy_request(email)
-                    if is_remy:
-                        classification = classify_email(
-                            anthropic_client,
-                            email,
-                            instructions,
-                            case_match=None,
-                            include_attachments=False,
-                        )
-                        claude_called = True
-                        skip_reason = None
-                    else:
-                        classification = empty_classification
-                        claude_called = False
-                        skip_reason = "no_remy_signal"
-
-                log_classification(
-                    email,
-                    classification,
-                    case_match=case_match,
-                    rrids_found=rrids_found,
-                    save_result=save_result,
-                    mailbox=mailbox,
-                    claude_called=claude_called,
-                    skip_reason=skip_reason,
-                )
-
-                # Remy invocation — decoupled from case management on purpose.
-                # Gated behind config.enable_remy_invocation; default off.
-                # Failures here never break the main loop.
-                if config.get("enable_remy_invocation"):
-                    try:
-                        remy_result = remy_runner.run(email, classification, config)
-                        if remy_result.get("invoked"):
-                            log.info(
-                                f"REMY → {remy_result['project_type']}: "
-                                f"{remy_result['output_path']}"
-                            )
-                        elif remy_result.get("reason"):
-                            log.info(f"Remy skipped: {remy_result['reason']}")
-                        elif remy_result.get("error"):
-                            log.error(f"Remy error: {remy_result['error']}")
-                    except Exception as e:
-                        log.exception(f"remy_runner crashed (non-fatal): {e}")
-
-            if high_water_by_mb != last_check_by_mb:
-                last_check_by_mb = high_water_by_mb
-                save_last_check_times(last_check_by_mb)
-
-            save_conversation_cache(conversation_cache)
-
-        except KeyboardInterrupt:
-            log.info("Shutdown requested. Goodbye.")
-            sys.exit(0)
-        except Exception as e:
-            log.exception(f"Error in main loop: {e}. Continuing in {POLL_INTERVAL_SECONDS}s.")
-
-        time.sleep(POLL_INTERVAL_SECONDS)
+    log.info("=" * 60)
+    log.info("Daily cases complete.")
 
 
 def run_daily_run_cli() -> None:
@@ -2161,7 +1969,6 @@ def run_daily_run_cli() -> None:
     instructions = load_instructions()
     anthropic_client = Anthropic(api_key=config["anthropic_api_key"])
 
-    # Optional positional arg: a specific RRID to process. Otherwise process all.
     target_rrid = None
     for arg in sys.argv[1:]:
         if arg.upper().startswith("RRID-"):
@@ -2199,6 +2006,14 @@ def run_daily_digest_cli() -> None:
     instructions = load_instructions()
     anthropic_client = Anthropic(api_key=config["anthropic_api_key"])
 
+    rocky_email = config.get("rocky_email", "rocky@gallagherllp.com")
+    james_email = config.get("user_email", "jbragdon@gallagherllp.com")
+
+    # Authenticate to send digest emails from Rocky's mailbox.
+    app = get_msal_app(config)
+    token = acquire_token(app)
+    audit_token_scopes(token)
+
     target_rrid = None
     hours_back = 24
     args = sys.argv[1:]
@@ -2215,7 +2030,9 @@ def run_daily_digest_cli() -> None:
     log.info(f"Target: {target_rrid or 'all case folders'}")
 
     result = daily_digest(
-        anthropic_client, instructions, target_rrid=target_rrid, hours_back=hours_back
+        anthropic_client, instructions,
+        token=token, rocky_email=rocky_email, james_email=james_email,
+        target_rrid=target_rrid, hours_back=hours_back,
     )
 
     if result.get("written"):
@@ -2223,8 +2040,27 @@ def run_daily_digest_cli() -> None:
             f"Digest written: {result['path']} "
             f"({result['cases_with_activity']} of {result['cases_examined']} case(s) had activity)"
         )
+        for email_result in result.get("emails_sent", []):
+            status = "sent" if email_result.get("sent") else f"failed ({email_result.get('reason')})"
+            log.info(f"  Email to {email_result.get('to')}: {status}")
     else:
         log.info(f"No digest written. Reason: {result.get('reason')}")
+
+
+def main():
+    if "--daily-cases" in sys.argv:
+        run_daily_cases_cli()
+    elif "--daily-run" in sys.argv:
+        run_daily_run_cli()
+    elif "--daily-digest" in sys.argv:
+        run_daily_digest_cli()
+    else:
+        print(__doc__)
+        print("Available commands:")
+        print("  --daily-cases  [RRID-XXXX]              Fetch emails, summarize, save")
+        print("  --daily-run    [RRID-XXXX]              Run per-case folder skills")
+        print("  --daily-digest [RRID-XXXX] [--hours N]  Generate daily case digest")
+        sys.exit(0)
 
 
 if __name__ == "__main__":

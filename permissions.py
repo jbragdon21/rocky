@@ -3,15 +3,18 @@ Startup permissions self-audit.
 
 Decodes Rocky's Microsoft Graph access token (without verifying the signature
 — we just want to inspect the scope claim) and halts the program if any
-forbidden scope is present. The forbidden list captures the Level 0 invariant:
-Rocky must never hold Mail.Send permission, even by accident.
+forbidden scope is present.
+
+Rocky is allowed Mail.Send (she sends digests from rocky@gallagherllp.com),
+but must never hold Mail.Send.Shared or Mail.Send.All (which would let her
+send as other people). The outbound.py guardrail additionally restricts all
+recipients to @gallagherllp.com.
 
 This is defense in depth alongside:
 - The Azure AD app registration (delegated permissions deliberately limited)
 - The Exchange Online mail-flow rule (rejects outbound from Rocky to non-firm
   addresses)
-
-If FORBIDDEN_SCOPES grows over time, add to that constant. Don't relax it.
+- outbound.py send_mail_guarded() — refuses non-firm recipients in code
 """
 
 import base64
@@ -22,8 +25,10 @@ import sys
 log = logging.getLogger("rocky")
 
 # Scopes Rocky must NEVER hold. If any of these appear in the token, halt.
+# Mail.Send is allowed (Rocky sends from her own mailbox).
+# Mail.Send.Shared / Mail.Send.All are forbidden (would let Rocky send as
+# other users).
 FORBIDDEN_SCOPES: frozenset[str] = frozenset({
-    "Mail.Send",
     "Mail.Send.Shared",
     "Mail.Send.All",
 })

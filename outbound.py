@@ -10,9 +10,9 @@ This is the IN-CODE guard. The other layer is the Exchange Online mail-flow
 rule that blocks Rocky's outbound to non-firm addresses at the tenant level.
 Both must agree.
 
-Currently a scaffold — Rocky doesn't have Mail.Send permission yet (that
-arrives in Phase A). The function exists so future drafting/sending code has
-a single guarded entry point. Do NOT add a non-guarded send path elsewhere.
+Rocky sends from rocky@gallagherllp.com (her own mailbox). All Rocky-originated
+outbound mail MUST go through send_mail_guarded(). Do NOT add a non-guarded
+send path elsewhere.
 """
 
 import logging

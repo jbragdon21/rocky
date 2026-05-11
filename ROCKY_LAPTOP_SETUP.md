@@ -100,23 +100,22 @@ If you get `AADSTS53003`, the Conditional Access exception (step in Pre-requisit
 
 Create three Task Scheduler entries:
 
-#### A. Rocky — runs at boot, polls inbox every 5 minutes
+#### A. Daily Cases — 4:00 PM, fetches emails from case folders and summarizes
 
-- **Name:** Rocky
-- **Trigger:** At startup (delay 60 seconds to let OneDrive sync)
+- **Name:** Rocky Daily Cases
+- **Trigger:** Daily at 4:00 PM
 - **Action:** Start a program
   - Program: `"C:\Users\jbragdon\OneDrive\OneDrive - gejlaw.com\Program Files\rocky.exe"`
+  - Arguments: `--daily-cases`
   - Start in: `"C:\Users\jbragdon\OneDrive\OneDrive - gejlaw.com\Program Files"`
 - **Settings:**
   - Run whether user is logged on or not
-  - Run with highest privileges
-  - If the task fails, restart every 1 minute, up to 3 times
-  - Do not start a new instance if already running
+  - Stop the task if it runs longer than 1 hour
 
-#### B. Daily Run — 4:00 PM, processes each case folder's instructions
+#### B. Daily Run — 4:30 PM, processes each case folder's instructions
 
 - **Name:** Rocky Daily Run
-- **Trigger:** Daily at 4:00 PM
+- **Trigger:** Daily at 4:30 PM
 - **Action:** Start a program
   - Program: `"C:\Users\jbragdon\OneDrive\OneDrive - gejlaw.com\Program Files\rocky.exe"`
   - Arguments: `--daily-run`
@@ -139,12 +138,10 @@ Create three Task Scheduler entries:
 
 ### 7. Verify everything works
 
-1. Reboot the laptop
-2. Wait 2 minutes for OneDrive to sync and Rocky to start
-3. Check `C:\Rocky\rocky.log` — should show "Rocky starting up" and successful token acquisition
-4. Send a test email to `jbragdon@gallagherllp.com` with "RRID-0001" in the subject. Within 5 minutes, Rocky should log that it matched and saved it to the case folder.
-5. At 4:00 PM (or run manually: `rocky.exe --daily-run`), check that case folders with `_project/instructions.md` get processed
-6. At 5:00 PM (or run manually: `rocky.exe --daily-digest`), check `Rocky Cases\Daily Digests\` for the day's file
+1. Reboot the laptop and wait 2 minutes for OneDrive to sync
+2. Run `rocky.exe --daily-cases` manually. Check `C:\Rocky\rocky.log` for successful token acquisition and email fetch from case folders.
+3. Run `rocky.exe --daily-run` manually. Check that case folders with `_project/instructions.md` get processed.
+4. Run `rocky.exe --daily-digest` manually. Check `Rocky Cases\Daily Digests\` for the day's file.
 
 ---
 

@@ -1,14 +1,14 @@
 {
-  "_comment": "Copy this to config.json and fill in your values. Do NOT commit config.json to version control if you put this in a git repo.",
+  "_comment": "Copy this to config.json and fill in your values. Do NOT commit config.json to version control.",
   "client_id": "PASTE-AZURE-AD-APP-CLIENT-ID-HERE",
   "tenant_id": "PASTE-GALLAGHER-TENANT-ID-HERE",
-  "_user_emails_comment": "All mailboxes Rocky should poll. Rocky must have delegated access to each. List rocky@... first if she also has her own inbox to watch.",
-  "user_emails": ["jbragdon@gallagherllp.com", "rocky@gallagherllp.com"],
+  "_user_email_comment": "The mailbox Rocky reads case folders from (James's mailbox with delegated access).",
+  "user_email": "jbragdon@gallagherllp.com",
+  "_rocky_email_comment": "Rocky's own mailbox. Used as the sender for digest emails.",
+  "rocky_email": "rocky@gallagherllp.com",
   "anthropic_api_key": "sk-ant-PASTE-YOUR-ANTHROPIC-KEY-HERE",
-  "_kill_switch_comment": "Email addresses authorized to send 'ROCKY STOP' / 'ROCKY START' subject lines. Defaults to user_email if omitted.",
-  "kill_switch_authorized": ["jbragdon@gallagherllp.com"],
 
-  "_remy_comment": "Remy invocation is dormant by default. Flip enable_remy_invocation to true once classifier behavior is trusted. remy_cli_path is where remy_cli.py lives on disk. remy_outputs_path is where generated drafts get written.",
+  "_remy_comment": "Remy invocation paths. remy_cli_path is where remy_cli.py lives on disk. remy_outputs_path is where generated drafts get written.",
   "enable_remy_invocation": false,
   "remy_cli_path": "C:\\Remy\\remy_cli.py",
   "remy_outputs_path": "C:\\Users\\jbragdon\\OneDrive\\OneDrive - gejlaw.com\\Remy Outputs"

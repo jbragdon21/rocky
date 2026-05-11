@@ -50,49 +50,39 @@ Phases A–C give a production-ready Rocky in ~5–6 weekends. Full vision throu
 
 ---
 
-## Phase 0: Local workshop (current phase)
+## Current architecture: scheduled batch commands
 
-**Goal:** validate three core behaviors on James's primary laptop before committing to production architecture.
+Rocky runs as a set of scheduled one-shot commands (Task Scheduler), not a polling loop:
 
-**Three workshop skills, in order:**
+1. **`--daily-cases`** (4:00 PM) — for each case with an Outlook Folder path in the spreadsheet, fetches today's emails from that folder via Graph API, summarizes them via Claude, saves documents to the case folder's `Raw Documents/`.
+2. **`--daily-run`** (4:30 PM) — reads each case's `_project/instructions.md` and executes Claude-driven file actions.
+3. **`--daily-digest`** (5:00 PM) — generates a consolidated markdown digest of the day's case activity.
 
-1. **Email monitoring** — polls inbox every 5 minutes, classifies new mail as Remy request or not, logs every action. (Iteration 1 — current.)
-2. **Targeted drafting** — for specific email patterns matching James's instructions, drafts a reply and saves to Drafts folder. Narrow scope at first; expanded one pattern at a time.
-3. **Remy invocation** — detects Remy requests in forwarded emails, saves attached documents into a per-request working folder, runs Remy.exe with the folder as input, returns generated document by reply.
+**Remy requests** are handled separately: James forwards emails to `rocky@gallagherllp.com`. Remy processing from Rocky's mailbox will be a separate scheduled command (future work).
 
-**What's deliberately NOT in Phase 0:** dedicated machine, service account, mail-flow rules, OneDrive sync, 24/7 monitoring, morning digest, case management, multi-user concerns. All deferred to Phase A and beyond.
-
-**Decision criteria before Phase A:**
-- Classifier reliably correct on ≥90% of routine emails
-- Drafting patterns produce drafts James would use after light editing in ≥80% of cases
-- Remy invocation works reliably enough to use in real workflows
-- Audit logs are useful in practice
-- Instruction file has accumulated meaningful content
+**Case-to-folder mapping** is handled by Outlook Rules, not Rocky's code. James sets up an Outlook Rule for each case to sort incoming mail into a per-case folder. Rocky reads from those folders using the folder ID stored in the case index spreadsheet.
 
 ---
 
-## Iteration 1 (current): Remy classifier, read-only
+## File layout
 
-**Files (all under `C:\Rocky\` on James's laptop):**
+**Files (all under `C:\Rocky\` on the Rocky laptop):**
 
 ```
 C:\Rocky\
-├── rocky.py                  # Main program — single file, ~500 lines
+├── rocky.py                  # Main program — scheduled batch commands
 ├── config.json               # Tenant/client IDs, user email, Anthropic key
 ├── instructions.md           # Plain-English rules James edits to refine
 ├── examples/                 # Few-shot examples (starts empty)
 ├── classifications.jsonl     # Append-only log of every classification
 ├── state/
-│   ├── token_cache.json      # MSAL refresh token (auto-managed)
-│   └── last_check.json       # Polling cursor
+│   └── token_cache.json      # MSAL refresh token (auto-managed)
 ├── rocky.log                 # Operational log
 └── requirements.txt
 ```
 
 **Key constants in `rocky.py`:**
 - `GRAPH_SCOPES = ["Mail.Read"]` — explicitly read-only, no Mail.ReadWrite, no Mail.Send
-- `POLL_INTERVAL_SECONDS = 300` (5 minutes)
-- `INITIAL_LOOKBACK_HOURS = 24`
 - `CLAUDE_MODEL = "claude-sonnet-4-5"`
 
 **Authentication setup (Setup B):**
@@ -146,27 +136,13 @@ IT setup required:
 
 **Authentication:** Uses Microsoft Authentication Library (MSAL) with device code flow. Token cache in `state/token_cache.json` (file-based serializable cache). Refresh token auto-renews on each successful API call; valid for ~90 days as long as Rocky runs at least once in that window.
 
-**Polling:** Stores high-water-mark timestamp in `state/last_check.json`. Each poll queries Graph with `$filter=receivedDateTime gt {timestamp}`. Returns 0 emails most polls (cheap).
+**Folder-based email fetch (simplified 2026-05-11):** Rocky no longer polls the inbox in a loop. Instead, `--daily-cases` reads the case index for Outlook Folder IDs and fetches today's emails from each folder via Graph API. Outlook Rules (configured by James) sort incoming mail into per-case folders. Rocky reads from those folders using `/users/{email}/mailFolders/{folderId}/messages` with a `receivedDateTime` filter for today.
 
-**Email parsing:** For each new email, extracts subject, sender, body text, attachment metadata (filenames, content types, sizes — *not* contents in iteration 1). Body is truncated to 10000 chars before sending to Claude.
+**Email summary call:** One Claude API call per case (not per email). All of a case's daily emails are batched into a single prompt. The response includes a summary, key documents, and action items — logged to `activity.jsonl`.
 
-**Classifier call:** One Claude API call per *qualifying* new email (see "Pre-Claude triage gate" below). System prompt is the `CLASSIFIER_SYSTEM_PROMPT` constant (defines what a Remy request is, what isn't, calibration guidance, output format). User prompt is the email + James's instructions.md content (if present). Cost: ~$0.01–0.05 per email when Claude is called.
+**Logging:** Per-case activity → `activity.jsonl` in each case folder. Operational events → `rocky.log`.
 
-**Pre-Claude triage gate (added 2026-05-03):** Rocky no longer sends every email to Claude. Instead, each email is sorted into one of three buckets *locally* before deciding whether to spend a Claude call:
-
-1. **Case-matched** (any tier of `match_email_to_case` hits) → save to case folder + log; **skip Claude**. The case-management Claude call is future work (see TASKS.md §4). Rationale: case-matched mail is by definition existing case correspondence, not a new Remy request.
-2. **Unmatched + Remy signal** → call the classifier with **body only** (no attachment text, since the body is enough to pre-qualify). Remy signal is currently: sender domain in `REMY_SENDER_DOMAINS` (starts with just `bozzuto.com`) AND subject+body contains at least one keyword in `REMY_KEYWORDS` (`lease violation`, `nonrenewal`, `non-renewal`, `non renewal`, `delinquency`, `breach`, `incident`, `termination`, `resident`).
-3. **Else** → log + skip Claude.
-
-Every email — gated or not — gets a row in `classifications.jsonl` with `claude_called` (bool) and `skip_reason` (`case_matched`, `no_remy_signal`, or null when classified). This preserves the audit trail: false negatives now surface as `skip_reason=no_remy_signal` rows where the email was actually a Remy request, pointing at gaps in the sender list or keyword list.
-
-**Tradeoff:** the bias-toward-false-positives principle (see Core architectural principles) used to be enforced *inside* the Claude call — Rocky sent everything and Claude erred toward "yes." With the triage gate, Rocky's heuristics now own the recall problem for any email her gate rejects. The gate is intentionally narrow at first (one sender, short keyword list); refinement is an ongoing James task as misses surface in the log.
-
-**Logging:** Each classification → one JSON line in `classifications.jsonl`. Operational events → `rocky.log`. Console shows one-line summary per email.
-
-**Error handling:** Malformed JSON from classifier handled gracefully (logged, returns is_remy_request=False with error noted). API errors logged and skipped; main loop continues. Token refresh handled automatically by MSAL.
-
-**Review:** Manual. Decision 2026-05-03: removed the `review.py` interactive grading tool. Production review is now: bad drafts surface visibly (delete and refine `instructions.md`); missed requests are caught by periodic spot-checks of `classifications.jsonl`. Recall remains the metric that matters most — false negatives are higher cost than false positives — but it's tracked by attention rather than tooling.
+**Error handling:** Malformed JSON from Claude handled gracefully. API errors logged and skipped. Each case is processed independently — one failure doesn't block others.
 
 ---
 
@@ -295,27 +271,22 @@ Case workspace is browsable by Cowork users without needing Rocky-specific knowl
 
 ## Phase D: Case management — detailed operational design
 
-**Three stages.** Stage 1 runs continuously (in the inbox poll loop). Stages 2 and 3 are CLI-triggered skills meant to run once a day via Task Scheduler (Stage 2 around 5:00 PM, Stage 3 around 5:30 PM).
+**Three stages**, all CLI-triggered skills run once daily via Task Scheduler: Stage 1 (`--daily-cases`) at 4:00 PM, Stage 2 (`--daily-run`) at 4:30 PM, Stage 3 (`--daily-digest`) at 5:00 PM.
 
 **All three stages: code complete as of 2026-05-02.** Filesystem-only — no `Files.ReadWrite` Graph permission needed. Rocky writes to the local OneDrive sync folder; OneDrive uploads to the cloud. (Caveat: requires `Rocky Cases` folder to be pinned "Always keep on this device" on the production machine.)
 
-### Stage 1: Document ingestion — IMPLEMENTED
+### Stage 1: Document ingestion — IMPLEMENTED (via `--daily-cases`)
 
-Triggered every poll cycle, in `rocky.py` main loop. Five matching tiers (in `match_email_to_case`):
+**Folder-based approach (simplified 2026-05-11).** Outlook Rules sort incoming mail into per-case folders. James adds the Outlook Folder ID to the case index spreadsheet (`Outlook Folder ID` column). Rocky's `--daily-cases` command:
 
-0. **Conversation cache** — Graph `conversationId` previously matched to a case. Persisted to `state/conversation_cache.json` (90-day TTL). Catches replies that strip the RRID.
-1. **RRID in email** — `\bRRID-\d{4}\b` regex match in subject or body
-2. **Case number in subject/body** — substring match against the index's "Case No. Identifier" column
-3. **Match Keywords** — whole-word, case-insensitive search of subject+body against the index's "Match Keywords" column (comma/semicolon-separated). Optional, intended for distinctive last names, property nicknames, or short docket titles. Skip generic terms.
-4. **Sender identifier** — substring match against the index's "Sender Identifiers" column (comma/semicolon-separated)
+1. Reads the case index for all cases with an Outlook Folder ID
+2. Fetches today's emails from each folder via Graph API (`/mailFolders/{folderId}/messages`)
+3. Sends all emails for a case to Claude in one call → summary, key documents, action items
+4. Saves email bodies (as `.txt` with header) and attachments into `<case>/Raw Documents/`
+5. Logs a `daily_cases_email_summary` event to `activity.jsonl`
+6. Runs per-case folder skills (`daily_run`) on cases that received new files
 
-**Open-first with closed fallback.** Within each tier, Open cases are tried first (the `Open/Closed` column; blank counts as open). If no match, closed cases are retried — but only for the strong tiers (RRID, case number). Keyword and sender matches are never attempted against closed cases. A successful closed-case match logs a hint to reopen the case in the index.
-
-**Ambiguity = no match.** Within any tier, if 2+ cases match, the tier is skipped and Rocky logs a warning rather than guessing. Philosophy: don't stretch — let James add an RRID to the subject or update the index over time.
-
-When matched, `save_email_to_case` writes the email body (as `.txt` with header) and all attachments into `<case>/Raw Documents/`. Filenames are prefixed `{receivedYYYYMMDDTHHMM}_{md5(messageId)[:8]}_` so re-runs are idempotent. Every save appends an `email_ingested` event to `<case>/activity.jsonl`.
-
-Case folder lookup is by RRID-substring match in folder name (e.g., `Mackey, Karen (RRID-0001)`), tolerant of the actual on-disk naming convention.
+Filenames are prefixed `{receivedYYYYMMDDTHHMM}_{md5(messageId)[:8]}_` so re-runs are idempotent. Case folder lookup is by RRID-substring match in folder name (e.g., `Mackey, Karen (RRID-0001)`).
 
 ### Stage 2: Daily run — IMPLEMENTED (`python rocky.py --daily-run [RRID-XXXX]`)
 

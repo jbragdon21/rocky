@@ -31,9 +31,7 @@ def main():
         "--hidden-import", "pypdf",
         "--hidden-import", "docx",
         # Bundle the local modules alongside rocky.py.
-        "--add-data", f"{ROOT / 'remy_runner.py'};.",
         "--add-data", f"{ROOT / 'permissions.py'};.",
-        "--add-data", f"{ROOT / 'kill_switch.py'};.",
         "--add-data", f"{ROOT / 'outbound.py'};.",
         # Clean build each time.
         "--clean",
