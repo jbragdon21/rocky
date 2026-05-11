@@ -2,7 +2,9 @@
 Rocky — Virtual Paralegal
 =================================================
 
-A set of scheduled one-shot commands for James Bragdon at Gallagher LLP:
+  python rocky.py --monitor-remy                    (24/7, at boot)
+      Poll rocky@gallagherllp.com inbox every 5 minutes for Remy requests.
+      Classifies each email; invokes Remy CLI if it's a document request.
 
   python rocky.py --daily-cases [RRID-XXXX]        (4:00 PM)
       Pull today's emails from each case's Outlook folder, summarize via
@@ -26,6 +28,7 @@ import logging
 import re
 import shutil
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -56,6 +59,8 @@ TOKEN_CACHE_PATH = STATE_DIR / "token_cache.json"
 LOG_PATH = DATA_DIR / "rocky.log"
 
 GRAPH_SCOPES = ["Mail.Read", "Mail.Send"]
+REMY_LAST_CHECK_PATH = STATE_DIR / "remy_last_check.json"
+REMY_POLL_INTERVAL_SECONDS = 300  # 5 minutes
 GRAPH_API_BASE = "https://graph.microsoft.com/v1.0"
 
 # Claude model and parameters.
@@ -2047,8 +2052,137 @@ def run_daily_digest_cli() -> None:
         log.info(f"No digest written. Reason: {result.get('reason')}")
 
 
+# =============================================================================
+# Remy inbox monitor — polls rocky@gallagherllp.com for Remy requests
+# =============================================================================
+# Runs 24/7 via Task Scheduler (--monitor-remy). Checks Rocky's inbox every
+# 5 minutes. Classifies each new email; if it's a Remy request, invokes the
+# Remy CLI to generate a draft document. All results logged.
+#
+# High-water mark: state/remy_last_check.json stores the last poll time so
+# Rocky doesn't reprocess emails after a restart.
+
+def _load_remy_last_check() -> datetime:
+    """Load the last-check timestamp, or default to 6 hours ago."""
+    if REMY_LAST_CHECK_PATH.exists():
+        try:
+            data = json.loads(REMY_LAST_CHECK_PATH.read_text(encoding="utf-8"))
+            return datetime.fromisoformat(data["last_check"].replace("Z", "+00:00"))
+        except Exception:
+            pass
+    return datetime.now(timezone.utc) - timedelta(hours=6)
+
+
+def _save_remy_last_check(dt: datetime) -> None:
+    STATE_DIR.mkdir(exist_ok=True)
+    REMY_LAST_CHECK_PATH.write_text(
+        json.dumps({"last_check": dt.isoformat()}),
+        encoding="utf-8",
+    )
+
+
+def remy_poll_cycle(
+    anthropic_client: Anthropic,
+    token: str,
+    rocky_email: str,
+    config: dict,
+    instructions: str,
+) -> int:
+    """
+    One poll cycle: fetch new emails from Rocky's inbox, classify each,
+    invoke Remy for requests. Returns the number of emails processed.
+    """
+    import remy_runner
+
+    since = _load_remy_last_check()
+    poll_time = datetime.now(timezone.utc)
+
+    emails = fetch_folder_emails(token, rocky_email, "Inbox", since)
+    if not emails:
+        _save_remy_last_check(poll_time)
+        return 0
+
+    log.info(f"[remy-monitor] {len(emails)} new email(s) in Rocky's inbox")
+
+    for email in emails:
+        subject = email.get("subject", "(no subject)")
+
+        classification = classify_email(
+            anthropic_client, email, instructions, include_attachments=True,
+        )
+
+        if classification.get("is_remy_request"):
+            log.info(
+                f"[remy-monitor] Remy request detected: {subject[:60]} "
+                f"({classification.get('project_category')})"
+            )
+            remy_result = remy_runner.run(email, classification, config)
+            if remy_result.get("invoked"):
+                log.info(f"[remy-monitor] Remy draft: {remy_result.get('output_path')}")
+            else:
+                log.warning(
+                    f"[remy-monitor] Remy skipped: {remy_result.get('reason') or remy_result.get('error')}"
+                )
+        else:
+            log.info(
+                f"[remy-monitor] Not a Remy request: {subject[:60]} "
+                f"(confidence={classification.get('confidence', 0):.2f})"
+            )
+
+        log_classification(
+            email, classification, mailbox=rocky_email,
+            claude_called=True,
+        )
+
+    _save_remy_last_check(poll_time)
+    return len(emails)
+
+
+def run_monitor_remy_cli() -> None:
+    """Entry point for `python rocky.py --monitor-remy`. Runs forever."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    log.info("=" * 60)
+    log.info("Rocky — Remy inbox monitor (polling rocky@gallagherllp.com)")
+    log.info("=" * 60)
+
+    config = load_config()
+    instructions = load_instructions()
+    anthropic_client = Anthropic(api_key=config["anthropic_api_key"])
+    rocky_email = config.get("rocky_email", "rocky@gallagherllp.com")
+
+    app = get_msal_app(config)
+    token = acquire_token(app)
+    audit_token_scopes(token)
+
+    log.info(f"Monitoring: {rocky_email}")
+    log.info(f"Poll interval: {REMY_POLL_INTERVAL_SECONDS}s")
+
+    while True:
+        try:
+            # Refresh token each cycle in case it expired.
+            token = acquire_token(app)
+            count = remy_poll_cycle(
+                anthropic_client, token, rocky_email, config, instructions,
+            )
+            if count:
+                log.info(f"[remy-monitor] Processed {count} email(s). Sleeping.")
+        except KeyboardInterrupt:
+            log.info("Remy monitor stopped by user.")
+            break
+        except Exception as e:
+            log.exception(f"[remy-monitor] Error in poll cycle: {e}")
+
+        try:
+            time.sleep(REMY_POLL_INTERVAL_SECONDS)
+        except KeyboardInterrupt:
+            log.info("Remy monitor stopped by user.")
+            break
+
+
 def main():
-    if "--daily-cases" in sys.argv:
+    if "--monitor-remy" in sys.argv:
+        run_monitor_remy_cli()
+    elif "--daily-cases" in sys.argv:
         run_daily_cases_cli()
     elif "--daily-run" in sys.argv:
         run_daily_run_cli()
@@ -2057,6 +2191,7 @@ def main():
     else:
         print(__doc__)
         print("Available commands:")
+        print("  --monitor-remy                          Poll Rocky's inbox for Remy requests (24/7)")
         print("  --daily-cases  [RRID-XXXX]              Fetch emails, summarize, save")
         print("  --daily-run    [RRID-XXXX]              Run per-case folder skills")
         print("  --daily-digest [RRID-XXXX] [--hours N]  Generate daily case digest")

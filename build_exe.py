@@ -33,6 +33,7 @@ def main():
         # Bundle the local modules alongside rocky.py.
         "--add-data", f"{ROOT / 'permissions.py'};.",
         "--add-data", f"{ROOT / 'outbound.py'};.",
+        "--add-data", f"{ROOT / 'remy_runner.py'};.",
         # Clean build each time.
         "--clean",
         str(ROOT / "rocky.py"),
