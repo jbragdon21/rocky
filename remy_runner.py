@@ -38,29 +38,48 @@ log = logging.getLogger("rocky.remy_runner")
 # Mapping: classifier output → Remy CLI subcommand
 # =============================================================================
 
+# Maps classifier category → Remy CLI subcommand name.
 CATEGORY_TO_CLI = {
-    "dc_rent_complaint":   "rent-complaint",
-    "dc_breach_complaint": "complaint",
-    "breach_notice":       "warning-letter",
-    "nonrenewal":          "warning-letter",
-    "warning_letter":      "warning-letter",
+    "dc_rent_complaint":    "rent-complaint",
+    "dc_breach_complaint":  "complaint",
+    "breach_notice":        "warning-letter",
+    "nonrenewal":           "warning-letter",
+    "warning_letter":       "warning-letter",
     "settlement_agreement": "settlement",
-    "response_letter":     "response-letter",
+    "response_letter":      "response-letter",
 }
 
-# Required attachments per CLI subcommand. Values are (form-field, fallback-keywords).
-# The form-field is the paralegal's stated filename; fallback-keywords match
-# against attachment filename if the explicit one isn't found.
+# Required attachments per classifier category. Each entry is
+# (form-field-name, fallback-filename-keywords).
 REQUIRED_ATTACHMENTS = {
-    "rent-complaint":  [("ledger", ["ledger"]),
-                        ("notice", ["notice"]),
-                        ("affidavit", ["affidavit", "aff"])],
-    "complaint":       [("lease", ["lease"]),
-                        ("notice", ["notice"]),
-                        ("affidavit", ["affidavit", "aff"])],
-    "warning-letter":  [("lease", ["lease"])],
-    "settlement":      [("lease", ["lease"])],
-    "response-letter": [("incoming", ["incoming", "letter", "ltr"])],
+    "dc_rent_complaint":    [("ledger", ["ledger"]),
+                             ("notice", ["notice"]),
+                             ("affidavit", ["affidavit", "aff"])],
+    "dc_breach_complaint":  [("lease", ["lease"]),
+                             ("notice", ["notice"]),
+                             ("affidavit", ["affidavit", "aff"])],
+    "breach_notice":        [("lease", ["lease"])],
+    "nonrenewal":           [("lease", ["lease"])],
+    "warning_letter":       [("lease", ["lease"])],
+    "settlement_agreement": [("lease", ["lease"])],
+    "response_letter":      [("incoming", ["incoming", "letter", "ltr"])],
+}
+
+# Default form-type string per (category, jurisdiction). Used when the
+# paralegal form doesn't include an explicit "Form type:" field.
+_DEFAULT_FORM_TYPE = {
+    ("nonrenewal", "VA"):     "VA Nonrenewal",
+    ("nonrenewal", "MD"):     "MD Nonrenewal",
+    ("breach_notice", "VA"):  "VA 21/30 (Breach)",
+    ("breach_notice", "DC"):  "DC Rent (Breach)",
+    ("breach_notice", "MD"):  "MD 14-Day (Breach)",
+    ("warning_letter", None): "Warning Letter",
+}
+
+_JURIS_NORMALIZE = {
+    "va": "Virginia", "virginia": "Virginia",
+    "dc": "DC",
+    "md": "Maryland", "maryland": "Maryland",
 }
 
 
@@ -146,7 +165,7 @@ def _stage_attachment(att: dict, tmpdir: Path) -> Path | None:
 def _resolve_attachments(
     attachments: list[dict],
     fields: dict[str, str],
-    cli_subcommand: str,
+    category: str,
     tmpdir: Path,
 ) -> tuple[dict[str, Path], list[str]]:
     """
@@ -160,7 +179,7 @@ def _resolve_attachments(
             staged.append((att, p))
 
     resolved: dict[str, Path] = {}
-    required = REQUIRED_ATTACHMENTS.get(cli_subcommand, [])
+    required = REQUIRED_ATTACHMENTS.get(category, [])
     for role, fallback_keywords in required:
         # 1. Paralegal explicitly named a file in the form.
         hint = fields.get(role, "").strip().lower()
@@ -212,10 +231,75 @@ def _build_output_filename(fields: dict, project_type: str) -> str:
 
 
 # =============================================================================
-# CLI argument builders, one per subcommand
+# CLI argument builders — one per classifier category
 # =============================================================================
+# Each builder receives (fields, atts, output_dir, email_body, classification)
+# and returns a list of CLI args for the appropriate remy_cli.py subcommand.
 
-def _args_rent_complaint(fields, atts, output_dir):
+
+def _resolve_form_type_and_jurisdiction(
+    fields: dict[str, str],
+    classification: dict,
+) -> tuple[str, str]:
+    """Derive --form-type and --jurisdiction for the warning-letter subcommand.
+    Prefers explicit paralegal form fields; falls back to classifier output."""
+    form_type = fields.get("form type", "").strip()
+    jurisdiction = fields.get("jurisdiction", "").strip()
+
+    cat = classification.get("project_category")
+    juris_code = classification.get("jurisdiction")
+
+    if not form_type:
+        form_type = _DEFAULT_FORM_TYPE.get((cat, juris_code), "")
+    if not jurisdiction and juris_code:
+        jurisdiction = _JURIS_NORMALIZE.get(juris_code.lower(), juris_code)
+    elif jurisdiction:
+        jurisdiction = _JURIS_NORMALIZE.get(jurisdiction.lower(), jurisdiction)
+
+    if not form_type or not jurisdiction:
+        raise ValueError(
+            f"Could not determine form_type/jurisdiction for {cat}/{juris_code}. "
+            f"Resolved: form_type={form_type!r}, jurisdiction={jurisdiction!r}."
+        )
+
+    log.info(f"Resolved form_type={form_type!r}, jurisdiction={jurisdiction!r}")
+    return form_type, jurisdiction
+
+
+def _common_notice_args(fields, atts, output_dir, email_body, form_type, jurisdiction):
+    """Shared arg construction for all notice types that use warning-letter."""
+    args = [
+        "--lease",        str(atts["lease"]),
+        "--violation",    email_body[:4000],
+        "--form-type",    form_type,
+        "--jurisdiction", jurisdiction,
+        "--output",       str(output_dir),
+    ]
+    if "ledger" in atts:
+        args += ["--ledger", str(atts["ledger"])]
+    if fields.get("attorney"):
+        args += ["--attorney", fields["attorney"].strip().lower()]
+    if _yesno(fields.get("subsidized")):
+        args.append("--subsidy")
+    return args
+
+
+def _args_nonrenewal(fields, atts, output_dir, email_body, classification):
+    form_type, jurisdiction = _resolve_form_type_and_jurisdiction(fields, classification)
+    return _common_notice_args(fields, atts, output_dir, email_body, form_type, jurisdiction)
+
+
+def _args_breach_notice(fields, atts, output_dir, email_body, classification):
+    form_type, jurisdiction = _resolve_form_type_and_jurisdiction(fields, classification)
+    return _common_notice_args(fields, atts, output_dir, email_body, form_type, jurisdiction)
+
+
+def _args_warning_letter(fields, atts, output_dir, email_body, classification):
+    form_type, jurisdiction = _resolve_form_type_and_jurisdiction(fields, classification)
+    return _common_notice_args(fields, atts, output_dir, email_body, form_type, jurisdiction)
+
+
+def _args_rent_complaint(fields, atts, output_dir, email_body, classification):
     args = [
         "--ledger",     str(atts["ledger"]),
         "--notice",     str(atts["notice"]),
@@ -245,7 +329,7 @@ def _args_rent_complaint(fields, atts, output_dir):
     return args
 
 
-def _args_complaint(fields, atts, output_dir):
+def _args_complaint(fields, atts, output_dir, email_body, classification):
     args = [
         "--lease",      str(atts["lease"]),
         "--notice",     str(atts["notice"]),
@@ -269,38 +353,7 @@ def _args_complaint(fields, atts, output_dir):
     return args
 
 
-def _args_warning_letter(fields, atts, output_dir, email_body):
-    """Form-type and jurisdiction are REQUIRED by Remy's CLI."""
-    form_type = fields.get("form type", "").strip()
-    jurisdiction = fields.get("jurisdiction", "").strip()
-    if not form_type or not jurisdiction:
-        raise ValueError(
-            "warning-letter requires both 'Form type' and 'Jurisdiction' "
-            "fields in the paralegal form email."
-        )
-    # Normalize jurisdiction to Remy's expected casing.
-    juris_map = {"va": "Virginia", "virginia": "Virginia",
-                 "dc": "DC",
-                 "md": "Maryland", "maryland": "Maryland"}
-    jurisdiction = juris_map.get(jurisdiction.lower(), jurisdiction)
-
-    args = [
-        "--lease",        str(atts["lease"]),
-        "--violation",    email_body[:4000],  # cap to keep CLI manageable
-        "--form-type",    form_type,
-        "--jurisdiction", jurisdiction,
-        "--output",       str(output_dir),
-    ]
-    if "ledger" in atts:
-        args += ["--ledger", str(atts["ledger"])]
-    if fields.get("attorney"):
-        args += ["--attorney", fields["attorney"].strip().lower()]
-    if _yesno(fields.get("subsidized")):
-        args.append("--subsidy")
-    return args
-
-
-def _args_settlement(fields, atts, output_dir, email_body):
+def _args_settlement(fields, atts, output_dir, email_body, classification):
     agreement_type = fields.get("agreement type", "general").strip().lower()
     args = [
         "--lease",          str(atts["lease"]),
@@ -313,7 +366,7 @@ def _args_settlement(fields, atts, output_dir, email_body):
     return args
 
 
-def _args_response_letter(fields, atts, output_dir):
+def _args_response_letter(fields, atts, output_dir, email_body, classification):
     args = [
         "--incoming", str(atts["incoming"]),
         "--output",   str(output_dir),
@@ -323,12 +376,15 @@ def _args_response_letter(fields, atts, output_dir):
     return args
 
 
-SUBCOMMAND_BUILDERS = {
-    "rent-complaint":  _args_rent_complaint,
-    "complaint":       _args_complaint,
-    "warning-letter":  _args_warning_letter,
-    "settlement":      _args_settlement,
-    "response-letter": _args_response_letter,
+# Keyed by classifier category (not CLI subcommand).
+CATEGORY_BUILDERS = {
+    "dc_rent_complaint":    _args_rent_complaint,
+    "dc_breach_complaint":  _args_complaint,
+    "breach_notice":        _args_breach_notice,
+    "nonrenewal":           _args_nonrenewal,
+    "warning_letter":       _args_warning_letter,
+    "settlement_agreement": _args_settlement,
+    "response_letter":      _args_response_letter,
 }
 
 
@@ -359,9 +415,9 @@ def run(email: dict, classification: dict, config: dict) -> dict:
         result["reason"] = f"no_cli_mapping_for_{category}"
         return result
 
-    builder = SUBCOMMAND_BUILDERS.get(cli_sub)
+    builder = CATEGORY_BUILDERS.get(category)
     if not builder:
-        result["reason"] = f"no_builder_for_{cli_sub}"
+        result["reason"] = f"no_builder_for_{category}"
         return result
 
     cli_path = config.get("remy_cli_path")
@@ -387,7 +443,7 @@ def run(email: dict, classification: dict, config: dict) -> dict:
         atts, missing = _resolve_attachments(
             email.get("attachments", []) or [],
             fields,
-            cli_sub,
+            category,
             tmpdir,
         )
         if missing:
@@ -395,12 +451,9 @@ def run(email: dict, classification: dict, config: dict) -> dict:
             log.warning(f"Skipping Remy: {result['reason']}")
             return result
 
-        # Build CLI args. Some builders need email body as free-text input.
+        # All builders share the same signature now.
         try:
-            if cli_sub in ("warning-letter", "settlement"):
-                args = builder(fields, atts, tmpdir, body_text)
-            else:
-                args = builder(fields, atts, tmpdir)
+            args = builder(fields, atts, tmpdir, body_text, classification)
         except ValueError as e:
             result["reason"] = f"args_build_error: {e}"
             log.warning(f"Skipping Remy: {result['reason']}")
