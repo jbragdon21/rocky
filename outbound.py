@@ -51,10 +51,14 @@ def send_mail_guarded(
     body: str,
     cc: list[str] | None = None,
     body_type: str = "Text",
+    attachments: list[dict] | None = None,
 ) -> dict:
     """
     Send mail FROM sender_mailbox TO `to` (cc optional). Refuses if any
     recipient or the sender is outside the firm domain.
+
+    attachments: list of {"name": str, "path": str} dicts. Each file is
+    base64-encoded and sent as a Graph API file attachment.
 
     Returns:
         {sent: True, "message_id": ...} on success
@@ -92,6 +96,24 @@ def send_mail_guarded(
     }
     if cc:
         payload["message"]["ccRecipients"] = [{"emailAddress": {"address": r}} for r in cc]
+
+    if attachments:
+        import base64
+        from pathlib import Path
+        graph_atts = []
+        for att in attachments:
+            file_path = Path(att["path"])
+            if not file_path.exists():
+                log.warning(f"Attachment not found, skipping: {file_path}")
+                continue
+            content_bytes = base64.b64encode(file_path.read_bytes()).decode("ascii")
+            graph_atts.append({
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "name": att.get("name") or file_path.name,
+                "contentBytes": content_bytes,
+            })
+        if graph_atts:
+            payload["message"]["attachments"] = graph_atts
 
     url = f"{GRAPH_API_BASE}/users/{sender_mailbox}/sendMail"
     headers = {

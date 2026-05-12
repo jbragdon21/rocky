@@ -78,11 +78,12 @@ RRID_PATTERN = re.compile(r"\bRRID-\d{4}\b", re.IGNORECASE)
 
 
 def _init_cases_paths(config: dict) -> None:
-    """Set CASE_INDEX_PATH and ROCKY_CASES_ROOT from config, if provided."""
-    global CASE_INDEX_PATH, ROCKY_CASES_ROOT
+    """Set CASE_INDEX_PATH, ROCKY_CASES_ROOT, and DAILY_DIGESTS_DIR from config."""
+    global CASE_INDEX_PATH, ROCKY_CASES_ROOT, DAILY_DIGESTS_DIR
     root = config.get("cases_root", _DEFAULT_CASES_ROOT)
     ROCKY_CASES_ROOT = Path(root)
     CASE_INDEX_PATH = ROCKY_CASES_ROOT / "Rocky Case Index.xlsx"
+    DAILY_DIGESTS_DIR = ROCKY_CASES_ROOT / "Daily Digests"
 
 # Attachment handling caps.
 # Skip downloading attachments larger than this (16 MB). Most leases/ledgers are <2 MB.
@@ -2155,6 +2156,55 @@ def _save_remy_last_check(dt: datetime) -> None:
     )
 
 
+def _deliver_remy_draft(
+    token: str,
+    rocky_email: str,
+    config: dict,
+    original_email: dict,
+    remy_result: dict,
+) -> dict | None:
+    """Email the Remy draft to the configured delivery recipients."""
+    import outbound
+
+    recipients = config.get("remy_delivery_recipients", [])
+    if not recipients:
+        log.info("[remy-monitor] No remy_delivery_recipients configured; skipping email delivery.")
+        return None
+
+    output_path = remy_result.get("output_path")
+    if not output_path:
+        return None
+
+    original_subject = original_email.get("subject", "(no subject)")
+    sender = (original_email.get("from") or {}).get("emailAddress", {})
+    sender_name = sender.get("name") or sender.get("address") or "unknown"
+    project_type = remy_result.get("project_type", "document")
+
+    subject = f"Rocky — Remy draft ready: {project_type} ({original_subject[:60]})"
+    body = (
+        f"Rocky processed a Remy request and generated a draft.\n\n"
+        f"Project type: {project_type}\n"
+        f"Original request from: {sender_name}\n"
+        f"Original subject: {original_subject}\n"
+        f"Draft saved to: {output_path}\n\n"
+        f"The draft is attached to this email."
+    )
+
+    result = outbound.send_mail_guarded(
+        token=token,
+        sender_mailbox=rocky_email,
+        to=recipients,
+        subject=subject,
+        body=body,
+        attachments=[{"name": Path(output_path).name, "path": output_path}],
+    )
+    if result.get("sent"):
+        log.info(f"[remy-monitor] Draft emailed to {recipients}")
+    else:
+        log.warning(f"[remy-monitor] Draft email failed: {result.get('reason')}")
+    return result
+
+
 def remy_poll_cycle(
     anthropic_client: Anthropic,
     token: str,
@@ -2193,6 +2243,7 @@ def remy_poll_cycle(
             remy_result = remy_runner.run(email, classification, config)
             if remy_result.get("invoked"):
                 log.info(f"[remy-monitor] Remy draft: {remy_result.get('output_path')}")
+                _deliver_remy_draft(token, rocky_email, config, email, remy_result)
             else:
                 log.warning(
                     f"[remy-monitor] Remy skipped: {remy_result.get('reason') or remy_result.get('error')}"
