@@ -218,8 +218,11 @@ def resolve_folder_path(token: str, user_email: str, folder_path: str) -> str | 
     """
     from urllib.parse import unquote
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-    normalized = unquote(folder_path).replace("\\", "/")
-    segments = [s.strip() for s in normalized.strip("/").split("/") if s.strip()]
+    # Split on backslash (the path separator in the spreadsheet) BEFORE
+    # unquoting, so %2F inside a segment becomes a literal '/' in the
+    # folder display name rather than a path separator.
+    raw_segments = [s.strip() for s in folder_path.strip("\\/").split("\\") if s.strip()]
+    segments = [unquote(s) for s in raw_segments]
     if not segments:
         return None
 
