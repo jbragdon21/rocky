@@ -1372,7 +1372,8 @@ def _build_digest_text(sections: list[tuple[str, str]], hours_back: int) -> str:
     return "\n".join(parts)
 
 
-ROCKY_ICON_PATH = Path(__file__).resolve().parent / "Icon" / "rocky_no_shadow_256.png"
+_BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+ROCKY_ICON_PATH = _BUNDLE_DIR / "Icon" / "rocky_no_shadow_256.png"
 
 
 def _md_section_to_html(md: str) -> str:
