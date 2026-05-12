@@ -107,11 +107,15 @@ def send_mail_guarded(
                 log.warning(f"Attachment not found, skipping: {file_path}")
                 continue
             content_bytes = base64.b64encode(file_path.read_bytes()).decode("ascii")
-            graph_atts.append({
+            att_obj: dict = {
                 "@odata.type": "#microsoft.graph.fileAttachment",
                 "name": att.get("name") or file_path.name,
                 "contentBytes": content_bytes,
-            })
+            }
+            if att.get("contentId"):
+                att_obj["contentId"] = att["contentId"]
+                att_obj["isInline"] = True
+            graph_atts.append(att_obj)
         if graph_atts:
             payload["message"]["attachments"] = graph_atts
 

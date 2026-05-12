@@ -1372,6 +1372,176 @@ def _build_digest_text(sections: list[tuple[str, str]], hours_back: int) -> str:
     return "\n".join(parts)
 
 
+ROCKY_ICON_PATH = Path(__file__).resolve().parent / "Icon" / "rocky_no_shadow_256.png"
+
+
+def _md_section_to_html(md: str) -> str:
+    """Convert the limited markdown subset from digest sections to HTML."""
+    lines = md.split("\n")
+    html_parts: list[str] = []
+    in_list = False
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            if in_list:
+                html_parts.append("</ul>")
+                in_list = False
+            continue
+
+        if stripped.startswith("- "):
+            if not in_list:
+                html_parts.append('<ul style="margin:0 0 8px 0;padding-left:20px;">')
+                in_list = True
+            item = stripped[2:]
+            item = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", item)
+            html_parts.append(
+                f'<li style="margin-bottom:4px;color:#333333;font-size:14px;'
+                f'line-height:1.5;">{item}</li>'
+            )
+        elif stripped.startswith("**") and stripped.endswith("**"):
+            if in_list:
+                html_parts.append("</ul>")
+                in_list = False
+            label = stripped.strip("*")
+            html_parts.append(
+                f'<h4 style="margin:12px 0 4px 0;font-size:14px;font-weight:600;'
+                f'color:#1a1a1a;text-transform:uppercase;letter-spacing:0.3px;">'
+                f'{label}</h4>'
+            )
+        else:
+            if in_list:
+                html_parts.append("</ul>")
+                in_list = False
+            text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", stripped)
+            html_parts.append(
+                f'<p style="margin:4px 0;color:#333333;font-size:14px;'
+                f'line-height:1.5;">{text}</p>'
+            )
+
+    if in_list:
+        html_parts.append("</ul>")
+    return "\n".join(html_parts)
+
+
+def _build_digest_html(sections: list[tuple[str, str]], hours_back: int) -> str:
+    today = datetime.now(timezone.utc).strftime("%B %d, %Y")
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    case_blocks = []
+    for i, (heading, body) in enumerate(sections):
+        heading_clean = re.sub(r"^#+\s*", "", heading)
+        parts = heading_clean.split(" — ", 1)
+        rrid = parts[0].strip()
+        case_name = parts[1].strip() if len(parts) > 1 else ""
+
+        body_html = _md_section_to_html(body)
+        border_top = (
+            'style="border-top:1px solid #e0e0e0;padding-top:20px;"' if i > 0 else ""
+        )
+
+        case_blocks.append(f"""
+            <tr><td {border_top} style="padding:20px 0 10px 0;">
+                <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                    <tr>
+                        <td style="background-color:#f0f4f8;border-left:4px solid #2c5282;
+                                   padding:12px 16px;border-radius:0 4px 4px 0;">
+                            <span style="font-size:13px;font-weight:700;color:#2c5282;
+                                         letter-spacing:0.5px;">{rrid}</span>
+                            <br/>
+                            <span style="font-size:15px;font-weight:600;color:#1a202c;">
+                                {case_name}</span>
+                        </td>
+                    </tr>
+                </table>
+            </td></tr>
+            <tr><td style="padding:8px 0 20px 8px;">
+                {body_html}
+            </td></tr>""")
+
+    cases_html = "\n".join(case_blocks)
+
+    return f"""<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Rocky Daily Digest — {today}</title>
+    <!--[if mso]>
+    <style type="text/css">
+        table {{border-collapse:collapse;}}
+        td {{font-family:Segoe UI,Arial,sans-serif;}}
+    </style>
+    <![endif]-->
+</head>
+<body style="margin:0;padding:0;background-color:#f7f8fa;font-family:Segoe UI,Calibri,Arial,sans-serif;">
+    <!-- Outer wrapper -->
+    <table width="100%" cellpadding="0" cellspacing="0" border="0"
+           style="background-color:#f7f8fa;">
+        <tr><td align="center" style="padding:24px 16px;">
+
+            <!-- Main card -->
+            <table width="640" cellpadding="0" cellspacing="0" border="0"
+                   style="background-color:#ffffff;border-radius:8px;
+                          box-shadow:0 1px 3px rgba(0,0,0,0.08);max-width:640px;">
+
+                <!-- Header -->
+                <tr><td style="background-color:#1a202c;padding:28px 32px;
+                               border-radius:8px 8px 0 0;">
+                    <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                        <tr>
+                            <td width="64" valign="top" style="padding-right:16px;">
+                                <img src="cid:rocky_icon" width="56" height="56"
+                                     alt="Rocky"
+                                     style="display:block;border-radius:8px;"/>
+                            </td>
+                            <td valign="middle">
+                                <h1 style="margin:0;font-size:22px;font-weight:700;
+                                           color:#ffffff;line-height:1.2;">
+                                    Rocky's Daily Case Digest</h1>
+                                <p style="margin:4px 0 0 0;font-size:15px;
+                                          color:#a0aec0;font-weight:500;">
+                                    {today}</p>
+                                <p style="margin:4px 0 0 0;font-size:12px;
+                                          color:#718096;font-style:italic;">
+                                    A little litigation support from your 24/7 alien helper.</p>
+                            </td>
+                        </tr>
+                    </table>
+                </td></tr>
+
+                <!-- Summary bar -->
+                <tr><td style="background-color:#edf2f7;padding:12px 32px;
+                               border-bottom:1px solid #e2e8f0;">
+                    <p style="margin:0;font-size:13px;color:#4a5568;">
+                        Generated {now_str} &middot; Window: last {hours_back} hours
+                        &middot; <strong>{len(sections)}</strong> case(s) with activity</p>
+                </td></tr>
+
+                <!-- Case sections -->
+                <tr><td style="padding:8px 32px 16px 32px;">
+                    <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                        {cases_html}
+                    </table>
+                </td></tr>
+
+                <!-- Footer -->
+                <tr><td style="background-color:#f7f8fa;padding:16px 32px;
+                               border-top:1px solid #e2e8f0;
+                               border-radius:0 0 8px 8px;">
+                    <p style="margin:0;font-size:11px;color:#a0aec0;text-align:center;">
+                        This digest was generated automatically by Rocky.
+                        Content is based on case folder activity and may not reflect
+                        all developments. Always verify critical deadlines independently.</p>
+                </td></tr>
+
+            </table>
+        </td></tr>
+    </table>
+</body>
+</html>"""
+
+
 def daily_digest(
     client: Anthropic,
     instructions: str,
@@ -1448,6 +1618,7 @@ def daily_digest(
 
     all_sections_for_text = [(h, b) for h, b, _ in sections]
     digest_text = _build_digest_text(all_sections_for_text, hours_back)
+    digest_html = _build_digest_html(all_sections_for_text, hours_back)
 
     try:
         digest_path.write_text(digest_text, encoding="utf-8")
@@ -1455,7 +1626,18 @@ def daily_digest(
         log.error(f"Could not write {digest_path}: {e}")
         return {"written": False, "reason": f"write_failed: {e}"}
 
-    log.info(f"Wrote digest: {digest_path}")
+    html_path = DAILY_DIGESTS_DIR / f"{today}.html"
+    try:
+        html_path.write_text(digest_html, encoding="utf-8")
+    except OSError as e:
+        log.warning(f"Could not write HTML digest {html_path}: {e}")
+
+    log.info(f"Wrote digest: {digest_path} + {html_path}")
+
+    icon_attachment = []
+    if ROCKY_ICON_PATH.exists():
+        icon_attachment = [{"path": str(ROCKY_ICON_PATH), "name": "rocky_icon.png",
+                            "contentId": "rocky_icon"}]
 
     # Email the digest if we have credentials.
     emails_sent: list[dict] = []
@@ -1466,7 +1648,9 @@ def daily_digest(
             sender_mailbox=rocky_email,
             to=[james_email],
             subject=f"Rocky Daily Digest — {today}",
-            body=digest_text,
+            body=digest_html,
+            body_type="HTML",
+            attachments=icon_attachment,
         )
         emails_sent.append({"to": james_email, **result})
         if result.get("sent"):
@@ -1482,13 +1666,15 @@ def daily_digest(
                 lawyer_cases.setdefault(lawyer, []).append((heading, body))
 
         for lawyer_email, their_sections in lawyer_cases.items():
-            filtered_text = _build_digest_text(their_sections, hours_back)
+            filtered_html = _build_digest_html(their_sections, hours_back)
             result = send_mail_guarded(
                 token=token,
                 sender_mailbox=rocky_email,
                 to=[lawyer_email],
                 subject=f"Rocky Case Digest — {today} ({len(their_sections)} case(s))",
-                body=filtered_text,
+                body=filtered_html,
+                body_type="HTML",
+                attachments=icon_attachment,
             )
             emails_sent.append({"to": lawyer_email, **result})
             if result.get("sent"):
