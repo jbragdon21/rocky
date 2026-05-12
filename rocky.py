@@ -599,6 +599,42 @@ def _sanitize_filename(name: str) -> str:
     return cleaned.strip(" .") or "unnamed"
 
 
+def _strip_external_tag(subject: str) -> str:
+    """Remove [EXTERNAL] prefix and clean up subject lines for filenames."""
+    cleaned = re.sub(r"^\s*\[EXTERNAL\]\s*", "", subject, flags=re.IGNORECASE).strip()
+    cleaned = cleaned.replace(";", " -")
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _email_corr_filename(email: dict) -> str:
+    """Build a date-prefixed text filename for an email: YYYY-MM-DD_{subject}.txt"""
+    received = email.get("receivedDateTime", "")
+    try:
+        dt = datetime.fromisoformat(received.replace("Z", "+00:00"))
+        date_str = dt.strftime("%Y-%m-%d")
+    except (ValueError, AttributeError):
+        date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    subject = _strip_external_tag(email.get("subject", "email"))
+    safe_subject = _sanitize_filename(subject)[:80]
+    return f"{date_str}_{safe_subject}.txt"
+
+
+def _dedup_path(path: Path) -> Path:
+    """If path exists, append (2), (3), etc. before the extension."""
+    if not path.exists():
+        return path
+    stem = path.stem
+    suffix = path.suffix
+    parent = path.parent
+    n = 2
+    while True:
+        candidate = parent / f"{stem}_({n}){suffix}"
+        if not candidate.exists():
+            return candidate
+        n += 1
+
+
 def _filename_prefix(email: dict) -> str:
     """Build the {YYYYMMDDTHHMM}_{hash8} prefix for saved files."""
     received = email.get("receivedDateTime") or ""
@@ -649,8 +685,9 @@ def save_email_to_case(
 
     saved: list[str] = []
     skipped: list[str] = []
+    email_corr_path: str | None = None
 
-    # Save email body as a .txt with a small header.
+    # Save email body as a .txt with a small header (immutable record in Raw Documents).
     body_path = raw_dir / f"{prefix}_email.txt"
     if body_path.exists():
         skipped.append(body_path.name)
@@ -670,6 +707,33 @@ def save_email_to_case(
             saved.append(body_path.name)
         except OSError as e:
             log.warning(f"Could not write {body_path}: {e}")
+
+    # Save email body as a text file in Email Correspondence/ (only if the
+    # folder exists — James creates it during case setup).
+    corr_dir = case_folder / "Email Correspondence"
+    if corr_dir.is_dir():
+        corr_filename = _email_corr_filename(email)
+        corr_candidate = corr_dir / corr_filename
+        if corr_candidate.exists():
+            skipped.append(f"Email Correspondence/{corr_filename}")
+        else:
+            try:
+                corr_path = _dedup_path(corr_candidate)
+                att_names = [a.get("name", "?") for a in email.get("attachments", []) if a.get("name")]
+                corr_path.write_text(
+                    f"Subject:     {email.get('subject', '')}\n"
+                    f"From:        {sender.get('name', '')} <{sender.get('address', '')}>\n"
+                    f"Received:    {email.get('receivedDateTime', '')}\n"
+                    f"Case:        {rrid}\n"
+                    + (f"Attachments: {', '.join(att_names)}\n" if att_names else "")
+                    + f"\n{'=' * 72}\n\n"
+                    + body,
+                    encoding="utf-8",
+                )
+                email_corr_path = f"Email Correspondence/{corr_path.name}"
+                saved.append(email_corr_path)
+            except OSError as e:
+                log.warning(f"Could not write email to Email Correspondence/: {e}")
 
     # Save each attachment that has bytes.
     for att in email.get("attachments", []):
@@ -700,6 +764,7 @@ def save_email_to_case(
             "from_address": sender.get("address"),
             "match_method": case_match.get("_match_method"),
             "match_value": case_match.get("_match_value"),
+            "email_corr_path": email_corr_path,
             "files_saved": saved,
             "files_skipped_existing": skipped,
         },
@@ -844,10 +909,11 @@ def process_case_folder(
         return {"rrid": rrid, "processed": 0, "skipped": 0, "errors": 0,
                 "reason": "instructions_empty"}
 
-    # Discover available subfolders (everything except Raw Documents and dotfiles).
+    # Discover available subfolders (exclude system/auto-managed folders).
     available_folders = sorted(
         d.name for d in case_folder.iterdir()
-        if d.is_dir() and d.name not in ("Raw Documents", "_project", "_archived")
+        if d.is_dir()
+        and d.name not in ("Raw Documents", "_project", "_archived", "Email Correspondence")
         and not d.name.startswith(".")
     )
 
