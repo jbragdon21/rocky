@@ -11,7 +11,7 @@ Rocky — Virtual Paralegal
       Claude, save documents to the case folder.
 
   python rocky.py --daily-run [RRID-XXXX]          (4:30 PM)
-      Run per-case _project/instructions.md skills (Phase D Stage 2).
+      Run per-case _project/claude.md skills (Phase D Stage 2).
 
   python rocky.py --daily-digest [RRID-XXXX] [--hours N]  (5:00 PM)
       Generate a consolidated daily case digest (Phase D Stage 3).
@@ -787,12 +787,12 @@ def save_email_to_case(
 # Phase D Stage 2 — daily run (instruction-driven)
 # =============================================================================
 # Triggered with `python rocky.py --daily-run` (scheduled by Task Scheduler
-# at 4:30pm). For each case folder that has _project/instructions.md, Rocky
+# at 4:30pm). For each case folder that has _project/claude.md, Rocky
 # reads those instructions, gathers context (new raw files, subfolders,
 # recent activity), makes one Claude call, and executes any file_actions
 # from the response. All results logged to activity.jsonl.
 #
-# The intelligence lives in each case's instructions.md, not in Rocky's code.
+# The intelligence lives in each case's claude.md, not in Rocky's code.
 # Adding new behaviors = editing instructions, not modifying rocky.py.
 #
 # File actions are idempotent: if a raw file's name already appears in
@@ -895,9 +895,9 @@ def process_case_folder(
     """
     # Read case-specific instructions. Skip folder entirely if missing.
     project_dir = case_folder / "_project"
-    instructions_path = project_dir / "instructions.md"
+    instructions_path = project_dir / "claude.md"
     if not instructions_path.exists():
-        log.info(f"[{rrid}] No _project/instructions.md — skipping daily run.")
+        log.info(f"[{rrid}] No _project/claude.md — skipping daily run.")
         return {"rrid": rrid, "processed": 0, "skipped": 0, "errors": 0,
                 "reason": "no_instructions"}
 
@@ -909,7 +909,7 @@ def process_case_folder(
                 "reason": f"instructions_unreadable: {e}"}
 
     if not case_instructions:
-        log.info(f"[{rrid}] _project/instructions.md is empty — skipping.")
+        log.info(f"[{rrid}] _project/claude.md is empty — skipping.")
         return {"rrid": rrid, "processed": 0, "skipped": 0, "errors": 0,
                 "reason": "instructions_empty"}
 
@@ -964,7 +964,7 @@ def process_case_folder(
             lines.append(f"- [{ev.get('timestamp', '?')}] {ev.get('event')}: {ev.get('summary') or ev.get('subject') or ''}")
         activity_summary = "\n".join(lines)
 
-    user_prompt = f"""CASE-SPECIFIC INSTRUCTIONS (from _project/instructions.md):
+    user_prompt = f"""CASE-SPECIFIC INSTRUCTIONS (from _project/claude.md):
 {case_instructions}
 
 ---
@@ -1130,7 +1130,7 @@ def daily_run(
 ) -> list[dict]:
     """
     Run per-case instructions across all case folders (or just one).
-    Each case's _project/instructions.md tells Claude what to do.
+    Each case's _project/claude.md tells Claude what to do.
 
     Returns a list of per-case result summaries.
     """
@@ -2245,7 +2245,7 @@ def run_daily_run_cli() -> None:
     if target_rrid:
         log.info(f"Target: {target_rrid} only")
     else:
-        log.info("Target: all case folders with _project/instructions.md")
+        log.info("Target: all case folders with _project/claude.md")
 
     results = daily_run(anthropic_client, instructions, target_rrid=target_rrid)
 

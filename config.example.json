@@ -13,7 +13,7 @@
 
   "_remy_comment": "Remy invocation paths. remy_cli_path is where remy_cli.py lives on disk. remy_outputs_path is where generated drafts get written.",
   "enable_remy_invocation": false,
-  "remy_cli_path": "C:\\Remy\\remy_cli.py",
+  "remy_cli_path": "C:\\Users\\jbragdon\\Desktop\\REMY\\remy_cli.py",
   "remy_outputs_path": "C:\\Users\\jbragdon\\OneDrive\\OneDrive - gejlaw.com\\Remy Outputs",
 
   "_remy_delivery_comment": "Email addresses that receive Remy draft delivery after generation.",
