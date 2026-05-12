@@ -164,27 +164,31 @@ IT setup required:
 - Saving classified documents and drafts into per-case folders
 - Reading case folder contents for daily runs
 
-**Code updates flow via git push**, not OneDrive sync. James edits source on his primary laptop, pushes to GitHub, and pulls on the Rocky laptop (or uses a build script to produce an .exe that is copied over manually/via Tailscale).
+**Code updates flow via .exe rebuild.** James edits source on his primary laptop, runs `python build_exe.py` to produce a single-file `rocky.exe` via PyInstaller, which is automatically copied to `OneDrive - gejlaw.com\Program Files\rocky.exe`. The Rocky laptop picks it up via OneDrive sync — no git pull or manual file copy required.
+
+**Build and deploy workflow:**
+1. Edit source code on dev laptop (this repo)
+2. Run `python build_exe.py` — builds `dist/rocky.exe` and copies to OneDrive `Program Files\`
+3. OneDrive syncs the .exe to the Rocky laptop automatically
+4. Rocky laptop runs the new .exe on next scheduled invocation (or restart)
 
 ```
-Rocky laptop (C:\Rocky\, local — the app):
-  C:\Rocky\rocky.py              ← main program (or rocky.exe)
+Rocky laptop (C:\Rocky\, local — runtime data only):
   C:\Rocky\config.json           ← API keys, tenant/client IDs, mailbox list
   C:\Rocky\state\                ← MSAL token cache, last_check, conversation cache, dormant flag
   C:\Rocky\rocky.log             ← operational log
   C:\Rocky\classifications.jsonl ← email classification audit trail
-  C:\Rocky\requirements.txt
 
-OneDrive (synced — shared case data):
-  OneDrive - gejlaw.com\Rocky Cases\   ← per-case folders, case index, instructions
+OneDrive (synced — program + shared case data):
+  OneDrive - gejlaw.com\Program Files\rocky.exe  ← the deployed executable
+  OneDrive - gejlaw.com\Rocky Cases\             ← per-case folders, case index, instructions
 ```
 
 **First-time setup on the Rocky laptop:**
-1. Clone the Rocky repo to `C:\Rocky\` (or copy the built .exe)
+1. Ensure OneDrive syncs `Program Files\` and `Rocky Cases\` locally ("Always keep on this device")
 2. Create `C:\Rocky\config.json` (copy from `config.example.json`, fill in real values)
-3. Ensure OneDrive syncs `Rocky Cases\` locally ("Always keep on this device")
-4. Create a Task Scheduler entry that runs Rocky at boot / on schedule
-5. First run will prompt for device-code auth (one time)
+3. Create a Task Scheduler entry that runs the OneDrive `.exe` at boot / on schedule
+4. First run will prompt for device-code auth (one time)
 
 **Wrapper script (`run_rocky.py`):** Optional crash-recovery wrapper. If used, it launches `rocky.exe` and restarts it after any crash with a 30-second delay. Can also be built as an .exe. Task Scheduler's built-in restart-on-failure works as a simpler alternative.
 

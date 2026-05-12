@@ -15,7 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).parent
 DIST_DIR = ROOT / "dist"
 TARGET = Path(
-    r"C:\Users\jbragdon\OneDrive\OneDrive - gejlaw.com\Program Files"
+    r"C:\Users\jbragdon\OneDrive - gejlaw.com\Program Files"
 )
 
 def main():
@@ -34,6 +34,8 @@ def main():
         "--add-data", f"{ROOT / 'permissions.py'};.",
         "--add-data", f"{ROOT / 'outbound.py'};.",
         "--add-data", f"{ROOT / 'remy_runner.py'};.",
+        "--add-data", f"{ROOT / 'kill_switch.py'};.",
+        "--add-data", f"{ROOT / 'Icon'};Icon",
         # Clean build each time.
         "--clean",
         str(ROOT / "rocky.py"),
