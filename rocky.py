@@ -2653,7 +2653,7 @@ def steve_daily_todo(
 
         received = msg.get("receivedDateTime", "")
         subject = msg.get("subject", "(no subject)")
-        body = (msg.get("body", {}).get("content") or "")[:3000]
+        body = (msg.get("body", {}).get("content") or "")[:1000]
 
         parts = [
             f"--- Email {i} ---",
@@ -2670,6 +2670,15 @@ def steve_daily_todo(
         email_summaries.append("\n".join(parts))
 
     all_emails_text = "\n\n".join(email_summaries)
+
+    # Hard cap to stay under Claude's 200k token limit (~4 chars/token).
+    max_chars = 600_000
+    if len(all_emails_text) > max_chars:
+        all_emails_text = all_emails_text[:max_chars]
+        log.warning(
+            f"Truncated email text from {len(all_emails_text)} to {max_chars} chars "
+            f"to stay within token limit."
+        )
 
     log.info(f"Sending {len(emails)} emails to Claude for to-do extraction...")
     response = client.messages.create(
