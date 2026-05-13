@@ -120,8 +120,15 @@ def load_config() -> dict:
         log.error("Copy config.example.json to config.json and fill in your values.")
         sys.exit(1)
 
-    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        config = json.load(f)
+    raw = CONFIG_PATH.read_text(encoding="utf-8")
+    try:
+        config = json.loads(raw)
+    except json.JSONDecodeError as e:
+        log.error(f"Invalid JSON in {CONFIG_PATH}: {e}")
+        if "\\escape" in str(e).lower() or "escape" in str(e).lower():
+            log.error("Hint: Windows paths need doubled backslashes in JSON "
+                      "(e.g. C:\\\\Users\\\\... not C:\\Users\\...).")
+        sys.exit(1)
 
     required = ["client_id", "tenant_id", "anthropic_api_key"]
     missing = [k for k in required if not config.get(k)]
@@ -183,25 +190,30 @@ def acquire_token(app: msal.PublicClientApplication) -> str:
     result = None
 
     if accounts:
-        log.debug(f"Found cached account: {accounts[0]['username']}")
+        log.info(f"Found cached account: {accounts[0]['username']}")
         result = app.acquire_token_silent(GRAPH_SCOPES, account=accounts[0])
+        if result and "access_token" in result:
+            log.info("Token acquired via cached refresh token.")
+        else:
+            log.warning("Cached token expired or invalid — silent refresh failed.")
 
-    if not result:
-        log.info("No valid cached token. Starting device code flow.")
+    if not result or "access_token" not in result:
+        log.warning("No valid cached token. Starting device code flow (requires interactive login).")
         flow = app.initiate_device_flow(scopes=GRAPH_SCOPES)
         if "user_code" not in flow:
-            log.error(f"Failed to start device flow: {flow}")
-            sys.exit(1)
+            raise RuntimeError(f"Failed to start device code flow: {flow}")
         print("\n" + "=" * 60)
         print(flow["message"])
         print("=" * 60 + "\n")
+        log.info(f"Device code flow started. User code: {flow.get('user_code', '???')}")
         result = app.acquire_token_by_device_flow(flow)
 
     app._save_cache()
 
     if "access_token" not in result:
-        log.error(f"Failed to acquire token: {result.get('error_description', result)}")
-        sys.exit(1)
+        raise RuntimeError(
+            f"Failed to acquire token: {result.get('error_description', result)}"
+        )
 
     return result["access_token"]
 
@@ -2457,14 +2469,20 @@ def run_monitor_remy_cli() -> None:
     log.info("Rocky — Remy inbox monitor (polling rocky@gallagherllp.com)")
     log.info("=" * 60)
 
-    config = load_config()
-    instructions = load_instructions()
-    anthropic_client = Anthropic(api_key=config["anthropic_api_key"])
-    rocky_email = config.get("rocky_email", "rocky@gallagherllp.com")
+    try:
+        config = load_config()
+        instructions = load_instructions()
+        anthropic_client = Anthropic(api_key=config["anthropic_api_key"])
+        rocky_email = config.get("rocky_email", "rocky@gallagherllp.com")
 
-    app = get_msal_app(config)
-    token = acquire_token(app)
-    audit_token_scopes(token)
+        app = get_msal_app(config)
+        token = acquire_token(app)
+        audit_token_scopes(token)
+    except Exception:
+        log.exception("FATAL: Failed during startup (config, auth, or token). "
+                      "Rocky cannot poll without a valid token. "
+                      "Run the exe interactively to complete device-code login.")
+        sys.exit(1)
 
     log.info(f"Monitoring: {rocky_email}")
     log.info(f"Poll interval: {REMY_POLL_INTERVAL_SECONDS}s")

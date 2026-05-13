@@ -64,9 +64,9 @@ def log(msg: str) -> None:
 def _rocky_command() -> list[str]:
     """Pick the right command: rocky.exe if it exists, else python rocky.py."""
     if ROCKY_EXE.exists():
-        return [str(ROCKY_EXE)]
+        return [str(ROCKY_EXE), "--monitor-remy"]
     if ROCKY_SCRIPT.exists():
-        return [sys.executable, str(ROCKY_SCRIPT)]
+        return [sys.executable, str(ROCKY_SCRIPT), "--monitor-remy"]
     log(f"FATAL: neither {ROCKY_EXE} nor {ROCKY_SCRIPT} found.")
     sys.exit(1)
 

@@ -486,11 +486,15 @@ def run(email: dict, classification: dict, config: dict) -> dict:
             return result
 
         if proc.returncode != 0:
+            stderr_full = (proc.stderr or "").strip()
+            stdout_full = (proc.stdout or "").strip()
             result["error"] = (
                 f"remy_returncode_{proc.returncode}: "
-                f"stderr={proc.stderr.strip()[:500]}"
+                f"stderr={stderr_full[:2000]}"
             )
             log.error(result["error"])
+            if stdout_full:
+                log.error(f"remy stdout: {stdout_full[:1000]}")
             return result
 
         produced = (proc.stdout or "").strip().splitlines()
