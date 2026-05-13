@@ -16,6 +16,9 @@ Rocky — Virtual Paralegal
   python rocky.py --daily-digest [RRID-XXXX] [--hours N]  (5:00 PM)
       Generate a consolidated daily case digest (Phase D Stage 3).
 
+  python rocky.py --steve-todo                            (7:30 AM)
+      Generate Steve Metzger's daily to-do list from his inbox.
+
 On first run, you'll be prompted to authenticate via device code flow.
 Subsequent runs use the cached refresh token automatically.
 """
@@ -2491,6 +2494,357 @@ def run_monitor_remy_cli() -> None:
             break
 
 
+# =============================================================================
+# Steve's Daily To-Do List
+# =============================================================================
+# Reads Steve Metzger's inbox for today, skips emails he's already replied to,
+# and sends him a to-do list extracted by Claude. Scheduled daily at 7:30 AM.
+#
+# IT prerequisite: rocky@gallagherllp.com needs delegated Read access on
+# smetzger@gallagherllp.com's mailbox (Exchange Admin Center → Recipients →
+# Mailboxes → smetzger → Mailbox delegation → Read → add rocky).
+#
+# Graph API note: to detect replied-to emails we request the extended property
+# PidTagLastVerbExecuted (0x1081). Values 102=Reply, 103=ReplyAll, 104=Forward.
+
+STEVE_EMAIL = "smetzger@gallagherllp.com"
+
+# Reply/ReplyAll verb codes on PidTagLastVerbExecuted.
+_REPLIED_VERBS = {102, 103}
+
+
+def fetch_inbox_emails_unreplied(
+    token: str, user_email: str, since: datetime,
+) -> list[dict]:
+    """
+    Fetch emails from a user's Inbox received after `since`, excluding any
+    the user has already replied to (detected via PidTagLastVerbExecuted).
+    """
+    since_iso = since.strftime("%Y-%m-%dT%H:%M:%SZ")
+    url = f"{GRAPH_API_BASE}/users/{user_email}/mailFolders/Inbox/messages"
+    params = {
+        "$filter": f"receivedDateTime gt {since_iso}",
+        "$orderby": "receivedDateTime asc",
+        "$top": "100",
+        "$select": (
+            "id,subject,from,toRecipients,ccRecipients,"
+            "receivedDateTime,bodyPreview,body"
+        ),
+        "$expand": (
+            "singleValueExtendedProperties"
+            "($filter=id eq 'Integer 0x1081')"
+        ),
+    }
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+        "Prefer": 'outlook.body-content-type="text"',
+    }
+
+    all_messages: list[dict] = []
+    while url:
+        response = requests.get(url, headers=headers, params=params, timeout=30)
+        if response.status_code != 200:
+            log.error(
+                f"Graph API error {response.status_code} fetching inbox for "
+                f"{user_email}: {response.text[:300]}"
+            )
+            return []
+
+        data = response.json()
+        all_messages.extend(data.get("value", []))
+        url = data.get("@odata.nextLink")
+        params = None  # nextLink already includes query params
+
+    unreplied: list[dict] = []
+    for msg in all_messages:
+        verb = None
+        for prop in msg.get("singleValueExtendedProperties", []):
+            if prop.get("id", "").endswith("0x1081"):
+                try:
+                    verb = int(prop["value"])
+                except (ValueError, KeyError):
+                    pass
+        if verb in _REPLIED_VERBS:
+            log.debug(f"Skipping replied-to email: {msg.get('subject', '(no subject)')!r}")
+            continue
+        unreplied.append(msg)
+
+    log.info(
+        f"Fetched {len(all_messages)} inbox emails for {user_email} since "
+        f"{since_iso}; {len(unreplied)} unreplied."
+    )
+    return unreplied
+
+
+STEVE_TODO_PROMPT = """\
+You are Rocky, a virtual paralegal assistant at Gallagher LLP. You are reading \
+Steve Metzger's email inbox to generate his daily to-do list.
+
+Below are the emails Steve received today that he has NOT yet replied to. \
+For each email that requires action from Steve, extract a clear, concise to-do \
+item. Group the to-do items by priority:
+
+**URGENT** — deadlines today/tomorrow, court filings, time-sensitive client needs
+**ACTION NEEDED** — requires Steve's response or action but not immediately urgent
+**FYI / LOW PRIORITY** — informational, can wait, newsletters, FYIs
+
+For each to-do item include:
+- A clear one-line action statement (what Steve needs to do)
+- The sender name
+- The email subject (abbreviated if long)
+
+Skip emails that are purely informational with no action required (automated \
+notifications, marketing, newsletters) UNLESS they contain something Steve \
+should actually be aware of.
+
+If there are no actionable emails, say so.
+
+Output format — use this exact markdown structure:
+
+## Urgent
+- **Action:** [what to do] — from [sender] re: [subject]
+
+## Action Needed
+- **Action:** [what to do] — from [sender] re: [subject]
+
+## FYI / Low Priority
+- **Action:** [what to do] — from [sender] re: [subject]
+
+Omit any section that has no items.
+"""
+
+
+def steve_daily_todo(
+    client: Anthropic,
+    token: str,
+    rocky_email: str,
+    steve_email: str = STEVE_EMAIL,
+) -> dict:
+    """
+    Fetch Steve's unreplied inbox, extract to-do items via Claude, email the
+    list to Steve. Returns a result dict with status info.
+    """
+    from outbound import send_mail_guarded
+
+    now = datetime.now(timezone.utc)
+    since = now - timedelta(hours=24)
+
+    emails = fetch_inbox_emails_unreplied(token, steve_email, since)
+    if not emails:
+        log.info("No unreplied emails in Steve's inbox — skipping to-do generation.")
+        return {"sent": False, "reason": "no_unreplied_emails", "email_count": 0}
+
+    email_summaries: list[str] = []
+    for i, msg in enumerate(emails, 1):
+        sender = "Unknown"
+        from_field = msg.get("from", {}).get("emailAddress", {})
+        if from_field:
+            sender = from_field.get("name") or from_field.get("address", "Unknown")
+
+        to_addrs = ", ".join(
+            r.get("emailAddress", {}).get("address", "")
+            for r in msg.get("toRecipients", [])
+        )
+        cc_addrs = ", ".join(
+            r.get("emailAddress", {}).get("address", "")
+            for r in msg.get("ccRecipients", [])
+        )
+
+        received = msg.get("receivedDateTime", "")
+        subject = msg.get("subject", "(no subject)")
+        body = (msg.get("body", {}).get("content") or "")[:3000]
+
+        parts = [
+            f"--- Email {i} ---",
+            f"From: {sender}",
+            f"To: {to_addrs}",
+        ]
+        if cc_addrs:
+            parts.append(f"CC: {cc_addrs}")
+        parts.extend([
+            f"Date: {received}",
+            f"Subject: {subject}",
+            f"Body:\n{body}",
+        ])
+        email_summaries.append("\n".join(parts))
+
+    all_emails_text = "\n\n".join(email_summaries)
+
+    log.info(f"Sending {len(emails)} emails to Claude for to-do extraction...")
+    response = client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=2048,
+        system=STEVE_TODO_PROMPT,
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    f"Today is {now.strftime('%A, %B %d, %Y')}. "
+                    f"Here are Steve's {len(emails)} unreplied emails from the "
+                    f"last 24 hours:\n\n{all_emails_text}"
+                ),
+            }
+        ],
+    )
+    todo_md = response.content[0].text
+    log.info("Claude to-do extraction complete.")
+
+    today_str = now.strftime("%Y-%m-%d")
+    todo_dir = ROCKY_CASES_ROOT / "Steve Todo"
+    todo_dir.mkdir(parents=True, exist_ok=True)
+    md_path = todo_dir / f"{today_str}.md"
+    md_path.write_text(
+        f"# Steve's Daily To-Do List — {now.strftime('%B %d, %Y')}\n\n"
+        f"Generated by Rocky at {now.strftime('%H:%M UTC')} from "
+        f"{len(emails)} unreplied inbox emails.\n\n"
+        f"{todo_md}\n",
+        encoding="utf-8",
+    )
+    log.info(f"To-do list written to {md_path}")
+
+    html_body = _build_todo_html(todo_md, len(emails), now)
+    icon_attachment = []
+    if ROCKY_ICON_PATH.exists():
+        icon_attachment = [
+            {"path": str(ROCKY_ICON_PATH), "name": "rocky_icon.png",
+             "contentId": "rocky_icon"},
+        ]
+
+    result = send_mail_guarded(
+        token=token,
+        sender_mailbox=rocky_email,
+        to=[steve_email],
+        subject=f"Steve's Daily To-Do List — {now.strftime('%B %d, %Y')}",
+        body=html_body,
+        body_type="HTML",
+        attachments=icon_attachment,
+    )
+
+    return {
+        "sent": result.get("sent", False),
+        "email_count": len(emails),
+        "md_path": str(md_path),
+        "reason": result.get("reason"),
+    }
+
+
+def _build_todo_html(todo_md: str, email_count: int, now: datetime) -> str:
+    today = now.strftime("%B %d, %Y")
+    now_str = now.strftime("%Y-%m-%d %H:%M UTC")
+    body_html = _md_section_to_html(todo_md)
+
+    return f"""<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Steve's Daily To-Do List — {today}</title>
+    <!--[if mso]>
+    <style type="text/css">
+        table {{border-collapse:collapse;}}
+        td {{font-family:Segoe UI,Arial,sans-serif;}}
+    </style>
+    <![endif]-->
+</head>
+<body style="margin:0;padding:0;background-color:#f7f8fa;font-family:Segoe UI,Calibri,Arial,sans-serif;">
+    <table width="100%" cellpadding="0" cellspacing="0" border="0"
+           style="background-color:#f7f8fa;">
+        <tr><td align="center" style="padding:24px 16px;">
+
+            <table width="640" cellpadding="0" cellspacing="0" border="0"
+                   style="background-color:#ffffff;border-radius:8px;
+                          box-shadow:0 1px 3px rgba(0,0,0,0.08);max-width:640px;">
+
+                <!-- Header -->
+                <tr><td style="background-color:#1a202c;padding:28px 32px;
+                               border-radius:8px 8px 0 0;">
+                    <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                        <tr>
+                            <td width="64" valign="top" style="padding-right:16px;">
+                                <img src="cid:rocky_icon" width="56" height="56"
+                                     alt="Rocky"
+                                     style="display:block;border-radius:8px;"/>
+                            </td>
+                            <td valign="middle">
+                                <h1 style="margin:0;font-size:22px;font-weight:700;
+                                           color:#ffffff;line-height:1.2;">
+                                    Steve's Daily To-Do List</h1>
+                                <p style="margin:4px 0 0 0;font-size:15px;
+                                          color:#a0aec0;font-weight:500;">
+                                    {today}</p>
+                            </td>
+                        </tr>
+                    </table>
+                </td></tr>
+
+                <!-- Summary bar -->
+                <tr><td style="background-color:#edf2f7;padding:12px 32px;
+                               border-bottom:1px solid #e2e8f0;">
+                    <p style="margin:0;font-size:13px;color:#4a5568;">
+                        Generated {now_str} &middot;
+                        <strong>{email_count}</strong> unreplied email(s) reviewed</p>
+                </td></tr>
+
+                <!-- To-do content -->
+                <tr><td style="padding:20px 32px 16px 32px;">
+                    {body_html}
+                </td></tr>
+
+                <!-- Footer -->
+                <tr><td style="background-color:#f7f8fa;padding:16px 32px;
+                               border-top:1px solid #e2e8f0;
+                               border-radius:0 0 8px 8px;">
+                    <p style="margin:0;font-size:11px;color:#a0aec0;text-align:center;">
+                        This to-do list was generated automatically by Rocky from your
+                        unreplied inbox emails. Items are suggestions — always use your
+                        own judgment on priorities.</p>
+                </td></tr>
+
+            </table>
+        </td></tr>
+    </table>
+</body>
+</html>"""
+
+
+def run_steve_todo_cli() -> None:
+    """Entry point for `python rocky.py --steve-todo`."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    log.info("=" * 60)
+    log.info("Rocky — Steve's Daily To-Do List")
+    log.info("=" * 60)
+
+    config = load_config()
+    app = get_msal_app(config)
+    token = acquire_token(app)
+    audit_token_scopes(token)
+
+    anthropic_client = Anthropic(api_key=config["anthropic_api_key"])
+    rocky_email = config.get("rocky_email", "rocky@gallagherllp.com")
+
+    result = steve_daily_todo(
+        client=anthropic_client,
+        token=token,
+        rocky_email=rocky_email,
+    )
+
+    if result.get("sent"):
+        log.info(
+            f"To-do list sent to {STEVE_EMAIL} "
+            f"({result['email_count']} emails reviewed). "
+            f"Markdown saved: {result.get('md_path')}"
+        )
+    else:
+        log.info(
+            f"To-do list not sent. Reason: {result.get('reason')}. "
+            f"Emails reviewed: {result.get('email_count', 0)}"
+        )
+
+    log.info("=" * 60)
+    log.info("Steve's Daily To-Do complete.")
+
+
 def main():
     if "--monitor-remy" in sys.argv:
         run_monitor_remy_cli()
@@ -2500,6 +2854,8 @@ def main():
         run_daily_run_cli()
     elif "--daily-digest" in sys.argv:
         run_daily_digest_cli()
+    elif "--steve-todo" in sys.argv:
+        run_steve_todo_cli()
     else:
         print(__doc__)
         print("Available commands:")
@@ -2507,6 +2863,7 @@ def main():
         print("  --daily-cases  [RRID-XXXX]              Fetch emails, summarize, save")
         print("  --daily-run    [RRID-XXXX]              Run per-case folder skills")
         print("  --daily-digest [RRID-XXXX] [--hours N]  Generate daily case digest")
+        print("  --steve-todo                            Steve's daily to-do list from inbox")
         sys.exit(0)
 
 
