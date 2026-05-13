@@ -469,12 +469,19 @@ def run(email: dict, classification: dict, config: dict) -> dict:
         log.info(f"Invoking Remy: {cli_sub} with {len(atts)} attachment(s)")
         log.debug(f"Full command: {cmd}")
 
+        env = None
+        api_key = config.get("anthropic_api_key")
+        if api_key:
+            import os
+            env = {**os.environ, "ANTHROPIC_API_KEY": api_key}
+
         try:
             proc = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 timeout=300,
+                env=env,
             )
         except subprocess.TimeoutExpired:
             result["reason"] = "remy_timeout_300s"
