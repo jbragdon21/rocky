@@ -240,11 +240,14 @@ def resolve_folder_path(token: str, user_email: str, folder_path: str) -> str | 
         else:
             url = f"{GRAPH_API_BASE}/users/{user_email}/mailFolders"
 
-        params = {
-            "$filter": f"displayName eq '{segment}'",
-            "$select": "id,displayName",
-            "$top": "5",
-        }
+        # OData $filter with special chars (& ' etc.) can fail silently,
+        # so only filter server-side for simple alphanumeric names.
+        safe_for_filter = all(c.isalnum() or c in " -_." for c in segment)
+        params: dict[str, str] = {"$select": "id,displayName", "$top": "50"}
+        if safe_for_filter:
+            params["$filter"] = f"displayName eq '{segment}'"
+            params["$top"] = "5"
+
         try:
             resp = requests.get(url, headers=headers, params=params, timeout=30)
         except requests.RequestException as e:
