@@ -661,6 +661,77 @@ def append_case_activity(case_folder: Path, event: dict) -> None:
         log.warning(f"Could not append activity to {case_folder.name}: {e}")
 
 
+ECF_SENDER_DOMAIN = "uscourts.gov"
+
+_ECF_DOC_RE = re.compile(
+    r"Document\s+Number:\s*(\d+)\s*<(https?://[^>]+)>",
+    re.IGNORECASE,
+)
+
+_ECF_DOCKET_TEXT_RE = re.compile(
+    r"Docket\s+Text:\s*\n(.+?)(?:\n\n|\n1:\d)",
+    re.DOTALL,
+)
+
+
+def _is_ecf_email(email: dict) -> bool:
+    addr = (email.get("from", {}).get("emailAddress", {}).get("address") or "").lower()
+    return addr.endswith(ECF_SENDER_DOMAIN)
+
+
+def _extract_ecf_doc_info(body: str) -> list[dict]:
+    """Extract ECF document number and download URL from plain-text body."""
+    results = []
+    for m in _ECF_DOC_RE.finditer(body):
+        doc_num = m.group(1)
+        url = m.group(2)
+        results.append({"doc_number": doc_num, "url": url})
+    return results
+
+
+def _ecf_docket_label(body: str) -> str:
+    """Extract a short label from the Docket Text line for the filename."""
+    m = _ECF_DOCKET_TEXT_RE.search(body)
+    if not m:
+        return ""
+    raw = m.group(1).strip()
+    raw = re.sub(r"\s+", " ", raw)
+    label = re.sub(r"[^\w\s\-]", "", raw)[:60].strip()
+    return _sanitize_filename(label) if label else ""
+
+
+def download_ecf_document(url: str, dest_path: Path) -> bool:
+    """
+    Follow the ECF/Mimecast URL chain and save the PDF to dest_path.
+    Returns True on success, False on failure (logged, never raises).
+    """
+    try:
+        resp = requests.get(
+            url,
+            timeout=60,
+            allow_redirects=True,
+            headers={"User-Agent": "Rocky/1.0 (Gallagher LLP case management)"},
+        )
+        if resp.status_code != 200:
+            log.warning(f"ECF download HTTP {resp.status_code} for {url}")
+            return False
+
+        content_type = resp.headers.get("Content-Type", "").lower()
+        if "pdf" in content_type or resp.content[:5] == b"%PDF-":
+            dest_path.write_bytes(resp.content)
+            log.info(f"ECF document saved: {dest_path.name} ({len(resp.content)} bytes)")
+            return True
+
+        log.warning(
+            f"ECF download did not return a PDF (Content-Type: {content_type}). "
+            f"Possibly requires PACER login. URL: {url}"
+        )
+        return False
+    except Exception as e:
+        log.warning(f"ECF download failed for {url}: {e}")
+        return False
+
+
 def save_email_to_case(
     email: dict,
     case_match: dict,
@@ -757,6 +828,20 @@ def save_email_to_case(
             saved.append(att_path.name)
         except OSError as e:
             log.warning(f"Could not write {att_path}: {e}")
+
+    # Download ECF pleading PDFs linked in court notification emails.
+    if _is_ecf_email(email):
+        ecf_docs = _extract_ecf_doc_info(body)
+        docket_label = _ecf_docket_label(body)
+        for doc in ecf_docs:
+            doc_num = doc["doc_number"]
+            label_part = f"_{docket_label}" if docket_label else ""
+            ecf_filename = f"{prefix}_ECF_Doc{doc_num}{label_part}.pdf"
+            ecf_path = raw_dir / ecf_filename
+            if ecf_path.exists():
+                skipped.append(ecf_path.name)
+            elif download_ecf_document(doc["url"], ecf_path):
+                saved.append(ecf_path.name)
 
     # Activity log entry.
     append_case_activity(
