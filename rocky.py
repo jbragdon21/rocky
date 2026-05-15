@@ -19,6 +19,9 @@ Rocky — Virtual Paralegal
   python rocky.py --steve-todo                            (7:30 AM)
       Generate Steve Metzger's daily to-do list from his inbox.
 
+  python rocky.py --ella-digest [--hours N]               (5:00 PM)
+      Generate Ella Aiken's daily case digest from her inbox folders.
+
 On first run, you'll be prompted to authenticate via device code flow.
 Subsequent runs use the cached refresh token automatically.
 """
@@ -2990,6 +2993,511 @@ def run_steve_todo_cli() -> None:
     log.info("Steve's Daily To-Do complete.")
 
 
+# =============================================================================
+# Ella Aiken's Daily Case Digest
+# =============================================================================
+# Reads a case info spreadsheet with case names, Outlook folder paths in Ella's
+# inbox, and confidential case identifiers. Fetches the last 24h of emails from
+# each folder, summarizes per case via Claude, and emails the consolidated
+# digest to Ella.
+
+ELLA_EMAIL = "eaiken@gallagherllp.com"
+
+ELLA_CASE_INFO_PATH = Path(
+    r"C:\Users\rocky\OneDrive - gejlaw.com"
+    r"\James D. Bragdon's files - Program Files"
+    r"\Rocky\Ella Daily Case Digest\case info.xlsx"
+)
+
+ELLA_DIGEST_SYSTEM_PROMPT = """\
+You are Rocky, drafting the daily email summary section for one case in \
+Ella Aiken's daily case digest at Gallagher LLP.
+
+You receive:
+- The case name
+- All emails received in the last N hours from the case's Outlook folder
+
+Your output is a markdown section with exactly two subsections, in this order:
+
+**What happened**
+- Bulleted list. One bullet per meaningful email or thread. Describe the \
+substance (who wrote, what they said/requested) in plain English. Group \
+related emails. Skip automated notifications unless they contain something \
+actionable.
+
+**Action items**
+- 1 to 3 concrete next actions, ordered by urgency. Prefer specific actions \
+("respond to opposing counsel's discovery requests") over vague ones \
+("review emails"). If nothing requires action, write "(none — informational \
+only)".
+
+TONE
+Terse, factual, attorney-readable. No filler. No emojis. Past-tense for \
+events. No more than ~200 words total per case section.
+
+OUTPUT
+Output ONLY the markdown for the two subsections. Do NOT include the case \
+heading (the caller adds it). Do NOT wrap in code fences. Do NOT add a \
+preamble or sign-off.
+"""
+
+
+def load_ella_case_info() -> list[dict]:
+    """
+    Load Ella's case info spreadsheet. Returns a list of case dicts
+    (one per non-empty row). Returns [] on any failure.
+
+    Expected columns (first row = headers):
+      Case Name, Folder Location, Names
+
+    Folder Location: Outlook folder path, optionally prefixed with the
+    mailbox address (e.g. \\\\eaiken@...\\Inbox\\Clients\\...). The
+    mailbox prefix is stripped automatically.
+
+    Names: semicolon-separated plaintiff last names. These are swapped
+    out for random tokens before the Claude API call and restored in the
+    response, so real names never reach the API.
+    """
+    if not ELLA_CASE_INFO_PATH.exists():
+        log.error(f"Ella case info not found at {ELLA_CASE_INFO_PATH}")
+        return []
+    try:
+        import openpyxl
+    except ImportError:
+        log.error("openpyxl not installed — pip install openpyxl")
+        return []
+    try:
+        wb = openpyxl.load_workbook(ELLA_CASE_INFO_PATH, data_only=True, read_only=True)
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        wb.close()
+    except PermissionError:
+        log.error(
+            "Cannot read Ella case info (PermissionError). Likely a OneDrive "
+            "cloud-only placeholder — pin the folder locally to fix."
+        )
+        return []
+    except Exception as e:
+        log.error(f"Could not read Ella case info: {e}")
+        return []
+
+    if not rows:
+        return []
+    headers = [(str(h).strip() if h is not None else "") for h in rows[0]]
+    cases = []
+    for row in rows[1:]:
+        if not row or not row[0]:
+            continue
+        case = {headers[i]: row[i] for i in range(min(len(headers), len(row)))}
+        cases.append(case)
+    return cases
+
+
+_PHI_PATTERNS: list[tuple[re.Pattern, str]] = [
+    # SSN: 123-45-6789 or 123 45 6789 or 123456789 (9 consecutive digits).
+    (re.compile(r"\b\d{3}[-\s]?\d{2}[-\s]?\d{4}\b"), "[SSN REDACTED]"),
+    # Date of birth: "DOB: 01/15/1990", "Date of Birth: 1990-01-15", "DOB 01-15-90".
+    (re.compile(
+        r"(?:DOB|date\s+of\s+birth|birth\s*date)\s*[:;]?\s*\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}",
+        re.IGNORECASE,
+    ), "[DOB REDACTED]"),
+    (re.compile(
+        r"(?:DOB|date\s+of\s+birth|birth\s*date)\s*[:;]?\s*\d{4}[/\-]\d{1,2}[/\-]\d{1,2}",
+        re.IGNORECASE,
+    ), "[DOB REDACTED]"),
+    # Medical Record Number: "MRN: 12345678", "MRN# 12345678", "Medical Record # 123456".
+    (re.compile(
+        r"(?:MRN|medical\s+record)\s*#?\s*[:;]?\s*\d{4,12}",
+        re.IGNORECASE,
+    ), "[MRN REDACTED]"),
+    # Health plan / member / policy / group ID with a number.
+    (re.compile(
+        r"(?:health\s+plan|member|policy|group|subscriber|beneficiary)\s*"
+        r"(?:id|#|number|no\.?)\s*[:;]?\s*[A-Z0-9]{4,20}",
+        re.IGNORECASE,
+    ), "[HEALTH ID REDACTED]"),
+    # ICD / CPT codes: "ICD-10: M54.5", "CPT 99213".
+    (re.compile(r"\b(?:ICD[-\s]?10|ICD[-\s]?9|CPT)\s*[:;]?\s*[A-Z0-9]{3,7}(?:\.\d{1,2})?\b",
+                re.IGNORECASE), "[MEDICAL CODE REDACTED]"),
+    # Diagnosis / condition / treatment phrasing: "diagnosed with ...", "treatment for ...".
+    (re.compile(
+        r"(?:diagnosed\s+with|diagnosis\s+(?:of|is|was)|"
+        r"treatment\s+(?:for|of|plan)|"
+        r"prescription\s+(?:for|of)|"
+        r"prognosis\s+(?:is|of|for)|"
+        r"medical\s+condition\s*[:;]?\s*)"
+        r"[^.;\n]{1,120}",
+        re.IGNORECASE,
+    ), "[PHI REDACTED]"),
+    # Medication names following "taking", "prescribed", "medication:".
+    (re.compile(
+        r"(?:(?:currently\s+)?taking|prescribed|medication\s*[:;])\s+[^.;\n]{1,80}",
+        re.IGNORECASE,
+    ), "[MEDICATION REDACTED]"),
+]
+
+
+def redact_phi(text: str) -> str:
+    """Remove common PHI patterns from text before sending to the Claude API."""
+    for pattern, replacement in _PHI_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def _build_name_swap_map(names_raw: str) -> dict[str, str]:
+    """
+    Parse semicolon-separated last names and assign each a stable random
+    token (e.g. "PERSON-A7F3"). Returns {lowercase_name: token} mapping.
+    """
+    import random
+    names = [n.strip() for n in names_raw.split(";") if n.strip()]
+    swap_map: dict[str, str] = {}
+    for name in names:
+        tag = f"PERSON-{random.randint(0x1000, 0xFFFF):04X}"
+        swap_map[name.lower()] = tag
+    return swap_map
+
+
+def _swap_names_out(text: str, swap_map: dict[str, str]) -> str:
+    """Replace every occurrence of each real name with its random token (case-insensitive)."""
+    for real_lower, token in swap_map.items():
+        text = re.sub(re.escape(real_lower), token, text, flags=re.IGNORECASE)
+    return text
+
+
+def _swap_names_back(text: str, swap_map: dict[str, str]) -> str:
+    """Replace random tokens back with the original names (title-cased)."""
+    for real_lower, token in swap_map.items():
+        original = real_lower.title()
+        text = text.replace(token, original)
+    return text
+
+
+def _build_ella_case_section(
+    client: Anthropic, case_name: str, emails: list[dict],
+    names_raw: str = "",
+) -> str:
+    """Claude call: summarize a case's emails into the per-case digest section."""
+    swap_map = _build_name_swap_map(names_raw) if names_raw else {}
+
+    email_blocks: list[str] = []
+    for i, msg in enumerate(emails, 1):
+        sender = msg.get("from", {}).get("emailAddress", {})
+        body = (msg.get("body") or {}).get("content") or msg.get("bodyPreview") or ""
+        if len(body) > 5000:
+            body = body[:5000] + "\n[...truncated...]"
+
+        body = redact_phi(body)
+        subject = redact_phi(msg.get("subject", "(no subject)"))
+
+        if swap_map:
+            body = _swap_names_out(body, swap_map)
+            subject = _swap_names_out(subject, swap_map)
+
+        to_addrs = ", ".join(
+            r.get("emailAddress", {}).get("address", "")
+            for r in msg.get("toRecipients", [])
+        )
+
+        block = (
+            f"--- Email {i} ---\n"
+            f"Subject: {subject}\n"
+            f"From: {sender.get('name', '?')} <{sender.get('address', '?')}>\n"
+            f"To: {to_addrs}\n"
+            f"Date: {msg.get('receivedDateTime', '?')}\n"
+            f"Body:\n{body}"
+        )
+        email_blocks.append(block)
+
+    all_emails_text = "\n\n".join(email_blocks)
+    if len(all_emails_text) > 600_000:
+        all_emails_text = all_emails_text[:600_000]
+
+    prompt_case_name = _swap_names_out(case_name, swap_map) if swap_map else case_name
+
+    user_prompt = (
+        f"CASE: {prompt_case_name}\n\n"
+        f"EMAILS ({len(emails)} total):\n\n"
+        f"{all_emails_text}\n\n"
+        f"Write the two markdown subsections (What happened / Action items) "
+        f"for this case. No heading."
+    )
+
+    try:
+        response = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=1500,
+            system=ELLA_DIGEST_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        result = response.content[0].text.strip()
+        if swap_map:
+            result = _swap_names_back(result, swap_map)
+        return result
+    except Exception as e:
+        log.error(f"Ella digest generation failed for {case_name}: {e}")
+        return f"**Error generating digest section:** {e}"
+
+
+def _build_ella_digest_html(
+    sections: list[tuple[str, str]], hours_back: int,
+) -> str:
+    today = datetime.now(timezone.utc).strftime("%B %d, %Y")
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    case_blocks = []
+    for i, (heading, body) in enumerate(sections):
+        heading_clean = re.sub(r"^#+\s*", "", heading)
+        body_html = _md_section_to_html(body)
+        border_top = (
+            'style="border-top:1px solid #e0e0e0;padding-top:20px;"' if i > 0 else ""
+        )
+
+        case_blocks.append(f"""
+            <tr><td {border_top} style="padding:20px 0 10px 0;">
+                <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                    <tr>
+                        <td style="background-color:#f0f4f8;border-left:4px solid #2c5282;
+                                   padding:12px 16px;border-radius:0 4px 4px 0;">
+                            <span style="font-size:15px;font-weight:600;color:#1a202c;">
+                                {heading_clean}</span>
+                        </td>
+                    </tr>
+                </table>
+            </td></tr>
+            <tr><td style="padding:8px 0 20px 8px;">
+                {body_html}
+            </td></tr>""")
+
+    cases_html = "\n".join(case_blocks)
+
+    return f"""<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Ella's Daily Case Digest — {today}</title>
+    <!--[if mso]>
+    <style type="text/css">
+        table {{border-collapse:collapse;}}
+        td {{font-family:Segoe UI,Arial,sans-serif;}}
+    </style>
+    <![endif]-->
+</head>
+<body style="margin:0;padding:0;background-color:#f7f8fa;font-family:Segoe UI,Calibri,Arial,sans-serif;">
+    <table width="100%" cellpadding="0" cellspacing="0" border="0"
+           style="background-color:#f7f8fa;">
+        <tr><td align="center" style="padding:24px 16px;">
+
+            <table width="640" cellpadding="0" cellspacing="0" border="0"
+                   style="background-color:#ffffff;border-radius:8px;
+                          box-shadow:0 1px 3px rgba(0,0,0,0.08);max-width:640px;">
+
+                <!-- Header -->
+                <tr><td style="background-color:#1a202c;padding:28px 32px;
+                               border-radius:8px 8px 0 0;">
+                    <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                        <tr>
+                            <td width="64" valign="top" style="padding-right:16px;">
+                                <img src="cid:rocky_icon" width="56" height="56"
+                                     alt="Rocky"
+                                     style="display:block;border-radius:8px;"/>
+                            </td>
+                            <td valign="middle">
+                                <h1 style="margin:0;font-size:22px;font-weight:700;
+                                           color:#ffffff;line-height:1.2;">
+                                    Ella's Daily Case Digest</h1>
+                                <p style="margin:4px 0 0 0;font-size:15px;
+                                          color:#a0aec0;font-weight:500;">
+                                    {today}</p>
+                            </td>
+                        </tr>
+                    </table>
+                </td></tr>
+
+                <!-- Summary bar -->
+                <tr><td style="background-color:#edf2f7;padding:12px 32px;
+                               border-bottom:1px solid #e2e8f0;">
+                    <p style="margin:0;font-size:13px;color:#4a5568;">
+                        Generated {now_str} &middot; Window: last {hours_back} hours
+                        &middot; <strong>{len(sections)}</strong> case(s) with activity</p>
+                </td></tr>
+
+                <!-- Case sections -->
+                <tr><td style="padding:8px 32px 16px 32px;">
+                    <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                        {cases_html}
+                    </table>
+                </td></tr>
+
+                <!-- Footer -->
+                <tr><td style="background-color:#f7f8fa;padding:16px 32px;
+                               border-top:1px solid #e2e8f0;
+                               border-radius:0 0 8px 8px;">
+                    <p style="margin:0;font-size:11px;color:#a0aec0;text-align:center;">
+                        This digest was generated automatically by Rocky from your
+                        Outlook case folders. Always verify critical deadlines
+                        independently.</p>
+                </td></tr>
+
+            </table>
+        </td></tr>
+    </table>
+</body>
+</html>"""
+
+
+def ella_daily_digest(
+    client: Anthropic,
+    token: str,
+    rocky_email: str,
+    ella_email: str = ELLA_EMAIL,
+    hours_back: int = 24,
+) -> dict:
+    """
+    Generate and email Ella's daily case digest. Reads her case info
+    spreadsheet, fetches emails from each case's Outlook folder in Ella's
+    inbox, summarizes via Claude, and emails the consolidated digest.
+    """
+    from outbound import send_mail_guarded
+
+    cases = load_ella_case_info()
+    if not cases:
+        return {"sent": False, "reason": "no_cases_loaded", "cases_processed": 0}
+
+    since = datetime.now(timezone.utc) - timedelta(hours=hours_back)
+    sections: list[tuple[str, str]] = []
+
+    for case in cases:
+        case_name = str(case.get("Case Name") or "").strip()
+        folder_path = str(case.get("Folder Location") or "").strip()
+        names_raw = str(case.get("Names") or "").strip()
+
+        if not case_name or not folder_path:
+            log.warning(f"Skipping Ella case row — missing name or folder path: {case}")
+            continue
+
+        # Strip optional mailbox UNC prefix (\\user@domain\Inbox\... → Inbox\...).
+        folder_path = re.sub(r"^\\\\[^\\]+\\", "", folder_path)
+
+        folder_id = resolve_folder_path(token, ella_email, folder_path)
+        if not folder_id:
+            log.warning(
+                f"[Ella] Could not resolve folder path {folder_path!r} "
+                f"for case {case_name!r}"
+            )
+            continue
+
+        emails = fetch_folder_emails(token, ella_email, folder_id, since)
+        if not emails:
+            log.info(f"[Ella] No emails in last {hours_back}h for {case_name!r}")
+            continue
+
+        log.info(
+            f"[Ella] {len(emails)} email(s) for {case_name!r} — "
+            f"sending to Claude for summary"
+        )
+        body = _build_ella_case_section(client, case_name, emails, names_raw)
+        heading = f"## {case_name}"
+        sections.append((heading, body))
+
+    if not sections:
+        log.info(f"[Ella] No case activity in the last {hours_back}h. No digest sent.")
+        return {
+            "sent": False,
+            "reason": "no_activity",
+            "cases_processed": len(cases),
+        }
+
+    digest_html = _build_ella_digest_html(sections, hours_back)
+
+    icon_attachment = []
+    if ROCKY_ICON_PATH.exists():
+        icon_attachment = [
+            {"path": str(ROCKY_ICON_PATH), "name": "rocky_icon.png",
+             "contentId": "rocky_icon"},
+        ]
+
+    today = datetime.now(timezone.utc).strftime("%B %d, %Y")
+    result = send_mail_guarded(
+        token=token,
+        sender_mailbox=rocky_email,
+        to=[ella_email],
+        subject=f"Ella's Daily Case Digest — {today}",
+        body=digest_html,
+        body_type="HTML",
+        attachments=icon_attachment,
+    )
+
+    if result.get("sent"):
+        log.info(
+            f"[Ella] Digest sent to {ella_email} "
+            f"({len(sections)} case(s) with activity)"
+        )
+    else:
+        log.warning(
+            f"[Ella] Failed to send digest to {ella_email}: "
+            f"{result.get('reason')}"
+        )
+
+    return {
+        "sent": result.get("sent", False),
+        "reason": result.get("reason"),
+        "cases_with_activity": len(sections),
+        "cases_processed": len(cases),
+    }
+
+
+def run_ella_digest_cli() -> None:
+    """Entry point for `python rocky.py --ella-digest [--hours N]`."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    log.info("=" * 60)
+    log.info("Rocky — Ella's Daily Case Digest")
+    log.info("=" * 60)
+
+    config = load_config()
+    app = get_msal_app(config)
+    token = acquire_token(app)
+    audit_token_scopes(token)
+
+    anthropic_client = Anthropic(api_key=config["anthropic_api_key"])
+    rocky_email = config.get("rocky_email", "rocky@gallagherllp.com")
+
+    hours_back = 24
+    args = sys.argv[1:]
+    for i, arg in enumerate(args):
+        if arg == "--hours" and i + 1 < len(args):
+            try:
+                hours_back = int(args[i + 1])
+            except ValueError:
+                log.warning(f"Invalid --hours value {args[i+1]!r}; using default 24.")
+
+    log.info(f"Window: last {hours_back} hours")
+    log.info(f"Case info: {ELLA_CASE_INFO_PATH}")
+
+    result = ella_daily_digest(
+        client=anthropic_client,
+        token=token,
+        rocky_email=rocky_email,
+        hours_back=hours_back,
+    )
+
+    if result.get("sent"):
+        log.info(
+            f"Digest sent to {ELLA_EMAIL} "
+            f"({result['cases_with_activity']} of {result['cases_processed']} "
+            f"case(s) had activity)"
+        )
+    else:
+        log.info(
+            f"Digest not sent. Reason: {result.get('reason')}. "
+            f"Cases processed: {result.get('cases_processed', 0)}"
+        )
+
+    log.info("=" * 60)
+    log.info("Ella's Daily Case Digest complete.")
+
+
 def main():
     if "--monitor-remy" in sys.argv:
         run_monitor_remy_cli()
@@ -3001,6 +3509,8 @@ def main():
         run_daily_digest_cli()
     elif "--steve-todo" in sys.argv:
         run_steve_todo_cli()
+    elif "--ella-digest" in sys.argv:
+        run_ella_digest_cli()
     else:
         print(__doc__)
         print("Available commands:")
@@ -3009,6 +3519,7 @@ def main():
         print("  --daily-run    [RRID-XXXX]              Run per-case folder skills")
         print("  --daily-digest [RRID-XXXX] [--hours N]  Generate daily case digest")
         print("  --steve-todo                            Steve's daily to-do list from inbox")
+        print("  --ella-digest  [--hours N]              Ella's daily case digest from inbox")
         sys.exit(0)
 
 
