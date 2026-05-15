@@ -62,7 +62,11 @@ INSTRUCTIONS_PATH = PROGRAM_DIR / "instructions.md"
 CLASSIFICATIONS_PATH = DATA_DIR / "classifications.jsonl"
 STATE_DIR = DATA_DIR / "state"
 TOKEN_CACHE_PATH = STATE_DIR / "token_cache.json"
-ELLA_TOKEN_CACHE_PATH = STATE_DIR / "ella_token_cache.json"
+ELLA_TOKEN_CACHE_PATH = Path(
+    r"C:\Users\rocky\OneDrive - gejlaw.com"
+    r"\James D. Bragdon's files - Program Files"
+    r"\Rocky\Ella Daily Case Digest\ella_token_cache.json"
+)
 LOG_PATH = DATA_DIR / "rocky.log"
 
 GRAPH_SCOPES = ["Mail.Read", "Mail.Send"]
@@ -265,38 +269,11 @@ def acquire_ella_token(config: dict) -> str:
 
 
 def run_ella_auth_cli() -> None:
-    """One-time: Ella authenticates via device code flow on the Rocky laptop."""
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    STATE_DIR.mkdir(exist_ok=True)
-    config = load_config()
-    app = get_ella_msal_app(config)
-
-    print("\n" + "=" * 60)
-    print("Ella Authentication Setup")
-    print("=" * 60)
-    print(f"\nThis will authenticate Ella ({ELLA_EMAIL}) so Rocky can")
-    print("read her mailbox for the daily case digest.")
-    print("Ella needs to complete the sign-in on any device.\n")
-
-    flow = app.initiate_device_flow(scopes=["Mail.Read"])
-    if "user_code" not in flow:
-        print(f"Failed to start device flow: {flow}")
-        return
-
-    print(flow["message"])
+    """One-time: Ella authenticates via the standalone ella_auth.py script."""
     print()
-
-    result = app.acquire_token_by_device_flow(flow)
-    app._save_cache()
-
-    if "access_token" not in result:
-        print(f"Authentication failed: {result.get('error_description', result)}")
-        return
-
-    username = result.get("id_token_claims", {}).get("preferred_username", "unknown")
-    print(f"\nAuthentication successful for: {username}")
-    print(f"Token cached at: {ELLA_TOKEN_CACHE_PATH}")
-    print("Rocky can now read Ella's mailbox for the daily digest.")
+    print("Ella must run 'python ella_auth.py' on her own workstation.")
+    print("The script saves her token to OneDrive, where Rocky picks it up.")
+    print(f"Expected token path: {ELLA_TOKEN_CACHE_PATH}")
 
 
 # =============================================================================
