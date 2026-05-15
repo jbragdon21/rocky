@@ -3505,6 +3505,91 @@ def run_ella_digest_cli() -> None:
     log.info("Ella's Daily Case Digest complete.")
 
 
+def run_ella_test_cli() -> None:
+    """Diagnose Ella mailbox access: read Inbox, list folder tree."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    config = load_config()
+    app = get_msal_app(config)
+    token = acquire_token(app)
+    audit_token_scopes(token)
+
+    ella = ELLA_EMAIL
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+
+    # Test 1: Can we reach Ella's mailbox at all?
+    print(f"\n=== Test 1: Read Ella's Inbox ({ella}) ===")
+    url = f"{GRAPH_API_BASE}/users/{ella}/mailFolders/Inbox"
+    resp = requests.get(url, headers=headers, params={"$select": "id,displayName,totalItemCount"}, timeout=30)
+    if resp.status_code != 200:
+        print(f"FAILED — HTTP {resp.status_code}: {resp.text[:300]}")
+        print("Rocky does NOT have read access to Ella's mailbox.")
+        return
+    inbox = resp.json()
+    print(f"OK — Inbox ID: {inbox.get('id', '?')[:20]}..., "
+          f"totalItemCount: {inbox.get('totalItemCount', '?')}")
+
+    # Test 2: Can we read recent messages?
+    print(f"\n=== Test 2: Read recent messages ===")
+    url = f"{GRAPH_API_BASE}/users/{ella}/mailFolders/Inbox/messages"
+    resp = requests.get(url, headers=headers,
+                        params={"$select": "subject,receivedDateTime", "$top": "3",
+                                "$orderby": "receivedDateTime desc"},
+                        timeout=30)
+    if resp.status_code != 200:
+        print(f"FAILED — HTTP {resp.status_code}: {resp.text[:300]}")
+    else:
+        msgs = resp.json().get("value", [])
+        print(f"OK — {len(msgs)} message(s) returned:")
+        for m in msgs:
+            print(f"  {m.get('receivedDateTime', '?')} — {m.get('subject', '(no subject)')}")
+
+    # Test 3: List child folders of Inbox (the step that's failing).
+    print(f"\n=== Test 3: List Inbox child folders ===")
+    url = f"{GRAPH_API_BASE}/users/{ella}/mailFolders/Inbox/childFolders"
+    resp = requests.get(url, headers=headers,
+                        params={"$select": "id,displayName,childFolderCount", "$top": "50"},
+                        timeout=30)
+    if resp.status_code != 200:
+        print(f"FAILED — HTTP {resp.status_code}: {resp.text[:300]}")
+    else:
+        folders = resp.json().get("value", [])
+        print(f"OK — {len(folders)} child folder(s):")
+        for f in folders:
+            print(f"  {f.get('displayName', '?')} (children: {f.get('childFolderCount', '?')})")
+
+        # Test 3b: If we find the target folder, drill into it.
+        for f in folders:
+            if "client" in (f.get("displayName") or "").lower():
+                fid = f["id"]
+                print(f"\n=== Test 3b: Children of '{f['displayName']}' ===")
+                url2 = f"{GRAPH_API_BASE}/users/{ella}/mailFolders/{fid}/childFolders"
+                resp2 = requests.get(url2, headers=headers,
+                                     params={"$select": "id,displayName,childFolderCount", "$top": "50"},
+                                     timeout=30)
+                if resp2.status_code == 200:
+                    for cf in resp2.json().get("value", []):
+                        print(f"  {cf.get('displayName', '?')} (children: {cf.get('childFolderCount', '?')})")
+                break
+
+    # Test 4: Try resolving the first case's folder path.
+    cases = load_ella_case_info()
+    if cases:
+        import re as _re
+        first = cases[0]
+        raw_path = str(first.get("Folder Location") or "").strip()
+        clean_path = _re.sub(r"^\\\\[^\\]+\\", "", raw_path)
+        print(f"\n=== Test 4: Resolve first case folder path ===")
+        print(f"  Raw:   {raw_path}")
+        print(f"  Clean: {clean_path}")
+        result = resolve_folder_path(token, ella, clean_path)
+        if result:
+            print(f"  OK — resolved to folder ID: {result[:20]}...")
+        else:
+            print(f"  FAILED — see warnings above")
+
+    print()
+
+
 def main():
     if "--monitor-remy" in sys.argv:
         run_monitor_remy_cli()
@@ -3518,6 +3603,8 @@ def main():
         run_steve_todo_cli()
     elif "--ella-digest" in sys.argv:
         run_ella_digest_cli()
+    elif "--ella-test" in sys.argv:
+        run_ella_test_cli()
     else:
         print(__doc__)
         print("Available commands:")
