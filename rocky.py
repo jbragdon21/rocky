@@ -264,7 +264,11 @@ def resolve_folder_path(token: str, user_email: str, folder_path: str) -> str | 
             None,
         )
         if not match:
-            log.warning(f"Folder not found: '{segment}' (in path '{folder_path}')")
+            available = [f.get("displayName", "?") for f in folders[:20]]
+            log.warning(
+                f"Folder not found: '{segment}' (in path '{folder_path}'). "
+                f"Available ({len(folders)}): {available}"
+            )
             return None
         parent_id = match["id"]
 
