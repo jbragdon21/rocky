@@ -1271,9 +1271,10 @@ DIGEST_SYSTEM_PROMPT = """You are Rocky, drafting the daily update section for o
 
 You receive:
 - The case description (parties, client, posture, RRID)
-- Activity events from the last N hours (emails ingested into the case, documents filed)
+- Activity events from the last N hours (emails ingested, documents filed, case-management actions like document indexing, checklist updates, spine builds, research sessions)
 - Recently filed documents with category and one-sentence summaries
-- The text of the current Case Status Memorandum, if one exists (for posture and upcoming deadlines)
+- The text of the current Case Status Memorandum or Master Case Summary, if one exists (for posture and upcoming deadlines)
+- Per-case digest instructions from the case folder's CLAUDE.md, if present (follow these for case-specific emphasis)
 
 Your output is a markdown section with exactly three subsections, in this order:
 
@@ -1317,14 +1318,31 @@ def _parse_iso(ts: str | None) -> datetime | None:
     if not ts:
         return None
     try:
-        # Tolerate "...Z" and timezone-offset variants.
-        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
     except ValueError:
         return None
 
 
 def _read_activity_since(case_folder: Path, since_dt: datetime) -> list[dict]:
     events = _read_jsonl(case_folder / "activity.jsonl")
+
+    # Also read Cowork/spine activity log (_spine_text/_activity.json).
+    spine_activity = case_folder / "_spine_text" / "_activity.json"
+    if spine_activity.exists():
+        try:
+            with open(spine_activity, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            for ev in data.get("events", []):
+                normalized = dict(ev)
+                if "type" in normalized and "event" not in normalized:
+                    normalized["event"] = normalized.pop("type")
+                events.append(normalized)
+        except Exception as e:
+            log.warning(f"Could not read {spine_activity}: {e}")
+
     return [
         e for e in events
         if (_parse_iso(e.get("timestamp")) or datetime.min.replace(tzinfo=timezone.utc)) >= since_dt
@@ -1348,13 +1366,46 @@ def _read_filed_since(case_folder: Path, since_dt: datetime) -> list[dict]:
 
 
 def _find_status_memo(case_folder: Path) -> Path | None:
-    """Find the most recent Case Status Memorandum docx in a case folder."""
-    candidates = sorted(
-        (p for p in case_folder.glob("*Case Status*.docx") if p.is_file()),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
+    """Find the most recent Case Status Memorandum or Master Case Summary docx."""
+    candidates = [p for p in case_folder.glob("*Case Status*.docx") if p.is_file()]
+    candidates.extend(p for p in case_folder.glob("Master Case Summary/*.docx") if p.is_file())
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return candidates[0] if candidates else None
+
+
+def _read_case_digest_instructions(case_folder: Path) -> str:
+    """Read per-case digest instructions from the '## Rocky Digest' section of CLAUDE.md."""
+    claude_md = case_folder / "CLAUDE.md"
+    if not claude_md.exists():
+        return ""
+    try:
+        text = claude_md.read_text(encoding="utf-8")
+    except Exception as e:
+        log.warning(f"Could not read {claude_md}: {e}")
+        return ""
+    # Look for a dedicated Rocky Digest section (## Rocky Digest or ## Rocky Digest Instructions).
+    m = re.search(
+        r"(?:^|\n)##\s+Rocky\s+Digest[^\n]*\n(.*?)(?=\n##\s|\Z)",
+        text,
+        re.DOTALL | re.IGNORECASE,
+    )
+    if m:
+        section = m.group(1).strip()
+        if len(section) > 4000:
+            section = section[:4000] + "\n[...truncated...]"
+        return section
+    # Fallback: use Case Overview section for minimal context.
+    m = re.search(
+        r"(?:^|\n)##\s+Case\s+Overview[^\n]*\n(.*?)(?=\n---|\n##\s|\Z)",
+        text,
+        re.DOTALL | re.IGNORECASE,
+    )
+    if m:
+        section = m.group(1).strip()
+        if len(section) > 2000:
+            section = section[:2000] + "\n[...truncated...]"
+        return section
+    return ""
 
 
 def _extract_status_memo_text(case_folder: Path) -> str:
@@ -1380,21 +1431,28 @@ def build_case_digest_section(
     # Compact representation of activity / filed docs for the prompt.
     activity_lines = []
     for ev in activity_events:
-        if ev.get("event") == "email_ingested":
+        event_type = ev.get("event", "unknown")
+        if event_type == "email_ingested":
             activity_lines.append(
                 f"- email_ingested: subject {ev.get('subject')!r} "
                 f"from {ev.get('from_address')}, "
                 f"matched by {ev.get('match_method')}, "
                 f"saved {len(ev.get('files_saved', []))} file(s)"
             )
-        elif ev.get("event") == "document_filed":
+        elif event_type == "document_filed":
             activity_lines.append(
                 f"- document_filed: {ev.get('source_raw')!r} -> "
                 f"{ev.get('target_path')} ({ev.get('category')}), "
                 f"summary: {ev.get('summary')}"
             )
+        elif event_type in ("session_start", "session_end"):
+            continue
+        elif ev.get("summary"):
+            actor = ev.get("actor", "")
+            prefix = f"[{actor}] " if actor else ""
+            activity_lines.append(f"- {event_type}: {prefix}{ev['summary']}")
         else:
-            activity_lines.append(f"- {ev.get('event')}: {ev}")
+            activity_lines.append(f"- {event_type}: {ev}")
 
     filed_lines = [
         f"- {f.get('path')} [{f.get('category')}] — {f.get('summary')}"
@@ -1679,9 +1737,17 @@ def daily_digest(
         meta = cases_by_rrid.get(rrid, {"RRID#": rrid, "File Name": child.name})
         status_memo_text = _extract_status_memo_text(child)
 
+        case_digest_instr = _read_case_digest_instructions(child)
+        combined_instructions = instructions
+        if case_digest_instr:
+            combined_instructions = (
+                f"{instructions}\n\nPer-case digest instructions (from CLAUDE.md):\n{case_digest_instr}"
+                if instructions else case_digest_instr
+            )
+
         log.info(f"Generating digest section for {rrid} ({len(activity)} events, {len(filed)} filed)")
         body = build_case_digest_section(
-            client, meta, activity, filed, status_memo_text, instructions
+            client, meta, activity, filed, status_memo_text, combined_instructions
         )
         heading = (
             f"## {meta.get('RRID#')} — {meta.get('File Name', child.name)} "
