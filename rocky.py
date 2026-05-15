@@ -3564,36 +3564,91 @@ def run_ella_test_cli() -> None:
         for f in folders:
             print(f"  {f.get('displayName', '?')} (children: {f.get('childFolderCount', '?')})")
 
-    # Test 3b: List ALL top-level mail folders.
-    print(f"\n=== Test 3b: All top-level mail folders ===")
-    url = f"{GRAPH_API_BASE}/users/{ella}/mailFolders"
+    # Test 3b: $expand=childFolders on Inbox itself.
+    print(f"\n=== Test 3b: Inbox with $expand=childFolders ===")
+    url = f"{GRAPH_API_BASE}/users/{ella}/mailFolders/Inbox"
     resp = requests.get(url, headers=headers,
-                        params={"$select": "id,displayName,childFolderCount", "$top": "100"},
+                        params={"$expand": "childFolders($select=id,displayName,childFolderCount;$top=50)"},
+                        timeout=30)
+    if resp.status_code != 200:
+        print(f"FAILED — HTTP {resp.status_code}: {resp.text[:300]}")
+    else:
+        data = resp.json()
+        folders = data.get("childFolders", [])
+        print(f"{len(folders)} child folder(s) via $expand:")
+        for f in folders:
+            print(f"  {f.get('displayName', '?')} (children: {f.get('childFolderCount', '?')})")
+
+    # Test 3c: Beta API endpoint.
+    print(f"\n=== Test 3c: Beta API childFolders ===")
+    url = f"https://graph.microsoft.com/beta/users/{ella}/mailFolders/Inbox/childFolders"
+    resp = requests.get(url, headers=headers,
+                        params={"$select": "id,displayName,childFolderCount", "$top": "50"},
                         timeout=30)
     if resp.status_code != 200:
         print(f"FAILED — HTTP {resp.status_code}: {resp.text[:300]}")
     else:
         folders = resp.json().get("value", [])
-        print(f"{len(folders)} top-level folder(s):")
+        print(f"{len(folders)} child folder(s) via beta:")
         for f in folders:
-            name = f.get("displayName", "?")
-            children = f.get("childFolderCount", "?")
-            print(f"  {name} (children: {children})")
-            # Drill one level into any folder that looks promising.
-            if children and int(children) > 0 and any(
-                kw in name.lower() for kw in ("client", "case", "inbox")
-            ):
-                fid = f["id"]
-                url2 = f"{GRAPH_API_BASE}/users/{ella}/mailFolders/{fid}/childFolders"
-                resp2 = requests.get(url2, headers=headers,
-                                     params={"$select": "id,displayName,childFolderCount", "$top": "50"},
-                                     timeout=30)
-                if resp2.status_code == 200:
-                    for cf in resp2.json().get("value", []):
-                        print(f"    └─ {cf.get('displayName', '?')} (children: {cf.get('childFolderCount', '?')})")
+            print(f"  {f.get('displayName', '?')} (children: {f.get('childFolderCount', '?')})")
 
-    # Test 3c: Try msgFolderRoot — the actual root of the folder tree.
-    print(f"\n=== Test 3c: msgFolderRoot child folders ===")
+    # Test 3d: Beta + includeHiddenFolders header.
+    print(f"\n=== Test 3d: Beta API + includeHiddenFolders ===")
+    url = f"https://graph.microsoft.com/beta/users/{ella}/mailFolders/Inbox/childFolders"
+    hdr2 = {**headers, "Prefer": 'outlook.include-hidden-folders="true"'}
+    resp = requests.get(url, headers=hdr2,
+                        params={"$select": "id,displayName,childFolderCount", "$top": "50"},
+                        timeout=30)
+    if resp.status_code != 200:
+        print(f"FAILED — HTTP {resp.status_code}: {resp.text[:300]}")
+    else:
+        folders = resp.json().get("value", [])
+        print(f"{len(folders)} child folder(s) via beta+hidden:")
+        for f in folders:
+            print(f"  {f.get('displayName', '?')} (children: {f.get('childFolderCount', '?')})")
+
+    # Test 3e: Get Inbox folder ID, then use it explicitly.
+    print(f"\n=== Test 3e: childFolders via explicit Inbox ID ===")
+    url = f"{GRAPH_API_BASE}/users/{ella}/mailFolders/Inbox"
+    resp = requests.get(url, headers=headers,
+                        params={"$select": "id,displayName,childFolderCount"},
+                        timeout=30)
+    if resp.status_code == 200:
+        inbox_id = resp.json().get("id", "")
+        print(f"Inbox ID: {inbox_id[:30]}...")
+        url2 = f"{GRAPH_API_BASE}/users/{ella}/mailFolders/{inbox_id}/childFolders"
+        resp2 = requests.get(url2, headers=headers,
+                             params={"$select": "id,displayName,childFolderCount", "$top": "50"},
+                             timeout=30)
+        if resp2.status_code == 200:
+            folders = resp2.json().get("value", [])
+            print(f"{len(folders)} child folder(s) via explicit ID:")
+            for f in folders:
+                print(f"  {f.get('displayName', '?')} (children: {f.get('childFolderCount', '?')})")
+        else:
+            print(f"FAILED — HTTP {resp2.status_code}: {resp2.text[:300]}")
+    else:
+        print(f"FAILED getting Inbox — HTTP {resp.status_code}")
+
+    # Test 3f: Search for 'Clients & Cases' across all folders.
+    print(f"\n=== Test 3f: Search all folders for 'Clients & Cases' ===")
+    url = f"{GRAPH_API_BASE}/users/{ella}/mailFolders"
+    resp = requests.get(url, headers=headers,
+                        params={"$select": "id,displayName,childFolderCount,parentFolderId",
+                                "$filter": "displayName eq 'Clients & Cases'",
+                                "$top": "10"},
+                        timeout=30)
+    if resp.status_code != 200:
+        print(f"Filter search FAILED — HTTP {resp.status_code}: {resp.text[:300]}")
+    else:
+        folders = resp.json().get("value", [])
+        print(f"{len(folders)} result(s) from filter:")
+        for f in folders:
+            print(f"  {f.get('displayName', '?')} (id: {f.get('id', '?')[:30]}...)")
+
+    # Test 3g: msgFolderRoot child folders.
+    print(f"\n=== Test 3g: msgFolderRoot child folders ===")
     url = f"{GRAPH_API_BASE}/users/{ella}/mailFolders/msgFolderRoot/childFolders"
     resp = requests.get(url, headers=headers,
                         params={"$select": "id,displayName,childFolderCount", "$top": "100"},
