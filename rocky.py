@@ -212,6 +212,37 @@ def acquire_token(app: msal.PublicClientApplication) -> str:
     return result["access_token"]
 
 
+def acquire_app_token(config: dict) -> str:
+    """Get an application-level token using client credentials (no user context).
+
+    Requires 'client_secret' in config and Mail.Read application permission
+    with admin consent in Azure AD.
+    """
+    client_secret = config.get("client_secret")
+    if not client_secret:
+        log.error("'client_secret' not found in config.json — required for app-level access.")
+        sys.exit(1)
+
+    app = msal.ConfidentialClientApplication(
+        client_id=config["client_id"],
+        client_credential=client_secret,
+        authority=f"https://login.microsoftonline.com/{config['tenant_id']}",
+    )
+
+    result = app.acquire_token_for_client(
+        scopes=["https://graph.microsoft.com/.default"],
+    )
+
+    if "access_token" not in result:
+        log.error(
+            f"Failed to acquire app token: "
+            f"{result.get('error_description', result)}"
+        )
+        sys.exit(1)
+
+    return result["access_token"]
+
+
 # =============================================================================
 # Graph API: reading mail
 # =============================================================================
@@ -3363,7 +3394,8 @@ def _build_ella_digest_html(
 
 def ella_daily_digest(
     client: Anthropic,
-    token: str,
+    read_token: str,
+    send_token: str,
     rocky_email: str,
     ella_email: str = ELLA_EMAIL,
     hours_back: int = 24,
@@ -3372,6 +3404,9 @@ def ella_daily_digest(
     Generate and email Ella's daily case digest. Reads her case info
     spreadsheet, fetches emails from each case's Outlook folder in Ella's
     inbox, summarizes via Claude, and emails the consolidated digest.
+
+    read_token: app-level token (client credentials) for reading Ella's mailbox.
+    send_token: delegated token for sending mail as Rocky.
     """
     from outbound import send_mail_guarded
 
@@ -3394,7 +3429,7 @@ def ella_daily_digest(
         # Strip optional mailbox UNC prefix (\\user@domain\Inbox\... → Inbox\...).
         folder_path = re.sub(r"^\\\\[^\\]+\\", "", folder_path)
 
-        folder_id = resolve_folder_path(token, ella_email, folder_path)
+        folder_id = resolve_folder_path(read_token, ella_email, folder_path)
         if not folder_id:
             log.warning(
                 f"[Ella] Could not resolve folder path {folder_path!r} "
@@ -3402,7 +3437,7 @@ def ella_daily_digest(
             )
             continue
 
-        emails = fetch_folder_emails(token, ella_email, folder_id, since)
+        emails = fetch_folder_emails(read_token, ella_email, folder_id, since)
         if not emails:
             log.info(f"[Ella] No emails in last {hours_back}h for {case_name!r}")
             continue
@@ -3434,7 +3469,7 @@ def ella_daily_digest(
 
     today = datetime.now(timezone.utc).strftime("%B %d, %Y")
     result = send_mail_guarded(
-        token=token,
+        token=send_token,
         sender_mailbox=rocky_email,
         to=[ella_email],
         subject=f"Ella's Daily Case Digest — {today}",
@@ -3470,9 +3505,15 @@ def run_ella_digest_cli() -> None:
     log.info("=" * 60)
 
     config = load_config()
+
+    # App-level token for reading Ella's mailbox (client credentials).
+    app_token = acquire_app_token(config)
+    log.info("Acquired app-level token for mailbox reading")
+
+    # Delegated token for sending mail as Rocky.
     app = get_msal_app(config)
-    token = acquire_token(app)
-    audit_token_scopes(token)
+    send_token = acquire_token(app)
+    audit_token_scopes(send_token)
 
     anthropic_client = Anthropic(api_key=config["anthropic_api_key"])
     rocky_email = config.get("rocky_email", "rocky@gallagherllp.com")
@@ -3491,7 +3532,8 @@ def run_ella_digest_cli() -> None:
 
     result = ella_daily_digest(
         client=anthropic_client,
-        token=token,
+        read_token=app_token,
+        send_token=send_token,
         rocky_email=rocky_email,
         hours_back=hours_back,
     )
@@ -3513,97 +3555,67 @@ def run_ella_digest_cli() -> None:
 
 
 def run_ella_test_cli() -> None:
-    """Diagnose Ella mailbox access: read Inbox, list folder tree."""
+    """Diagnose Ella mailbox access using app-level token."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     config = load_config()
-    app = get_msal_app(config)
-    token = acquire_token(app)
-    audit_token_scopes(token)
+
+    # Test app-level token.
+    print("\n=== Test 0: Acquire app-level token ===")
+    try:
+        token = acquire_app_token(config)
+        print("OK — app token acquired")
+    except SystemExit:
+        print("FAILED — could not acquire app token. Check client_secret in config.json")
+        print("and Mail.Read application permission in Azure AD.")
+        return
 
     ella = ELLA_EMAIL
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
 
-    # Test 1: Can we reach Ella's mailbox at all?
-    print(f"\n=== Test 1: Read Ella's Inbox ({ella}) ===")
+    # Test 1: Can app token reach Ella's mailbox?
+    print(f"\n=== Test 1: Read Ella's Inbox ({ella}) via app token ===")
     url = f"{GRAPH_API_BASE}/users/{ella}/mailFolders/Inbox"
-    resp = requests.get(url, headers=headers, params={"$select": "id,displayName,totalItemCount"}, timeout=30)
+    resp = requests.get(url, headers=headers,
+                        params={"$select": "id,displayName,totalItemCount,childFolderCount"},
+                        timeout=30)
     if resp.status_code != 200:
         print(f"FAILED — HTTP {resp.status_code}: {resp.text[:300]}")
-        print("Rocky does NOT have read access to Ella's mailbox.")
+        print("App token does NOT have access. Check Mail.Read application permission + admin consent.")
         return
     inbox = resp.json()
     print(f"OK — Inbox ID: {inbox.get('id', '?')[:20]}..., "
-          f"totalItemCount: {inbox.get('totalItemCount', '?')}")
+          f"totalItemCount: {inbox.get('totalItemCount', '?')}, "
+          f"childFolderCount: {inbox.get('childFolderCount', '?')}")
 
-    # Test 2: Can we read recent messages?
-    print(f"\n=== Test 2: Read recent messages ===")
-    url = f"{GRAPH_API_BASE}/users/{ella}/mailFolders/Inbox/messages"
+    # Test 2: Can we enumerate child folders now?
+    print(f"\n=== Test 2: List Inbox child folders via app token ===")
+    url = f"{GRAPH_API_BASE}/users/{ella}/mailFolders/Inbox/childFolders"
     resp = requests.get(url, headers=headers,
-                        params={"$select": "subject,receivedDateTime", "$top": "3",
-                                "$orderby": "receivedDateTime desc"},
+                        params={"$select": "id,displayName,childFolderCount", "$top": "50"},
                         timeout=30)
     if resp.status_code != 200:
         print(f"FAILED — HTTP {resp.status_code}: {resp.text[:300]}")
     else:
-        msgs = resp.json().get("value", [])
-        print(f"OK — {len(msgs)} message(s) returned:")
-        for m in msgs:
-            print(f"  {m.get('receivedDateTime', '?')} — {m.get('subject', '(no subject)')}")
+        folders = resp.json().get("value", [])
+        print(f"{len(folders)} child folder(s) of Inbox:")
+        for f in folders:
+            print(f"  {f.get('displayName', '?')} (children: {f.get('childFolderCount', '?')})")
 
-    # Test 3: Pull all recent messages and discover folder names via parentFolderId.
-    print(f"\n=== Test 3: Fetch recent messages across all folders ===")
-    from datetime import datetime, timedelta, timezone
-    since = (datetime.now(timezone.utc) - timedelta(hours=72)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    url = f"{GRAPH_API_BASE}/users/{ella}/messages"
-    resp = requests.get(url, headers=headers,
-                        params={
-                            "$filter": f"receivedDateTime ge {since}",
-                            "$select": "id,subject,parentFolderId,receivedDateTime",
-                            "$top": "200",
-                            "$orderby": "receivedDateTime desc",
-                        },
-                        timeout=30)
-    if resp.status_code != 200:
-        print(f"FAILED — HTTP {resp.status_code}: {resp.text[:300]}")
-    else:
-        messages = resp.json().get("value", [])
-        print(f"{len(messages)} message(s) in last 72 hours")
-
-        # Group by parentFolderId.
-        folder_ids: dict[str, list] = {}
-        for m in messages:
-            fid = m.get("parentFolderId", "unknown")
-            folder_ids.setdefault(fid, []).append(m.get("subject", "(no subject)"))
-
-        print(f"\n=== Test 3b: Resolve folder names from parentFolderIds ===")
-        print(f"{len(folder_ids)} unique folder(s) found")
-        for fid, subjects in folder_ids.items():
-            url2 = f"{GRAPH_API_BASE}/users/{ella}/mailFolders/{fid}"
-            resp2 = requests.get(url2, headers=headers,
-                                 params={"$select": "id,displayName,parentFolderId"},
-                                 timeout=30)
-            if resp2.status_code == 200:
-                fname = resp2.json().get("displayName", "?")
-            else:
-                fname = f"<HTTP {resp2.status_code}>"
-            print(f"\n  Folder: {fname}")
-            print(f"  ID:     {fid[:40]}...")
-            print(f"  Msgs:   {len(subjects)}")
-            for s in subjects[:3]:
-                print(f"    - {s[:80]}")
-            if len(subjects) > 3:
-                print(f"    ... and {len(subjects) - 3} more")
-
-    # Test 4: Check if case folder names appear in the folder list.
+    # Test 3: Resolve first case folder path.
     cases = load_ella_case_info()
     if cases:
-        print(f"\n=== Test 4: Match case names to discovered folders ===")
-        for case in cases:
-            case_name = str(case.get("Case Name") or "").strip()
-            folder_path = str(case.get("Folder Location") or "").strip()
-            # Extract the leaf folder name (last segment of path).
-            leaf = folder_path.rstrip("\\").rsplit("\\", 1)[-1] if folder_path else ""
-            print(f"  Case: {case_name} — leaf folder: {leaf}")
+        import re as _re
+        first = cases[0]
+        raw_path = str(first.get("Folder Location") or "").strip()
+        clean_path = _re.sub(r"^\\\\[^\\]+\\", "", raw_path)
+        print(f"\n=== Test 3: Resolve first case folder path ===")
+        print(f"  Raw:   {raw_path}")
+        print(f"  Clean: {clean_path}")
+        result = resolve_folder_path(token, ella, clean_path)
+        if result:
+            print(f"  OK — resolved to folder ID: {result[:30]}...")
+        else:
+            print(f"  FAILED — see warnings above")
 
     print()
 
