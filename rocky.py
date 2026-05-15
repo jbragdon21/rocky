@@ -3553,23 +3553,64 @@ def run_ella_test_cli() -> None:
         print(f"FAILED — HTTP {resp.status_code}: {resp.text[:300]}")
     else:
         folders = resp.json().get("value", [])
-        print(f"OK — {len(folders)} child folder(s):")
+        print(f"{len(folders)} child folder(s) of Inbox:")
         for f in folders:
             print(f"  {f.get('displayName', '?')} (children: {f.get('childFolderCount', '?')})")
 
-        # Test 3b: If we find the target folder, drill into it.
+    # Test 3b: List ALL top-level mail folders.
+    print(f"\n=== Test 3b: All top-level mail folders ===")
+    url = f"{GRAPH_API_BASE}/users/{ella}/mailFolders"
+    resp = requests.get(url, headers=headers,
+                        params={"$select": "id,displayName,childFolderCount", "$top": "100"},
+                        timeout=30)
+    if resp.status_code != 200:
+        print(f"FAILED — HTTP {resp.status_code}: {resp.text[:300]}")
+    else:
+        folders = resp.json().get("value", [])
+        print(f"{len(folders)} top-level folder(s):")
         for f in folders:
-            if "client" in (f.get("displayName") or "").lower():
+            name = f.get("displayName", "?")
+            children = f.get("childFolderCount", "?")
+            print(f"  {name} (children: {children})")
+            # Drill one level into any folder that looks promising.
+            if children and int(children) > 0 and any(
+                kw in name.lower() for kw in ("client", "case", "inbox")
+            ):
                 fid = f["id"]
-                print(f"\n=== Test 3b: Children of '{f['displayName']}' ===")
                 url2 = f"{GRAPH_API_BASE}/users/{ella}/mailFolders/{fid}/childFolders"
                 resp2 = requests.get(url2, headers=headers,
                                      params={"$select": "id,displayName,childFolderCount", "$top": "50"},
                                      timeout=30)
                 if resp2.status_code == 200:
                     for cf in resp2.json().get("value", []):
-                        print(f"  {cf.get('displayName', '?')} (children: {cf.get('childFolderCount', '?')})")
-                break
+                        print(f"    └─ {cf.get('displayName', '?')} (children: {cf.get('childFolderCount', '?')})")
+
+    # Test 3c: Try msgFolderRoot — the actual root of the folder tree.
+    print(f"\n=== Test 3c: msgFolderRoot child folders ===")
+    url = f"{GRAPH_API_BASE}/users/{ella}/mailFolders/msgFolderRoot/childFolders"
+    resp = requests.get(url, headers=headers,
+                        params={"$select": "id,displayName,childFolderCount", "$top": "100"},
+                        timeout=30)
+    if resp.status_code != 200:
+        print(f"FAILED — HTTP {resp.status_code}: {resp.text[:300]}")
+    else:
+        folders = resp.json().get("value", [])
+        print(f"{len(folders)} folder(s) under msgFolderRoot:")
+        for f in folders:
+            name = f.get("displayName", "?")
+            children = f.get("childFolderCount", "?")
+            print(f"  {name} (children: {children})")
+            if children and int(children) > 0 and any(
+                kw in name.lower() for kw in ("client", "case", "inbox")
+            ):
+                fid = f["id"]
+                url2 = f"{GRAPH_API_BASE}/users/{ella}/mailFolders/{fid}/childFolders"
+                resp2 = requests.get(url2, headers=headers,
+                                     params={"$select": "id,displayName,childFolderCount", "$top": "50"},
+                                     timeout=30)
+                if resp2.status_code == 200:
+                    for cf in resp2.json().get("value", []):
+                        print(f"    └─ {cf.get('displayName', '?')} (children: {cf.get('childFolderCount', '?')})")
 
     # Test 4: Try resolving the first case's folder path.
     cases = load_ella_case_info()
