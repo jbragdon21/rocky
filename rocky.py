@@ -62,6 +62,7 @@ INSTRUCTIONS_PATH = PROGRAM_DIR / "instructions.md"
 CLASSIFICATIONS_PATH = DATA_DIR / "classifications.jsonl"
 STATE_DIR = DATA_DIR / "state"
 TOKEN_CACHE_PATH = STATE_DIR / "token_cache.json"
+ELLA_TOKEN_CACHE_PATH = STATE_DIR / "ella_token_cache.json"
 LOG_PATH = DATA_DIR / "rocky.log"
 
 GRAPH_SCOPES = ["Mail.Read", "Mail.Send"]
@@ -212,35 +213,90 @@ def acquire_token(app: msal.PublicClientApplication) -> str:
     return result["access_token"]
 
 
-def acquire_app_token(config: dict) -> str:
-    """Get an application-level token using client credentials (no user context).
+def get_ella_msal_app(config: dict) -> msal.PublicClientApplication:
+    """Build a separate MSAL app for Ella's token cache."""
+    STATE_DIR.mkdir(exist_ok=True)
 
-    Requires 'client_secret' in config and Mail.Read application permission
-    with admin consent in Azure AD.
-    """
-    client_secret = config.get("client_secret")
-    if not client_secret:
-        log.error("'client_secret' not found in config.json — required for app-level access.")
-        sys.exit(1)
+    cache = msal.SerializableTokenCache()
+    if ELLA_TOKEN_CACHE_PATH.exists():
+        cache.deserialize(ELLA_TOKEN_CACHE_PATH.read_text(encoding="utf-8"))
 
-    app = msal.ConfidentialClientApplication(
+    app = msal.PublicClientApplication(
         client_id=config["client_id"],
-        client_credential=client_secret,
         authority=f"https://login.microsoftonline.com/{config['tenant_id']}",
+        token_cache=cache,
     )
 
-    result = app.acquire_token_for_client(
-        scopes=["https://graph.microsoft.com/.default"],
-    )
+    def save_cache():
+        if cache.has_state_changed:
+            ELLA_TOKEN_CACHE_PATH.write_text(cache.serialize(), encoding="utf-8")
 
-    if "access_token" not in result:
+    app._save_cache = save_cache
+    return app
+
+
+def acquire_ella_token(config: dict) -> str:
+    """Get Ella's access token from her cached refresh token.
+
+    Ella must have run --ella-auth once to create the cache.
+    """
+    app = get_ella_msal_app(config)
+    accounts = app.get_accounts()
+
+    if not accounts:
         log.error(
-            f"Failed to acquire app token: "
-            f"{result.get('error_description', result)}"
+            "No cached Ella token found. "
+            "Ella must run 'rocky.exe --ella-auth' once on this machine."
         )
         sys.exit(1)
 
+    result = app.acquire_token_silent(["Mail.Read"], account=accounts[0])
+    app._save_cache()
+
+    if not result or "access_token" not in result:
+        log.error(
+            "Ella's cached token has expired. "
+            "Ella must run 'rocky.exe --ella-auth' again."
+        )
+        sys.exit(1)
+
+    log.info(f"Acquired Ella's token (account: {accounts[0].get('username', '?')})")
     return result["access_token"]
+
+
+def run_ella_auth_cli() -> None:
+    """One-time: Ella authenticates via device code flow on the Rocky laptop."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    STATE_DIR.mkdir(exist_ok=True)
+    config = load_config()
+    app = get_ella_msal_app(config)
+
+    print("\n" + "=" * 60)
+    print("Ella Authentication Setup")
+    print("=" * 60)
+    print(f"\nThis will authenticate Ella ({ELLA_EMAIL}) so Rocky can")
+    print("read her mailbox for the daily case digest.")
+    print("Ella needs to complete the sign-in on any device.\n")
+
+    flow = app.initiate_device_flow(scopes=["Mail.Read"])
+    if "user_code" not in flow:
+        print(f"Failed to start device flow: {flow}")
+        return
+
+    print(flow["message"])
+    print()
+
+    result = app.acquire_token_by_device_flow(flow)
+    app._save_cache()
+
+    if "access_token" not in result:
+        print(f"Authentication failed: {result.get('error_description', result)}")
+        return
+
+    username = result.get("id_token_claims", {}).get("preferred_username", "unknown")
+    print(f"\nAuthentication successful for: {username}")
+    print(f"Token cached at: {ELLA_TOKEN_CACHE_PATH}")
+    print("Rocky can now read Ella's mailbox for the daily digest.")
 
 
 # =============================================================================
@@ -3392,21 +3448,93 @@ def _build_ella_digest_html(
 </html>"""
 
 
+def _resolve_folder_path_me(token: str, folder_path: str) -> str | None:
+    """Like resolve_folder_path but uses /me/ endpoints (Ella's own token)."""
+    from urllib.parse import unquote
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    raw_segments = [s.strip() for s in folder_path.strip("\\/").split("\\") if s.strip()]
+    segments = [unquote(s) for s in raw_segments]
+    if not segments:
+        return None
+
+    parent_id = None
+    for segment in segments:
+        if parent_id:
+            url = f"{GRAPH_API_BASE}/me/mailFolders/{parent_id}/childFolders"
+        else:
+            url = f"{GRAPH_API_BASE}/me/mailFolders"
+
+        safe_for_filter = all(c.isalnum() or c in " -_." for c in segment)
+        params: dict[str, str] = {"$select": "id,displayName", "$top": "50"}
+        if safe_for_filter:
+            params["$filter"] = f"displayName eq '{segment}'"
+            params["$top"] = "5"
+
+        try:
+            resp = requests.get(url, headers=headers, params=params, timeout=30)
+        except requests.RequestException as e:
+            log.warning(f"Folder resolve failed at '{segment}': {e}")
+            return None
+
+        if resp.status_code != 200:
+            log.warning(f"Folder resolve failed at '{segment}': HTTP {resp.status_code}")
+            return None
+
+        folders = resp.json().get("value", [])
+        match = next(
+            (f for f in folders if (f.get("displayName") or "").lower() == segment.lower()),
+            None,
+        )
+        if not match:
+            available = [f.get("displayName", "?") for f in folders[:20]]
+            log.warning(
+                f"Folder not found: '{segment}' (in path '{folder_path}'). "
+                f"Available ({len(folders)}): {available}"
+            )
+            return None
+        parent_id = match["id"]
+
+    return parent_id
+
+
+def _fetch_folder_emails_me(
+    token: str, folder_id: str, since: datetime,
+) -> list[dict]:
+    """Like fetch_folder_emails but uses /me/ endpoints (Ella's own token)."""
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    since_str = since.strftime("%Y-%m-%dT%H:%M:%SZ")
+    url = f"{GRAPH_API_BASE}/me/mailFolders/{folder_id}/messages"
+    params = {
+        "$filter": f"receivedDateTime ge {since_str}",
+        "$select": "id,subject,from,receivedDateTime,body,bodyPreview",
+        "$orderby": "receivedDateTime desc",
+        "$top": "50",
+    }
+    try:
+        resp = requests.get(url, headers=headers, params=params, timeout=30)
+    except requests.RequestException as e:
+        log.warning(f"Failed to fetch emails from folder {folder_id}: {e}")
+        return []
+    if resp.status_code != 200:
+        log.warning(f"Failed to fetch emails: HTTP {resp.status_code}")
+        return []
+    return resp.json().get("value", [])
+
+
 def ella_daily_digest(
     client: Anthropic,
-    read_token: str,
+    ella_token: str,
     send_token: str,
     rocky_email: str,
     ella_email: str = ELLA_EMAIL,
     hours_back: int = 24,
 ) -> dict:
     """
-    Generate and email Ella's daily case digest. Reads her case info
-    spreadsheet, fetches emails from each case's Outlook folder in Ella's
-    inbox, summarizes via Claude, and emails the consolidated digest.
+    Generate and email Ella's daily case digest.
 
-    read_token: app-level token (client credentials) for reading Ella's mailbox.
-    send_token: delegated token for sending mail as Rocky.
+    ella_token: Ella's own delegated token (from --ella-auth) for reading
+                her mailbox via /me/ endpoints.
+    send_token: Rocky's delegated token for sending mail.
     """
     from outbound import send_mail_guarded
 
@@ -3429,7 +3557,7 @@ def ella_daily_digest(
         # Strip optional mailbox UNC prefix (\\user@domain\Inbox\... → Inbox\...).
         folder_path = re.sub(r"^\\\\[^\\]+\\", "", folder_path)
 
-        folder_id = resolve_folder_path(read_token, ella_email, folder_path)
+        folder_id = _resolve_folder_path_me(ella_token, folder_path)
         if not folder_id:
             log.warning(
                 f"[Ella] Could not resolve folder path {folder_path!r} "
@@ -3437,7 +3565,7 @@ def ella_daily_digest(
             )
             continue
 
-        emails = fetch_folder_emails(read_token, ella_email, folder_id, since)
+        emails = _fetch_folder_emails_me(ella_token, folder_id, since)
         if not emails:
             log.info(f"[Ella] No emails in last {hours_back}h for {case_name!r}")
             continue
@@ -3506,11 +3634,10 @@ def run_ella_digest_cli() -> None:
 
     config = load_config()
 
-    # App-level token for reading Ella's mailbox (client credentials).
-    app_token = acquire_app_token(config)
-    log.info("Acquired app-level token for mailbox reading")
+    # Ella's own token for reading her mailbox via /me/ endpoints.
+    ella_token = acquire_ella_token(config)
 
-    # Delegated token for sending mail as Rocky.
+    # Rocky's delegated token for sending mail.
     app = get_msal_app(config)
     send_token = acquire_token(app)
     audit_token_scopes(send_token)
@@ -3532,7 +3659,7 @@ def run_ella_digest_cli() -> None:
 
     result = ella_daily_digest(
         client=anthropic_client,
-        read_token=app_token,
+        ella_token=ella_token,
         send_token=send_token,
         rocky_email=rocky_email,
         hours_back=hours_back,
@@ -3555,41 +3682,38 @@ def run_ella_digest_cli() -> None:
 
 
 def run_ella_test_cli() -> None:
-    """Diagnose Ella mailbox access using app-level token."""
+    """Diagnose Ella mailbox access using Ella's own delegated token."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     config = load_config()
 
-    # Test app-level token.
-    print("\n=== Test 0: Acquire app-level token ===")
+    # Test Ella's token.
+    print("\n=== Test 0: Acquire Ella's token ===")
     try:
-        token = acquire_app_token(config)
-        print("OK — app token acquired")
+        token = acquire_ella_token(config)
+        print("OK — Ella's token acquired")
     except SystemExit:
-        print("FAILED — could not acquire app token. Check client_secret in config.json")
-        print("and Mail.Read application permission in Azure AD.")
+        print("FAILED — run 'rocky.exe --ella-auth' first so Ella can authenticate.")
         return
 
-    ella = ELLA_EMAIL
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
 
-    # Test 1: Can app token reach Ella's mailbox?
-    print(f"\n=== Test 1: Read Ella's Inbox ({ella}) via app token ===")
-    url = f"{GRAPH_API_BASE}/users/{ella}/mailFolders/Inbox"
+    # Test 1: Can Ella's token reach her own Inbox via /me/?
+    print(f"\n=== Test 1: Read Ella's Inbox via /me/ ===")
+    url = f"{GRAPH_API_BASE}/me/mailFolders/Inbox"
     resp = requests.get(url, headers=headers,
                         params={"$select": "id,displayName,totalItemCount,childFolderCount"},
                         timeout=30)
     if resp.status_code != 200:
         print(f"FAILED — HTTP {resp.status_code}: {resp.text[:300]}")
-        print("App token does NOT have access. Check Mail.Read application permission + admin consent.")
         return
     inbox = resp.json()
     print(f"OK — Inbox ID: {inbox.get('id', '?')[:20]}..., "
           f"totalItemCount: {inbox.get('totalItemCount', '?')}, "
           f"childFolderCount: {inbox.get('childFolderCount', '?')}")
 
-    # Test 2: Can we enumerate child folders now?
-    print(f"\n=== Test 2: List Inbox child folders via app token ===")
-    url = f"{GRAPH_API_BASE}/users/{ella}/mailFolders/Inbox/childFolders"
+    # Test 2: Can we enumerate child folders via /me/?
+    print(f"\n=== Test 2: List Inbox child folders via /me/ ===")
+    url = f"{GRAPH_API_BASE}/me/mailFolders/Inbox/childFolders"
     resp = requests.get(url, headers=headers,
                         params={"$select": "id,displayName,childFolderCount", "$top": "50"},
                         timeout=30)
@@ -3601,7 +3725,7 @@ def run_ella_test_cli() -> None:
         for f in folders:
             print(f"  {f.get('displayName', '?')} (children: {f.get('childFolderCount', '?')})")
 
-    # Test 3: Resolve first case folder path.
+    # Test 3: Resolve first case folder path via /me/.
     cases = load_ella_case_info()
     if cases:
         import re as _re
@@ -3611,7 +3735,7 @@ def run_ella_test_cli() -> None:
         print(f"\n=== Test 3: Resolve first case folder path ===")
         print(f"  Raw:   {raw_path}")
         print(f"  Clean: {clean_path}")
-        result = resolve_folder_path(token, ella, clean_path)
+        result = _resolve_folder_path_me(token, clean_path)
         if result:
             print(f"  OK — resolved to folder ID: {result[:30]}...")
         else:
@@ -3631,6 +3755,8 @@ def main():
         run_daily_digest_cli()
     elif "--steve-todo" in sys.argv:
         run_steve_todo_cli()
+    elif "--ella-auth" in sys.argv:
+        run_ella_auth_cli()
     elif "--ella-digest" in sys.argv:
         run_ella_digest_cli()
     elif "--ella-test" in sys.argv:
@@ -3643,6 +3769,7 @@ def main():
         print("  --daily-run    [RRID-XXXX]              Run per-case folder skills")
         print("  --daily-digest [RRID-XXXX] [--hours N]  Generate daily case digest")
         print("  --steve-todo                            Steve's daily to-do list from inbox")
+        print("  --ella-auth                             One-time: Ella authenticates for mailbox access")
         print("  --ella-digest  [--hours N]              Ella's daily case digest from inbox")
         sys.exit(0)
 
