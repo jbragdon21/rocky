@@ -31,6 +31,8 @@ import hashlib
 import io
 import json
 import logging
+import msvcrt
+import os
 import re
 import shutil
 import sys
@@ -3737,7 +3739,32 @@ def run_ella_test_cli() -> None:
     print()
 
 
+def acquire_instance_lock(command: str):
+    """
+    Prevent duplicate instances of the same command. Returns the open lock
+    file handle (caller must keep it alive for the process lifetime) or
+    exits if another instance is already running.
+    """
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    lock_path = STATE_DIR / f"rocky_{command}.lock"
+    try:
+        lock_fh = open(lock_path, "w")
+        msvcrt.locking(lock_fh.fileno(), msvcrt.LK_NBLCK, 1)
+        lock_fh.write(str(os.getpid()))
+        lock_fh.flush()
+        return lock_fh
+    except (OSError, IOError):
+        print(f"Another rocky {command} is already running. Exiting.")
+        sys.exit(0)
+
+
 def main():
+    command = next(
+        (a.lstrip("-") for a in sys.argv[1:] if a.startswith("--")), None
+    )
+    if command:
+        lock_fh = acquire_instance_lock(command)  # noqa: F841 — must stay alive
+
     if "--monitor-remy" in sys.argv:
         run_monitor_remy_cli()
     elif "--daily-cases" in sys.argv:
