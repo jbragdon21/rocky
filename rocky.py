@@ -1077,11 +1077,12 @@ def process_case_folder(
 
     Returns a result summary dict.
     """
-    # Read case-specific instructions. Skip folder entirely if missing.
-    project_dir = case_folder / "_project"
-    instructions_path = project_dir / "claude.md"
+    # Read case-specific instructions. Check case root first, then _project/.
+    instructions_path = case_folder / "CLAUDE.md"
     if not instructions_path.exists():
-        log.info(f"[{rrid}] No _project/claude.md — skipping daily run.")
+        instructions_path = case_folder / "_project" / "claude.md"
+    if not instructions_path.exists():
+        log.info(f"[{rrid}] No CLAUDE.md — skipping daily run.")
         return {"rrid": rrid, "processed": 0, "skipped": 0, "errors": 0,
                 "reason": "no_instructions"}
 
@@ -1093,7 +1094,7 @@ def process_case_folder(
                 "reason": f"instructions_unreadable: {e}"}
 
     if not case_instructions:
-        log.info(f"[{rrid}] _project/claude.md is empty — skipping.")
+        log.info(f"[{rrid}] CLAUDE.md is empty — skipping.")
         return {"rrid": rrid, "processed": 0, "skipped": 0, "errors": 0,
                 "reason": "instructions_empty"}
 
@@ -2495,7 +2496,7 @@ def run_daily_run_cli() -> None:
     if target_rrid:
         log.info(f"Target: {target_rrid} only")
     else:
-        log.info("Target: all case folders with _project/claude.md")
+        log.info("Target: all case folders with CLAUDE.md")
 
     results = daily_run(anthropic_client, instructions, target_rrid=target_rrid)
 
