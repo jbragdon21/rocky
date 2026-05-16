@@ -304,41 +304,56 @@ def resolve_folder_path(token: str, user_email: str, folder_path: str) -> str | 
         else:
             url = f"{GRAPH_API_BASE}/users/{user_email}/mailFolders"
 
-        # OData $filter with special chars (& ' etc.) can fail silently,
-        # so only filter server-side for simple alphanumeric names.
         safe_for_filter = all(c.isalnum() or c in " -_." for c in segment)
         params: dict[str, str] = {"$select": "id,displayName", "$top": "50"}
         if safe_for_filter:
             params["$filter"] = f"displayName eq '{segment}'"
             params["$top"] = "5"
 
-        # Include hidden folders — delegated mailbox access can hide child
-        # folders unless this preference is set.
         req_headers = {
             **headers,
             "Prefer": 'outlook.include-hidden-folders="true"',
         }
 
-        try:
-            resp = requests.get(url, headers=req_headers, params=params, timeout=30)
-        except requests.RequestException as e:
-            log.warning(f"Folder resolve failed at '{segment}': {e}")
-            return None
+        # Paginate through all child folders — large parent folders (like
+        # __Bozzuto Insured/Monitored Litigation) can have hundreds of children.
+        match = None
+        all_folders: list[dict] = []
+        next_url: str | None = None
+        page = 0
+        while page == 0 or next_url:
+            try:
+                if next_url:
+                    resp = requests.get(next_url, headers=req_headers, timeout=30)
+                else:
+                    resp = requests.get(url, headers=req_headers, params=params, timeout=30)
+            except requests.RequestException as e:
+                log.warning(f"Folder resolve failed at '{segment}': {e}")
+                return None
 
-        if resp.status_code != 200:
-            log.warning(f"Folder resolve failed at '{segment}': HTTP {resp.status_code}")
-            return None
+            if resp.status_code != 200:
+                log.warning(f"Folder resolve failed at '{segment}': HTTP {resp.status_code}")
+                return None
 
-        folders = resp.json().get("value", [])
-        match = next(
-            (f for f in folders if (f.get("displayName") or "").lower() == segment.lower()),
-            None,
-        )
+            data = resp.json()
+            folders = data.get("value", [])
+            all_folders.extend(folders)
+
+            match = next(
+                (f for f in folders if (f.get("displayName") or "").lower() == segment.lower()),
+                None,
+            )
+            if match:
+                break
+
+            next_url = data.get("@odata.nextLink")
+            page += 1
+
         if not match:
-            available = [f.get("displayName", "?") for f in folders[:20]]
+            available = [f.get("displayName", "?") for f in all_folders[:20]]
             log.warning(
                 f"Folder not found: '{segment}' (in path '{folder_path}'). "
-                f"Available ({len(folders)}): {available}"
+                f"Available ({len(all_folders)}): {available}"
             )
             return None
         parent_id = match["id"]
