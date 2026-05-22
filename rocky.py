@@ -1378,7 +1378,10 @@ You receive:
 Your output is a markdown section with exactly three subsections, in this order:
 
 **What happened**
-- Bulleted list. One bullet per meaningful event (email received, document filed, court order, etc.). Plain attorney English. Do NOT just regurgitate filenames — describe what each item IS based on the summary text. If multiple events share a theme, group them.
+- Bulleted list. Focus on substantive developments: court orders, new filings, discovery responses, settlement communications, scheduling changes. Plain attorney English.
+- De-emphasize routine email traffic and folder activity (emails forwarded, documents indexed/filed into folders, checklist updates). If the only activity is routine, a single bullet like "Routine email traffic only — no substantive developments" is sufficient.
+- If there were no emails at all, write "No new emails detected." If there was no folder/filing activity, write "No folder activity." Do not pad quiet days with filler.
+- For substantive events, describe what each item IS based on the summary text — do NOT just regurgitate filenames. If multiple events share a theme, group them.
 
 **Recommended next steps**
 - 1 to 3 concrete next actions James should consider, ordered by urgency. Prefer specific actions ("draft response to opposing counsel's discovery letter") over vague ones ("review the file"). If nothing requires action, write "(none — informational only)".
