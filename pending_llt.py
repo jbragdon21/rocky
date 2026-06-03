@@ -7,9 +7,10 @@ matches each property to its contacts, and creates a draft email per property
 in James's Drafts folder.
 
 Usage:
-    rocky.exe --pending-llt [--dry-run]
+    rocky.exe --pending-llt [--dry-run] [--limit N]
 
     --dry-run   Show what would be drafted without creating any emails.
+    --limit N   Only process the first N matched properties (useful for testing).
 """
 
 import io
@@ -28,7 +29,7 @@ GRAPH_API_BASE = "https://graph.microsoft.com/v1.0"
 
 # SharePoint file paths (relative to the document library root).
 LLT_FILE_PATH = "General/PENDING LLT MATTERS.XLSX"
-CONTACTS_FILE_PATH = "General/BMC Contacts (1).xlsx"
+CONTACTS_FILE_PATH = "General/BMC Contacts.xls"
 
 # Default template path — overridden by config["templates_path"] if present.
 _DEFAULT_TEMPLATES = (
@@ -453,9 +454,11 @@ def render_property_email(
 # Main pipeline
 # ============================================================================
 
-def run_pending_llt(token: str, config: dict, dry_run: bool = False) -> dict:
+def run_pending_llt(token: str, config: dict, dry_run: bool = False,
+                    limit: int | None = None) -> dict:
     """Full pipeline: download spreadsheets, match, draft emails.
 
+    limit: if set, only process the first N matched properties (useful for testing).
     Returns a summary dict with counts and any unmatched properties.
     """
     user_email = config.get("user_email", "jbragdon@gallagherllp.com")
@@ -527,6 +530,11 @@ def run_pending_llt(token: str, config: dict, dry_run: bool = False) -> dict:
             drafts_skipped += 1
             continue
 
+        # Respect --limit: stop after N matched properties.
+        if limit is not None and drafts_created >= limit:
+            drafts_skipped += 1
+            continue
+
         # Use the contact sheet's property name for the email (it's the canonical name).
         display_name = contact_entry["property_name"]
         subject = f"Pending LLT Matters — {display_name}"
@@ -575,6 +583,8 @@ def run_pending_llt(token: str, config: dict, dry_run: bool = False) -> dict:
     print(f"  Total matters:      {summary['total_matters']}")
     print(f"  Properties:         {summary['total_properties']}")
     print(f"  Drafts {'prepared' if dry_run else 'created'}:    {drafts_created}")
+    if limit is not None:
+        print(f"  Limit:              {limit}")
     print(f"  Skipped (no match): {drafts_skipped}")
 
     if unmatched_properties:

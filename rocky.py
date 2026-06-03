@@ -3779,15 +3779,27 @@ def run_pending_llt_cli() -> None:
 
     dry_run = "--dry-run" in sys.argv
 
+    # Parse --limit N.
+    limit = None
+    for i, arg in enumerate(sys.argv):
+        if arg == "--limit" and i + 1 < len(sys.argv):
+            try:
+                limit = int(sys.argv[i + 1])
+            except ValueError:
+                print(f"Invalid --limit value: {sys.argv[i + 1]}")
+                sys.exit(1)
+
     config = load_config()
     app = get_msal_app(config)
     token = acquire_token(app)
     audit_token_scopes(token)
 
     mode = "DRY RUN" if dry_run else "LIVE"
+    if limit:
+        mode += f", limit {limit}"
     log.info(f"[pending-llt] Starting ({mode})")
 
-    summary = pending_llt.run_pending_llt(token, config, dry_run=dry_run)
+    summary = pending_llt.run_pending_llt(token, config, dry_run=dry_run, limit=limit)
 
     if summary.get("error"):
         log.error(f"[pending-llt] Pipeline error: {summary['error']}")
@@ -3851,7 +3863,7 @@ def main():
         print("  --daily-digest [RRID-XXXX] [--hours N]  Generate daily case digest")
         print("  --steve-todo                            Steve's daily to-do list from inbox")
         print("  --ella-digest  [--hours N]              Ella's daily case digest from inbox")
-        print("  --pending-llt  [--dry-run]              Draft LLT status emails by property")
+        print("  --pending-llt  [--dry-run] [--limit N]  Draft LLT status emails by property")
         sys.exit(0)
 
 
