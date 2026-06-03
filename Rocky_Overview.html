@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rocky — Virtual Paralegal Overview</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: #0f1117;
+    color: #e8e8ec;
+    line-height: 1.6;
+  }
+
+  .slide {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 60px 40px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .slide-inner {
+    max-width: 1100px;
+    width: 100%;
+    z-index: 1;
+  }
+
+  /* Slide 1 — Title */
+  .slide-title {
+    background: linear-gradient(135deg, #0f1117 0%, #1a1d2e 50%, #0f1117 100%);
+    text-align: center;
+  }
+  .slide-title .logo-mark {
+    width: 120px; height: 120px;
+    background: linear-gradient(135deg, #3a7d5c, #5cb87a);
+    border-radius: 28px;
+    margin: 0 auto 40px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 56px;
+    box-shadow: 0 20px 60px rgba(58, 125, 92, 0.3);
+  }
+  .slide-title h1 {
+    font-size: 64px; font-weight: 800;
+    background: linear-gradient(135deg, #5cb87a, #8dd4a0);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    margin-bottom: 16px; letter-spacing: -1px;
+  }
+  .slide-title .subtitle {
+    font-size: 24px; font-weight: 300; color: #9498a8;
+    margin-bottom: 48px;
+  }
+  .slide-title .org-line {
+    font-size: 16px; color: #5a5e72; font-weight: 500;
+    letter-spacing: 3px; text-transform: uppercase;
+  }
+
+  /* Slide backgrounds */
+  .slide-dark { background: #0f1117; }
+  .slide-subtle { background: linear-gradient(180deg, #13151f 0%, #0f1117 100%); }
+  .slide-accent { background: linear-gradient(135deg, #111827 0%, #1a2332 100%); }
+
+  /* Section headers */
+  .section-label {
+    font-size: 13px; font-weight: 600; letter-spacing: 3px;
+    text-transform: uppercase; color: #5cb87a; margin-bottom: 12px;
+  }
+  .section-title {
+    font-size: 42px; font-weight: 700; color: #fff;
+    margin-bottom: 20px; letter-spacing: -0.5px; line-height: 1.2;
+  }
+  .section-desc {
+    font-size: 18px; color: #9498a8; max-width: 700px;
+    margin-bottom: 48px; line-height: 1.7;
+  }
+
+  /* Flow diagram — Slide 3 */
+  .flow-row {
+    display: flex; align-items: center; justify-content: center;
+    gap: 0; flex-wrap: wrap; margin-bottom: 40px;
+  }
+  .flow-step {
+    text-align: center; padding: 32px 28px;
+    background: linear-gradient(135deg, #1a1d2e, #1f2238);
+    border-radius: 20px; width: 240px;
+    border: 1px solid #2a2d42;
+    transition: transform 0.2s;
+  }
+  .flow-step:hover { transform: translateY(-4px); }
+  .flow-time {
+    font-size: 13px; font-weight: 600; color: #5cb87a;
+    letter-spacing: 1px; margin-bottom: 12px;
+  }
+  .flow-icon {
+    font-size: 44px; margin-bottom: 14px; display: block;
+  }
+  .flow-label {
+    font-size: 20px; font-weight: 700; color: #fff; margin-bottom: 10px;
+  }
+  .flow-desc {
+    font-size: 14px; color: #8a8ea0; line-height: 1.6;
+  }
+  .flow-arrow {
+    font-size: 28px; color: #3a7d5c; padding: 0 8px;
+    font-weight: 700;
+  }
+
+  /* Two-column layout */
+  .two-col {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 48px; align-items: start;
+  }
+  @media (max-width: 800px) {
+    .two-col { grid-template-columns: 1fr; }
+    .flow-row { flex-direction: column; }
+    .flow-arrow { transform: rotate(90deg); }
+  }
+
+  /* Cards */
+  .card {
+    background: linear-gradient(135deg, #1a1d2e, #1f2238);
+    border: 1px solid #2a2d42;
+    border-radius: 16px; padding: 32px;
+  }
+  .card-icon {
+    font-size: 36px; margin-bottom: 16px; display: block;
+  }
+  .card h3 {
+    font-size: 20px; font-weight: 700; color: #fff; margin-bottom: 10px;
+  }
+  .card p {
+    font-size: 15px; color: #8a8ea0; line-height: 1.7;
+  }
+
+  /* Email flow diagram */
+  .email-flow {
+    display: flex; flex-direction: column; align-items: center; gap: 0;
+  }
+  .email-box {
+    background: linear-gradient(135deg, #1a1d2e, #1f2238);
+    border: 1px solid #2a2d42;
+    border-radius: 16px; padding: 24px 36px;
+    text-align: center; width: 100%; max-width: 420px;
+  }
+  .email-box .icon { font-size: 32px; margin-bottom: 8px; }
+  .email-box .label { font-size: 18px; font-weight: 600; color: #fff; }
+  .email-box .detail { font-size: 14px; color: #8a8ea0; margin-top: 4px; }
+  .flow-down {
+    width: 2px; height: 36px; background: #3a7d5c; position: relative;
+  }
+  .flow-down::after {
+    content: '▼'; position: absolute; bottom: -14px; left: 50%;
+    transform: translateX(-50%); color: #3a7d5c; font-size: 14px;
+  }
+  .flow-annotation {
+    font-size: 13px; color: #5cb87a; padding: 10px 0;
+    font-weight: 500; text-align: center; max-width: 300px;
+  }
+
+  /* Folder tree */
+  .folder-tree {
+    font-family: 'Inter', monospace; font-size: 15px;
+    line-height: 2; color: #c8cad4;
+  }
+  .folder-tree .folder { color: #5cb87a; font-weight: 600; }
+  .folder-tree .file { color: #8a8ea0; }
+  .folder-tree .highlight {
+    background: rgba(92, 184, 122, 0.1);
+    border-radius: 6px; padding: 2px 8px;
+    border-left: 3px solid #5cb87a;
+  }
+  .tree-indent { padding-left: 28px; }
+  .tree-indent-2 { padding-left: 56px; }
+
+  /* Safety guardrails */
+  .guardrail-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 20px;
+  }
+  @media (max-width: 800px) {
+    .guardrail-grid { grid-template-columns: 1fr; }
+  }
+  .guardrail {
+    background: linear-gradient(135deg, #1c1520, #1f1828);
+    border: 1px solid #3d2a4a;
+    border-radius: 14px; padding: 24px;
+  }
+  .guardrail .icon { font-size: 28px; margin-bottom: 10px; display: block; }
+  .guardrail h4 {
+    font-size: 16px; font-weight: 700; color: #e8a0bf; margin-bottom: 6px;
+  }
+  .guardrail p { font-size: 14px; color: #9a8aaa; line-height: 1.6; }
+  .guardrail-ok {
+    background: linear-gradient(135deg, #142018, #182820);
+    border-color: #2a5a3a;
+  }
+  .guardrail-ok h4 { color: #5cb87a; }
+  .guardrail-ok p { color: #7aaa8a; }
+
+  /* Summary bar */
+  .summary-bar {
+    display: flex; justify-content: center; align-items: center;
+    gap: 12px; flex-wrap: wrap; margin-top: 48px;
+  }
+  .summary-step {
+    display: flex; align-items: center; gap: 10px;
+    background: linear-gradient(135deg, #1a1d2e, #1f2238);
+    border: 1px solid #2a2d42;
+    border-radius: 40px; padding: 14px 24px;
+  }
+  .summary-step .s-icon { font-size: 24px; }
+  .summary-step .s-text { font-size: 15px; font-weight: 600; color: #c8cad4; }
+  .summary-arrow { color: #3a7d5c; font-size: 20px; font-weight: 700; }
+
+  /* Bottom tagline */
+  .tagline {
+    text-align: center; margin-top: 48px; padding-top: 32px;
+    border-top: 1px solid #2a2d42;
+  }
+  .tagline p {
+    font-size: 22px; font-weight: 600; color: #5cb87a;
+    letter-spacing: -0.3px;
+  }
+  .tagline .sub {
+    font-size: 15px; font-weight: 400; color: #6a6e82; margin-top: 8px;
+  }
+
+  /* AI card */
+  .ai-card {
+    background: linear-gradient(135deg, #1a2332, #182030);
+    border: 1px solid #2a3a52;
+    border-radius: 16px; padding: 32px;
+  }
+  .ai-card h3 { color: #7aaddc; }
+  .ai-bullets { list-style: none; margin-top: 16px; }
+  .ai-bullets li {
+    font-size: 15px; color: #8aaccc; line-height: 1.7;
+    padding: 6px 0; padding-left: 28px; position: relative;
+  }
+  .ai-bullets li::before {
+    content: '→'; position: absolute; left: 4px; color: #5a9acc;
+    font-weight: 700;
+  }
+
+  /* Slide divider */
+  .slide-divider {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, #2a2d42, transparent);
+  }
+
+  /* Print styles */
+  @media print {
+    .slide { min-height: auto; page-break-after: always; padding: 40px; }
+    body { background: #fff; color: #222; }
+    .card, .flow-step, .email-box, .guardrail, .guardrail-ok, .ai-card, .summary-step {
+      background: #f5f5f5; border-color: #ddd;
+    }
+    .section-title, .card h3, .flow-label, .email-box .label { color: #222; }
+    .section-desc, .card p, .flow-desc, .email-box .detail, .guardrail p, .guardrail-ok p {
+      color: #555;
+    }
+  }
+</style>
+</head>
+<body>
+
+
+<!-- SLIDE 1: Title -->
+<section class="slide slide-title">
+  <div class="slide-inner">
+    <div class="logo-mark">🪨</div>
+    <h1>Rocky</h1>
+    <p class="subtitle">Virtual Paralegal — How It Works</p>
+    <p class="org-line">Gallagher LLP</p>
+  </div>
+</section>
+
+<div class="slide-divider"></div>
+
+
+<!-- SLIDE 2: What Is Rocky -->
+<section class="slide slide-dark">
+  <div class="slide-inner">
+    <p class="section-label">Overview</p>
+    <h2 class="section-title">What Is Rocky?</h2>
+    <p class="section-desc">
+      Rocky is a virtual paralegal that runs on a dedicated office computer.
+      Every afternoon, she reads the day's case-related emails, organizes
+      documents into the right folders, and writes a summary of the day's
+      activity — so the attorney can review everything in one place
+      before end of day.
+    </p>
+    <div class="two-col">
+      <div class="card">
+        <span class="card-icon">💻</span>
+        <h3>Runs Unattended</h3>
+        <p>Rocky operates on her own dedicated laptop in the office — always on,
+           always connected. No one needs to open the program or click "run."
+           She works on a set daily schedule, automatically.</p>
+      </div>
+      <div class="card">
+        <span class="card-icon">📂</span>
+        <h3>Organizes, Never Decides</h3>
+        <p>Rocky reads, sorts, and summarizes. She does not make legal decisions,
+           send communications to clients, or take action on any case.
+           The attorney reviews everything Rocky produces and decides what happens next.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="slide-divider"></div>
+
+
+<!-- SLIDE 3: Daily Workflow -->
+<section class="slide slide-subtle">
+  <div class="slide-inner">
+    <p class="section-label">Daily Workflow</p>
+    <h2 class="section-title">Three Tasks, Every Afternoon</h2>
+    <p class="section-desc">
+      Rocky runs three tasks in sequence each business day.
+      Each one builds on the last.
+    </p>
+    <div class="flow-row">
+      <div class="flow-step">
+        <div class="flow-time">4:00 PM</div>
+        <span class="flow-icon">📧</span>
+        <div class="flow-label">Collect</div>
+        <div class="flow-desc">
+          Reads today's emails for each active case from Outlook
+          and saves them into the case folder.
+        </div>
+      </div>
+      <span class="flow-arrow">→</span>
+      <div class="flow-step">
+        <div class="flow-time">4:30 PM</div>
+        <span class="flow-icon">📁</span>
+        <div class="flow-label">Organize</div>
+        <div class="flow-desc">
+          Files each document into the correct subfolder —
+          Pleadings, Correspondence, Client Documents, etc.
+        </div>
+      </div>
+      <span class="flow-arrow">→</span>
+      <div class="flow-step">
+        <div class="flow-time">5:00 PM</div>
+        <span class="flow-icon">📋</span>
+        <div class="flow-label">Summarize</div>
+        <div class="flow-desc">
+          Writes a plain-English digest of what happened in
+          each case and what needs attention.
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="slide-divider"></div>
+
+
+<!-- SLIDE 4: How Rocky Reads Email -->
+<section class="slide slide-dark">
+  <div class="slide-inner">
+    <div class="two-col">
+      <div>
+        <p class="section-label">Email Access</p>
+        <h2 class="section-title">How Rocky Reads Email</h2>
+        <p class="section-desc" style="margin-bottom: 24px;">
+          Rocky has her own Microsoft 365 account
+          (<strong>rocky@gallagherllp.com</strong>) with read-only
+          access to the attorney's inbox. She connects through
+          Microsoft's standard secure cloud system — the same one
+          Outlook and Teams use.
+        </p>
+        <p class="section-desc" style="margin-bottom: 0;">
+          Outlook rules (set up by the attorney) automatically sort
+          incoming mail into per-case folders. Rocky reads from those
+          folders — she never touches the main inbox.
+        </p>
+      </div>
+      <div class="email-flow">
+        <div class="email-box">
+          <div class="icon">📬</div>
+          <div class="label">Incoming Email</div>
+          <div class="detail">Arrives in the attorney's inbox</div>
+        </div>
+        <div class="flow-down"></div>
+        <div class="flow-annotation">Outlook rules sort automatically</div>
+        <div class="flow-down"></div>
+        <div class="email-box">
+          <div class="icon">📁</div>
+          <div class="label">Per-Case Folders</div>
+          <div class="detail">Smith v. Jones &nbsp;·&nbsp; Doe Eviction &nbsp;·&nbsp; Garcia Lease</div>
+        </div>
+        <div class="flow-down"></div>
+        <div class="flow-annotation">Rocky reads from here (read-only)</div>
+        <div class="flow-down"></div>
+        <div class="email-box" style="border-color: #2a5a3a;">
+          <div class="icon">🪨</div>
+          <div class="label">Rocky Processes</div>
+          <div class="detail">Saves, organizes, and summarizes</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="slide-divider"></div>
+
+
+<!-- SLIDE 5: Where Files Go -->
+<section class="slide slide-subtle">
+  <div class="slide-inner">
+    <p class="section-label">File Organization</p>
+    <h2 class="section-title">Where Do the Files Go?</h2>
+    <p class="section-desc">
+      Everything is stored in a shared OneDrive folder that anyone on the
+      team can browse. The structure mirrors how a paralegal would organize
+      a physical case file.
+    </p>
+    <div class="two-col">
+      <div class="card" style="font-size: 15px;">
+        <div class="folder-tree">
+          <div><span class="folder">📊 Rocky Cases/</span></div>
+          <div class="tree-indent"><span class="file">Case Index</span> — master list of all cases</div>
+          <div class="tree-indent"><span class="file">Daily Digests/</span> — Rocky's daily summaries</div>
+          <div class="tree-indent" style="margin-top: 8px;"><span class="folder">📁 Smith v. Jones/</span></div>
+          <div class="tree-indent-2">Pleadings/</div>
+          <div class="tree-indent-2">Correspondence/</div>
+          <div class="tree-indent-2">Court Documents/</div>
+          <div class="tree-indent-2">Client Documents/</div>
+          <div class="tree-indent-2">Drafts/</div>
+          <div class="tree-indent-2 highlight">Raw Documents/ ← new emails land here</div>
+          <div class="tree-indent" style="margin-top: 8px;"><span class="folder">📁 Doe Eviction/</span></div>
+          <div class="tree-indent-2 file">(same structure)</div>
+        </div>
+      </div>
+      <div>
+        <div class="card" style="margin-bottom: 20px;">
+          <span class="card-icon">📥</span>
+          <h3>Step 1: Collect</h3>
+          <p>New emails and attachments are saved into each case's
+             <strong>Raw Documents</strong> folder — an inbox for unprocessed items.</p>
+        </div>
+        <div class="card" style="margin-bottom: 20px;">
+          <span class="card-icon">📂</span>
+          <h3>Step 2: Organize</h3>
+          <p>Rocky reads the case's filing rules, then copies each document
+             from Raw Documents into the correct subfolder (Pleadings,
+             Correspondence, etc.).</p>
+        </div>
+        <div class="card">
+          <span class="card-icon">📋</span>
+          <h3>Step 3: Summarize</h3>
+          <p>A daily digest is written for each case that had activity —
+             covering what happened, what needs attention, and upcoming dates.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="slide-divider"></div>
+
+
+<!-- SLIDE 6: How Rocky Thinks -->
+<section class="slide slide-accent">
+  <div class="slide-inner">
+    <p class="section-label">Technology</p>
+    <h2 class="section-title">How Does Rocky "Think"?</h2>
+    <p class="section-desc">
+      Rocky uses Claude, an AI assistant made by Anthropic, to read and
+      understand documents. This is the same type of technology that
+      powers many professional tools in use across industries today.
+    </p>
+    <div class="two-col">
+      <div class="ai-card">
+        <span class="card-icon">🧠</span>
+        <h3>Rocky Uses AI To:</h3>
+        <ul class="ai-bullets">
+          <li>Read and understand emails and attachments</li>
+          <li>Decide where each document belongs in the case file</li>
+          <li>Write plain-English summaries of case activity</li>
+          <li>Flag items that need the attorney's attention</li>
+        </ul>
+      </div>
+      <div>
+        <div class="card" style="margin-bottom: 20px;">
+          <span class="card-icon">👤</span>
+          <h3>What Rocky Does Not Do</h3>
+          <p>Rocky does not make legal decisions, give legal advice, or
+             take any action on a case. She organizes and summarizes.
+             The attorney reviews everything and decides what happens next.</p>
+        </div>
+        <div class="card">
+          <span class="card-icon">📝</span>
+          <h3>Guided by Written Rules</h3>
+          <p>Rocky's behavior is controlled by plain-English instruction
+             files the attorney writes and can update at any time.
+             Changes take effect within minutes — no technical
+             work required.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="slide-divider"></div>
+
+
+<!-- SLIDE 7: Safety -->
+<section class="slide slide-dark">
+  <div class="slide-inner">
+    <p class="section-label">Safety &amp; Guardrails</p>
+    <h2 class="section-title">What Rocky Cannot Do — By Design</h2>
+    <p class="section-desc">
+      Rocky's limitations are enforced at the system level, not just in
+      her programming. Even if the software had a bug, these actions
+      are blocked by Microsoft 365 itself.
+    </p>
+    <div class="guardrail-grid">
+      <div class="guardrail">
+        <span class="icon">🚫</span>
+        <h4>Cannot Send Email as the Attorney</h4>
+        <p>The permission to send from the attorney's account does not exist
+           in the system and never will. This is not a setting that can be
+           accidentally turned on.</p>
+      </div>
+      <div class="guardrail">
+        <span class="icon">🚫</span>
+        <h4>Cannot Email Anyone Outside the Firm</h4>
+        <p>When Rocky eventually gains the ability to send from her own
+           account, a Microsoft mail-flow rule blocks all messages to
+           non-firm addresses.</p>
+      </div>
+      <div class="guardrail">
+        <span class="icon">🚫</span>
+        <h4>Cannot Modify or Delete Emails</h4>
+        <p>Rocky has read-only access to the attorney's mailbox. She cannot
+           move, edit, or delete any email in the inbox or its folders.</p>
+      </div>
+      <div class="guardrail">
+        <span class="icon">🚫</span>
+        <h4>Cannot Take Legal Action</h4>
+        <p>Rocky organizes documents and writes summaries. She does not
+           file anything with a court, respond to opposing counsel, or
+           communicate with clients.</p>
+      </div>
+      <div class="guardrail-ok">
+        <span class="icon">✅</span>
+        <h4>Emergency Shut-Off</h4>
+        <p>Sending an email with the subject "ROCKY STOP" immediately
+           shuts Rocky down. She stays off until manually restarted or
+           a "ROCKY START" email is sent.</p>
+      </div>
+      <div class="guardrail-ok">
+        <span class="icon">✅</span>
+        <h4>Full Audit Trail</h4>
+        <p>Every action Rocky takes is logged — every email she reads,
+           every file she moves, every summary she writes. The logs are
+           always available for review.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="slide-divider"></div>
+
+
+<!-- SLIDE 8: Summary -->
+<section class="slide slide-subtle">
+  <div class="slide-inner" style="text-align: center;">
+    <p class="section-label">In Summary</p>
+    <h2 class="section-title" style="margin-left: auto; margin-right: auto;">
+      Rocky Handles the Sorting.<br>The Attorney Handles the Law.
+    </h2>
+
+    <div class="summary-bar">
+      <div class="summary-step">
+        <span class="s-icon">📧</span>
+        <span class="s-text">Emails arrive</span>
+      </div>
+      <span class="summary-arrow">→</span>
+      <div class="summary-step">
+        <span class="s-icon">👀</span>
+        <span class="s-text">Rocky reads them</span>
+      </div>
+      <span class="summary-arrow">→</span>
+      <div class="summary-step">
+        <span class="s-icon">📂</span>
+        <span class="s-text">Files them</span>
+      </div>
+      <span class="summary-arrow">→</span>
+      <div class="summary-step">
+        <span class="s-icon">📋</span>
+        <span class="s-text">Summarizes</span>
+      </div>
+    </div>
+
+    <div class="tagline">
+      <p>Organize. Summarize. Flag. — Nothing more.</p>
+      <p class="sub">The attorney reviews the output and picks up exactly where they need to.</p>
+    </div>
+  </div>
+</section>
+
+
+</body>
+</html>

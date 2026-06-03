@@ -26,5 +26,12 @@
   "kill_switch_authorized": [
     "jbragdon@gallagherllp.com",
     "caraviakis@gallagherllp.com"
-  ]
+  ],
+
+  "_pending_llt_comment": "SharePoint config for the Pending LLT Matters pipeline. Templates path points to the Jinja2 email template folder.",
+  "sharepoint_hostname": "gejlaw.sharepoint.com",
+  "sharepoint_site_path": "/sites/MultifamilyHousing",
+  "llt_file_path": "General/PENDING LLT MATTERS.XLSX",
+  "contacts_file_path": "General/BMC Contacts (1).xlsx",
+  "templates_path": "C:\\Users\\jbragdon\\OneDrive\\OneDrive - gejlaw.com\\Program Files\\Rocky\\Rocky reference files\\templates"
 }

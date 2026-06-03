@@ -63,6 +63,14 @@ All done. Rocky laptop is live and running.
 - [x] `outbound.py` — `send_mail_guarded()` refuses non-`@gallagherllp.com` recipients
 - [x] `kill_switch.py` — ROCKY STOP / ROCKY START via email from authorized senders
 
+### Pending LLT Matters (code complete 2026-06-03)
+- [x] `pending_llt.py` — SharePoint download, spreadsheet parsing, property matching, draft creation
+- [x] Jinja2 email template at `OneDrive/.../Rocky reference files/templates/pending_llt_email.html`
+- [x] `--pending-llt [--dry-run]` CLI command wired into `rocky.py`
+- [x] Graph API: SharePoint site/drive resolution, file download
+- [x] Property matching: normalized names + "LLT Name" column support in contacts sheet
+- [x] `GRAPH_SCOPES` updated to include `Sites.Read.All`
+
 ### Remy integration (code complete, activation pending)
 - [x] `remy_runner.py` — parses "Run Remy:" form-email, invokes `remy_cli.py`, delivers output
 - [x] Classifier recognizes seven Remy categories
@@ -81,10 +89,20 @@ All done. Rocky laptop is live and running.
 | `--steve-todo` | 7:30 AM | Steve's daily to-do list from inbox |
 | `--ella-digest [--hours N]` | 5:00 PM | Ella's daily case digest |
 | `--monitor-remy` | 24/7 (via wrapper) | Poll Rocky's inbox for Remy requests |
+| `--pending-llt [--dry-run]` | On demand | Download LLT + contacts from SharePoint, draft status emails by property |
 
 ---
 
 ## Active — open items
+
+### Pending LLT Matters pipeline (code complete, activation pending)
+- [ ] IT: Add `Sites.Read.All` (delegated) to Rocky app registration + admin consent
+- [ ] Re-authenticate Rocky on laptop (device code flow — new scope consent)
+- [ ] Add pending LLT config fields to `config.json` on Rocky laptop (see `config.example.json`)
+- [ ] Verify contacts file path on SharePoint matches config (`General/BMC Contacts (1).xlsx`)
+- [ ] Run `--pending-llt --dry-run` to validate property matching
+- [ ] Add "LLT Name" column to BMC Contacts spreadsheet for unmatched properties
+- [ ] Run `--pending-llt` live to create drafts, review in Outlook
 
 ### Remy activation
 - [ ] Send test "Run Remy:" email to `rocky@gallagherllp.com`, verify end-to-end
@@ -98,6 +116,34 @@ All done. Rocky laptop is live and running.
 ### Classifier tuning (ongoing)
 - [ ] Spot-check `classifications.jsonl` periodically for false negatives
 - [ ] Update `instructions.md` as needed (push via .exe rebuild)
+
+---
+
+## Future — Paul Inbox Review (standalone)
+
+See BUILD_REFERENCE.md for full design. Helps Paul triage thousands of inbox messages via two passes: conversation-based sorting and Claude-assisted archive triage. Output is an Excel for Paul to review before anything moves.
+
+### Prerequisites
+- [ ] Get `Mail.ReadWrite` delegated access for Paul's mailbox (same pattern as Ella delegation)
+- [ ] `--paul-auth` one-time auth setup for Paul's mailbox access
+- [ ] Create "Inbox Archive" folder in Paul's mailbox
+
+### Pass 1: Conversation Sort
+- [ ] Fetch Paul's inbox metadata via Graph API
+- [ ] Match inbox messages to conversation threads with newer siblings already in named folders
+- [ ] Normalized-subject fallback (port `SortByConversation` VBA logic to Python — strip `[EXTERNAL]`, `RE:`, `FW:`)
+- [ ] Generate Sheet 1 of Excel output (Subject, From, Date, Read?, Proposed Folder, Reason, Approve Y/N)
+
+### Pass 2: Archive Triage
+- [ ] Batch remaining inbox metadata to Claude for classification (archive / needs-review / keep)
+- [ ] Conservative threshold — only propose high-confidence disposables (read newsletters, automated alerts, old read correspondence)
+- [ ] Generate Sheet 2 of Excel output (Subject, From, Date, Read?, Category, Confidence, Approve Y/N)
+
+### Execution & Safety
+- [ ] `--paul-inbox --dry-run` generates Excel only (default mode)
+- [ ] `--paul-inbox --execute <approved.xlsx>` reads approved Excel, moves only Y rows
+- [ ] Log every move to `paul_inbox_activity.jsonl` with original folder ID (undo capability)
+- [ ] Nothing deleted — only moved to named folders or Inbox Archive
 
 ---
 

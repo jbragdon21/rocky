@@ -1,36 +1,21 @@
 """
 One-time authentication for Ella's daily case digest.
 
-Ella runs this on her own workstation:
-    python ella_auth.py
-
-It authenticates via device code flow and saves the token cache to
-OneDrive so the Rocky laptop can pick it up automatically.
-
-Requirements:
-    pip install msal
+Ella double-clicks this .exe on her workstation. It authenticates via
+device code flow and saves ella_token_cache.json to her Desktop.
+She then sends that file to James.
 """
 
-import json
 import sys
+import os
 from pathlib import Path
 
-try:
-    import msal
-except ImportError:
-    print("Missing dependency. Run: pip install msal")
-    sys.exit(1)
+import msal
 
-# Rocky's Azure AD app registration.
 CLIENT_ID = "f012b5f9-051a-46f2-a2c8-15823ed63900"
 TENANT_ID = "9301144f-f5f1-48c5-9f23-907000d5f3d2"
 
-# Where to save the token cache — OneDrive syncs this to the Rocky laptop.
-OUTPUT_PATH = Path(
-    r"C:\Users\eaiken\OneDrive - gejlaw.com"
-    r"\James D. Bragdon's files - Program Files"
-    r"\Rocky\Ella Daily Case Digest\ella_token_cache.json"
-)
+OUTPUT_PATH = Path(os.path.expanduser("~")) / "Desktop" / "ella_token_cache.json"
 
 
 def main():
@@ -54,6 +39,7 @@ def main():
     flow = app.initiate_device_flow(scopes=["Mail.Read"])
     if "user_code" not in flow:
         print(f"Failed to start authentication: {flow}")
+        input("\nPress Enter to close...")
         sys.exit(1)
 
     print(flow["message"])
@@ -63,19 +49,19 @@ def main():
 
     if "access_token" not in result:
         print(f"Authentication failed: {result.get('error_description', result)}")
+        input("\nPress Enter to close...")
         sys.exit(1)
 
     username = result.get("id_token_claims", {}).get("preferred_username", "unknown")
 
-    # Save token cache.
-    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_PATH.write_text(cache.serialize(), encoding="utf-8")
 
     print(f"Authentication successful for: {username}")
     print(f"Token saved to: {OUTPUT_PATH}")
     print()
-    print("OneDrive will sync this to the Rocky laptop automatically.")
-    print("You can close this window.")
+    print("Please send the file 'ella_token_cache.json' from your")
+    print("Desktop to James Bragdon.")
+    input("\nPress Enter to close...")
 
 
 if __name__ == "__main__":

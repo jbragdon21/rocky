@@ -22,6 +22,10 @@ Rocky — Virtual Paralegal
   python rocky.py --ella-digest [--hours N]               (5:00 PM)
       Generate Ella Aiken's daily case digest from her inbox folders.
 
+  python rocky.py --pending-llt [--dry-run]              (on demand)
+      Download LLT spreadsheet + contacts from SharePoint, group by
+      property, create draft status-update emails in James's Drafts.
+
 On first run, you'll be prompted to authenticate via device code flow.
 Subsequent runs use the cached refresh token automatically.
 """
@@ -66,7 +70,7 @@ STATE_DIR = DATA_DIR / "state"
 TOKEN_CACHE_PATH = STATE_DIR / "token_cache.json"
 LOG_PATH = DATA_DIR / "rocky.log"
 
-GRAPH_SCOPES = ["Mail.Read", "Mail.Send"]
+GRAPH_SCOPES = ["Mail.Read", "Mail.Send", "Sites.Read.All"]
 REMY_LAST_CHECK_PATH = STATE_DIR / "remy_last_check.json"
 REMY_POLL_INTERVAL_SECONDS = 300  # 5 minutes
 GRAPH_API_BASE = "https://graph.microsoft.com/v1.0"
@@ -386,7 +390,7 @@ def fetch_attachments(token: str, user_email: str, message_id: str) -> list[dict
     attachment (e.g., calendar item attachments) / fetch failed.
     """
     url = f"{GRAPH_API_BASE}/users/{user_email}/messages/{message_id}/attachments"
-    params = {"$select": "id,name,contentType,size"}
+    params = {"$select": "id,name,contentType,size,isInline"}
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
 
     response = requests.get(url, headers=headers, params=params, timeout=30)
@@ -404,6 +408,7 @@ def fetch_attachments(token: str, user_email: str, message_id: str) -> list[dict
             "name": meta.get("name"),
             "contentType": meta.get("contentType"),
             "size": size,
+            "isInline": meta.get("isInline", False),
             "contentBytes": None,
         }
 
@@ -886,9 +891,15 @@ def save_email_to_case(
                 log.warning(f"Could not write email to Email Correspondence/: {e}")
 
     # Save each attachment that has bytes.
+    SIGNATURE_IMAGE_MAX = 15_000  # 15 KB — signature icons/logos are typically <5 KB
     for att in email.get("attachments", []):
         raw = att.get("contentBytes")
         if not raw:
+            continue
+        ct = (att.get("contentType") or "").lower()
+        if (att.get("isInline") and ct.startswith("image/")
+                and len(raw) <= SIGNATURE_IMAGE_MAX):
+            log.debug(f"Skipping inline signature image {att.get('name')!r} ({len(raw)} bytes)")
             continue
         safe_name = _sanitize_filename(att.get("name") or "attachment.bin")
         att_path = raw_dir / f"{prefix}_{safe_name}"
@@ -1015,6 +1026,55 @@ def save_master_index(path: Path, index: dict) -> None:
             json.dump(index, f, indent=2)
     except OSError as e:
         log.warning(f"Could not write {path}: {e}")
+
+
+def _extract_json_from_response(text: str) -> dict:
+    """Parse JSON from a Claude response, handling code fences and preamble."""
+    cleaned = text.strip()
+
+    # Strip markdown code fences (```json ... ``` or ``` ... ```).
+    fence_match = re.search(r"```(?:json)?\s*\n(.*?)```", cleaned, re.DOTALL)
+    if fence_match:
+        cleaned = fence_match.group(1).strip()
+
+    # Try direct parse first.
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    # Fall back: find the first top-level { ... } block via brace matching.
+    start = cleaned.find("{")
+    if start != -1:
+        depth = 0
+        in_string = False
+        escape_next = False
+        for i in range(start, len(cleaned)):
+            ch = cleaned[i]
+            if escape_next:
+                escape_next = False
+                continue
+            if ch == "\\":
+                escape_next = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = cleaned[start : i + 1]
+                    try:
+                        return json.loads(candidate)
+                    except json.JSONDecodeError:
+                        break
+
+    # Nothing worked — raise so the caller can handle it.
+    raise json.JSONDecodeError("No valid JSON object found in response", text, 0)
 
 
 def _strip_raw_prefix(filename: str) -> str:
@@ -1154,12 +1214,10 @@ Follow the case-specific instructions above. Return ONLY the JSON object."""
             messages=[{"role": "user", "content": user_prompt}],
         )
         text_out = response.content[0].text.strip()
-        if text_out.startswith("```"):
-            lines = text_out.split("\n")
-            text_out = "\n".join(l for l in lines if not l.startswith("```"))
-        result = json.loads(text_out)
+        result = _extract_json_from_response(text_out)
     except json.JSONDecodeError as e:
         log.error(f"[{rrid}] Could not parse daily-run response as JSON: {e}")
+        log.error(f"[{rrid}] Raw response (first 1000 chars): {text_out[:1000]}")
         append_case_activity(case_folder, {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "actor": "rocky",
@@ -1508,7 +1566,24 @@ def build_case_digest_section(
     activity_lines = []
     for ev in activity_events:
         event_type = ev.get("event", "unknown")
-        if event_type == "email_ingested":
+        if event_type == "daily_cases_email_summary":
+            activity_lines.append(
+                f"- daily_cases_email_summary: {ev.get('emails_fetched', 0)} emails, "
+                f"{ev.get('files_saved', 0)} files saved"
+            )
+            for em in ev.get("emails", []):
+                parts = [f"  - [{em.get('urgency', '?')}] {em.get('one_line', em.get('subject', '?'))}"]
+                parts.append(f"    from: {em.get('from_name', '?')} ({em.get('sender_role', '?')})")
+                parts.append(f"    type: {em.get('email_type', '?')}, response_required: {em.get('response_required', '?')}")
+                for dl in em.get("deadlines", []):
+                    parts.append(f"    DEADLINE: {dl.get('date')} — {dl.get('description')}")
+                for amt in em.get("dollar_amounts", []):
+                    parts.append(f"    $: {amt.get('amount')} — {amt.get('context')}")
+                activity_lines.append("\n".join(parts))
+            if ev.get("action_items"):
+                for item in ev["action_items"]:
+                    activity_lines.append(f"  ACTION: {item}")
+        elif event_type == "email_ingested":
             activity_lines.append(
                 f"- email_ingested: subject {ev.get('subject')!r} "
                 f"from {ev.get('from_address')}, "
@@ -2071,13 +2146,7 @@ Classify this email. Return ONLY the JSON object."""
             messages=[{"role": "user", "content": user_prompt}],
         )
         text = response.content[0].text.strip()
-
-        # Strip markdown code fences if Claude added any.
-        if text.startswith("```"):
-            lines = text.split("\n")
-            text = "\n".join(l for l in lines if not l.startswith("```"))
-
-        result = json.loads(text)
+        result = _extract_json_from_response(text)
         return result
     except json.JSONDecodeError as e:
         log.error(f"Could not parse classifier response as JSON: {e}")
@@ -2202,23 +2271,47 @@ def log_classification(
 # sends them to Claude for a summary, saves documents to the case folder, then
 # runs per-case folder skills (daily-run).
 
-CASE_EMAIL_SUMMARY_PROMPT = """You are Rocky, a litigation paralegal summarizing today's emails for one case belonging to James Bragdon at Gallagher LLP.
+CASE_EMAIL_SUMMARY_PROMPT = """You are Rocky, a litigation paralegal extracting structured data from today's emails for one case belonging to James Bragdon at Gallagher LLP.
 
 You receive:
 - The case description (parties, client, RRID)
 - Today's emails from the case's Outlook folder (subject, sender, body text, attachment names + extracted text)
 
-Return ONLY a JSON object:
+Return ONLY a JSON object with two top-level keys: a case-level summary and a per-email structured array.
+
 {
-  "summary": "<markdown summary of today's emails for this case — concise, attorney-readable, grouped by theme if multiple emails>",
-  "key_documents": ["<list of attachment filenames that appear substantive (leases, notices, ledgers, letters) vs. routine (signatures, logos)>"],
-  "action_items": ["<0-3 concrete next actions James should consider, ordered by urgency>"]
+  "summary": "<markdown summary of today's emails — concise, attorney-readable, grouped by theme if multiple>",
+  "action_items": ["<0-3 concrete next actions James should consider, ordered by urgency>"],
+  "emails": [
+    {
+      "subject": "<email subject line>",
+      "from_address": "<sender email>",
+      "from_name": "<sender display name>",
+      "sender_role": "<opposing_counsel | court | client | property_manager | co_counsel | vendor | government | unknown>",
+      "email_type": "<filing_notice | correspondence | scheduling | demand | notice | payment | discovery | status_update | forwarded_request | informational | unknown>",
+      "response_required": true,
+      "urgency": "<high | medium | low>",
+      "deadlines": [
+        {"date": "YYYY-MM-DD", "description": "<what is due>"}
+      ],
+      "dollar_amounts": [
+        {"amount": 1500.00, "context": "<what the amount is for>"}
+      ],
+      "key_documents": ["<substantive attachment filenames — leases, notices, ledgers, letters; omit routine signatures/logos>"],
+      "parties_mentioned": ["<names of parties, witnesses, or entities referenced>"],
+      "one_line": "<single-sentence summary of this email>"
+    }
+  ]
 }
 
 RULES:
-- summary: terse and factual. Past-tense for events. No filler. If only one email, a couple sentences suffice.
-- key_documents: only list attachments that matter. Empty [] if none are substantive.
+- summary: terse and factual. Past-tense for events. No filler.
 - action_items: specific actions, not vague. Empty [] if nothing needs attention.
+- emails: one entry per email received. Every field required; use empty arrays for deadlines/dollar_amounts/key_documents/parties_mentioned when none apply.
+- deadlines: extract explicit dates only. Do not infer or guess deadlines. Use ISO format.
+- dollar_amounts: only amounts explicitly stated in the email text or attachments.
+- sender_role: classify based on context — email domain, signature block, how the sender relates to the case.
+- urgency: high = deadline within 7 days or court order; medium = action needed but no immediate pressure; low = FYI or routine.
 """
 
 
@@ -2303,21 +2396,26 @@ Summarize these emails. Return ONLY the JSON object."""
             messages=[{"role": "user", "content": user_prompt}],
         )
         text_out = response.content[0].text.strip()
-        if text_out.startswith("```"):
-            lines = text_out.split("\n")
-            text_out = "\n".join(l for l in lines if not l.startswith("```"))
-        summary_result = json.loads(text_out)
+        summary_result = _extract_json_from_response(text_out)
     except json.JSONDecodeError as e:
         log.error(f"[{rrid}] Could not parse email summary as JSON: {e}")
-        summary_result = {"summary": f"(parse error: {e})", "key_documents": [], "action_items": []}
+        log.error(f"[{rrid}] Raw response (first 1000 chars): {text_out[:1000]}")
+        summary_result = {"summary": f"(parse error: {e})", "emails": [], "action_items": []}
     except Exception as e:
         log.error(f"[{rrid}] Email summary Claude call failed: {e}")
-        summary_result = {"summary": f"(error: {e})", "key_documents": [], "action_items": []}
+        summary_result = {"summary": f"(error: {e})", "emails": [], "action_items": []}
 
     log.info(f"[{rrid}] Summary: {summary_result.get('summary', '')[:120]}")
     if summary_result.get("action_items"):
         for item in summary_result["action_items"]:
             log.info(f"[{rrid}]   action: {item}")
+    structured_emails = summary_result.get("emails", [])
+    high_urgency = [e for e in structured_emails if e.get("urgency") == "high"]
+    all_deadlines = [d for e in structured_emails for d in e.get("deadlines", [])]
+    if high_urgency:
+        log.info(f"[{rrid}] {len(high_urgency)} high-urgency email(s)")
+    if all_deadlines:
+        log.info(f"[{rrid}] Deadlines extracted: {all_deadlines}")
 
     # Save emails + attachments to the case's Raw Documents folder.
     total_saved = 0
@@ -2346,6 +2444,7 @@ Summarize these emails. Return ONLY the JSON object."""
         "files_saved": total_saved,
         "summary": summary_result.get("summary"),
         "action_items": summary_result.get("action_items", []),
+        "emails": structured_emails,
     })
 
     return {
@@ -3649,6 +3748,34 @@ def run_ella_test_cli() -> None:
     print()
 
 
+def run_pending_llt_cli() -> None:
+    """CLI entry point for --pending-llt: download LLT + contacts from
+    SharePoint, group by property, create draft emails in James's Drafts."""
+    import pending_llt
+
+    dry_run = "--dry-run" in sys.argv
+
+    config = load_config()
+    app = get_msal_app(config)
+    token = acquire_token(app)
+    audit_token_scopes(token)
+
+    mode = "DRY RUN" if dry_run else "LIVE"
+    log.info(f"[pending-llt] Starting ({mode})")
+
+    summary = pending_llt.run_pending_llt(token, config, dry_run=dry_run)
+
+    if summary.get("error"):
+        log.error(f"[pending-llt] Pipeline error: {summary['error']}")
+        sys.exit(1)
+
+    log.info(
+        f"[pending-llt] Done — {summary['drafts_created']} drafts, "
+        f"{summary['drafts_skipped']} skipped, "
+        f"{len(summary.get('unmatched_properties', []))} unmatched"
+    )
+
+
 def acquire_instance_lock(command: str):
     """
     Prevent duplicate instances of the same command. Returns the open lock
@@ -3689,6 +3816,8 @@ def main():
         run_ella_digest_cli()
     elif "--ella-test" in sys.argv:
         run_ella_test_cli()
+    elif "--pending-llt" in sys.argv:
+        run_pending_llt_cli()
     else:
         print(__doc__)
         print("Available commands:")
@@ -3698,6 +3827,7 @@ def main():
         print("  --daily-digest [RRID-XXXX] [--hours N]  Generate daily case digest")
         print("  --steve-todo                            Steve's daily to-do list from inbox")
         print("  --ella-digest  [--hours N]              Ella's daily case digest from inbox")
+        print("  --pending-llt  [--dry-run]              Draft LLT status emails by property")
         sys.exit(0)
 
 

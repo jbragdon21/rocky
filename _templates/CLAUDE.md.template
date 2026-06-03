@@ -1,0 +1,184 @@
+# {{CASE_NAME}} — Case File Instructions
+
+## Case Overview
+
+**RRID:** {{RRID}}
+**Case Style:** {{PLAINTIFF}} v. {{DEFENDANT}}
+**Case Number:** {{CASE_NUMBER}}
+**Court:** {{COURT}}
+**Judge:** {{JUDGE}}
+**Filed:** {{DATE_FILED}}
+
+Attorney: **James Bragdon**, Gallagher LLP (jbragdon@gallagherllp.com)
+
+---
+
+## Activity Logging
+
+**Every Claude session (Cowork, Claude Code, Rocky) MUST log all activity to `activitylog.md` in this case folder.** This is the single audit trail for everything that happens in this case — who did what, when, and why.
+
+### Before starting any work:
+1. Read `activitylog.md` to see what other sessions have already done
+2. Check what files exist to avoid duplicating work
+
+### After completing any action that creates, modifies, or deletes files:
+Append an entry to `activitylog.md` using this exact format:
+
+```
+### [YYYY-MM-DD HH:MM] — Short action title
+
+- **User:** Name or email of the person who initiated the session
+- **Session type:** Cowork | Claude Code | Rocky (daily-run) | Rocky (daily-cases)
+- **Files affected:** List of files created, modified, or deleted (use relative paths from case folder)
+- **Status:** Completed | In Progress | Needs Review
+
+Description of what was done and why. 2–3 sentences. Note any open questions or follow-ups.
+```
+
+If `activitylog.md` does not exist yet, create it with the header template from the Activity Log Format section at the bottom of this file, then add your entry.
+
+---
+
+## Folder Structure
+
+Every case folder uses these six standard subfolders. Create any that are missing; do not rename or restructure them.
+
+| Folder | Contents |
+|--------|----------|
+| `Email Correspondence` | All email communications related to the case — attorney-to-attorney, client communications, court notices received by email, opposing counsel correspondence |
+| `Fact Research` | Client-produced documents, leases, ledgers, inspection reports, photographs, contracts, applications, payment records, and other factual evidence |
+| `Legal Research` | Statutes, rules, case law, legal memoranda, and research notes |
+| `Miscellaneous` | Filing templates, letterhead templates, engagement letters, billing records, and anything that doesn't fit the other categories |
+| `Pleadings` | All court filings — complaints, answers, motions, oppositions, replies, orders, summons, writs. Named with sequential `PLD-###` prefix |
+| `Raw Documents` | Unprocessed uploads — the original staging area. **Never delete or rename files here.** Originals stay to preserve provenance; organized copies go to the appropriate subfolder |
+
+### Classification Rules
+
+When filing a new document, use these rules:
+
+- Court filings, summons, complaints, motions, orders → `Pleadings`
+- Emails between attorneys, from clients, from courts, from opposing parties → `Email Correspondence`
+- Leases, ledgers, applications, inspection reports, contracts, payment records, client-produced documents → `Fact Research`
+- Statutes, case law, legal memos → `Legal Research`
+- Engagement letters, billing, templates → `Miscellaneous`
+- If a document could belong in multiple folders, copy it to all appropriate locations
+- When in doubt, file to `Fact Research` and note the ambiguity in the activity log
+
+### Pleading File Naming
+
+All files in `Pleadings/` use this naming convention:
+
+```
+PLD-### [Document Title] ([Case Style], Filed YYYY-MM-DD).pdf
+```
+
+Example: `PLD-001 Complaint (Smith v. Jones, Filed 2026-03-15).pdf`
+
+The complaint is always PLD-001. Continue sequential numbering from the highest existing PLD-### number.
+
+---
+
+## Work Product Files (Case Root)
+
+These documents live in the root of the case folder (not in a subfolder). Each should be kept current as new documents arrive.
+
+### 1. Case Status Memorandum
+
+**File:** `Case Status Memorandum - {{SHORT_CASE_STYLE}}.docx`
+
+The master reference document for the case. Contains: case information, parties, current posture, key dates and deadlines, legal claims, factual summary, and a chronological timeline of events. Built with the `docx` npm package (docx-js). **Update as the case develops** — new filings, new deadlines, status changes.
+
+### 2. Pleadings Index
+
+**File:** `Pleadings Index.xlsx`
+
+Excel spreadsheet tracking all court filings. Columns: Index No. | Document Title | Date Filed | Filed By | Docket Entry | File Name | Notes. Built with `openpyxl`. **Update whenever a new pleading is added to `Pleadings/`.**
+
+### 3. Searchable Text Index
+
+**File:** `Searchable Text Index - {{SHORT_CASE_STYLE}}.md`
+
+Markdown file containing extracted text from all documents across the case file. Each entry follows this format:
+
+```markdown
+---
+
+## [filename]
+
+- **Folder:** [subfolder name]
+- **Type:** [PDF/DOCX/XLSX/etc.]
+- **Size:** [file size]
+
+[Full extracted text content]
+```
+
+Deduplicated — files appearing in multiple folders are extracted once. Use Grep on this file for fast full-text searching across the entire case without extracting PDFs individually.
+
+**Update whenever new documents are filed.** Use `pdftotext -layout` for PDFs. For image-only PDFs, note "IMAGE-BASED — NO TEXT LAYER" and flag for OCR.
+
+### 4. File Index
+
+**File:** `File Index - {{SHORT_CASE_STYLE}}.docx`
+
+Formal index listing every file across all subfolders, organized by folder with tables showing filename, type, size, and a one-line description. Built with the `docx` npm package. **Update whenever files are added, renamed, or moved.**
+
+---
+
+## Standard Workflow for New Document Uploads
+
+When new documents appear in `Raw Documents/`, follow these steps in order:
+
+### Step 1 — Identify New Documents
+Compare the contents of `Raw Documents/` against all other subfolders to identify files that have not yet been organized. Cross-reference by filename and content hash where filenames are ambiguous (scanner-generated names, etc.). List any new files found.
+
+### Step 2 — Review and Classify
+For each new document, extract text (using `pdftotext -layout` for PDFs) or visually inspect (for images). Determine the appropriate subfolder using the classification rules above. Some documents may belong in multiple folders — copy to all appropriate locations.
+
+### Step 3 — Organize into Subfolders
+Copy each new file from `Raw Documents/` into the appropriate subfolder(s). **Do not remove files from Raw Documents** — it serves as the original upload archive and preserves provenance.
+
+Rename files to follow a consistent, descriptive convention when the original name is unhelpful (e.g., scanner auto-names like `DOC042926-04292026105805.pdf`). Keep the original filename in Raw Documents untouched.
+
+### Step 4 — Update the Case Status Memorandum
+Add any new dates, events, or developments to the Case Status Memorandum. Update the chronological timeline. Use the docx skill's unpack/edit XML/repack workflow for existing documents.
+
+### Step 5 — Update the File Index
+Regenerate or update the File Index to reflect newly organized files. Include the one-line description for each new entry.
+
+### Step 6 — Update the Searchable Text Index
+Append extracted text for each new document following the existing format. Flag image-based PDFs that need OCR.
+
+### Step 7 — Update the Pleadings Index
+If any new documents are court filings, add them to the Pleadings Index with the next sequential PLD-### number and rename the file in `Pleadings/` accordingly.
+
+### Step 8 — Log and Report
+1. Append an entry to `activitylog.md` with the full list of files affected
+2. Provide a summary of what was added: number of new documents, where each was filed, and key facts or dates discovered
+
+---
+
+## Technical Notes
+
+- **DOCX editing** (existing files): Use the docx skill. Workflow: `unpack.py` → edit `word/document.xml` directly → `repack.py` → `validate.py`. Scripts are at the docx skill's scripts path.
+- **DOCX creation** (new files): Use Node.js with `npm install docx` (local install). The `docx` package (docx-js) handles programmatic document generation.
+- **PDF text extraction**: `pdftotext -layout <file> -` for inline output.
+- **Excel files**: Use `openpyxl` (Python) for .xlsx creation and editing.
+- **Full-text search**: `grep -i "search term" "Searchable Text Index - {{SHORT_CASE_STYLE}}.md"`
+
+---
+
+## Activity Log Format
+
+When creating a new `activitylog.md` in this case folder, use this header:
+
+```markdown
+# Activity Log — {{CASE_NAME}} ({{RRID}})
+
+> **Purpose:** This file tracks all actions taken by Rocky, Claude Cowork, and Claude Code sessions on this case folder. Every Claude session with access to this folder MUST (1) read this log before starting work, and (2) append an entry after completing any action that creates, modifies, or deletes files or produces work product.
+>
+> **Format:** Entries must follow the template below exactly so they can be parsed by Rocky's digest system.
+
+---
+
+## Log Entries
+```

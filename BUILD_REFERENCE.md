@@ -238,6 +238,24 @@ When iteration 1 is validated and James moves to Phase A, the production archite
 - `case-deadline-extraction` — pull deadlines from new filings
 - `case-archive` — close out a case
 
+**Paul Inbox Review (standalone task):** Helps Paul Gallagher triage an unorganized inbox of thousands of messages. Two-pass approach:
+
+1. **Conversation Sort Pass** (high confidence) — For each inbox message, check whether a *newer* email in the same conversation thread already lives in a named folder. If so, propose moving the older inbox message to that same folder. Uses Graph API `conversationId` as the primary matching strategy, with a normalized-subject fallback that strips `[EXTERNAL]`, `RE:`, `FW:` prefixes (ported from James's `SortByConversation` VBA macro). This pass has strong signal — a human already sorted a newer reply, so the older messages almost certainly belong there too.
+
+2. **Archive Triage Pass** (Claude-assisted, conservative) — From remaining inbox messages not covered by Pass 1, pull lightweight metadata (sender, subject, date, read/unread, has-attachments). Batch to Claude for classification: `archive` / `needs-review` / `keep`. High-confidence disposables (read newsletters, automated alerts, old read correspondence with no recent activity) are proposed for an "Inbox Archive" folder. Conservative threshold — for a lawyer's inbox, under-archiving is safer than over-archiving.
+
+**Output format:** Excel workbook with two sheets. Sheet 1 (Conversation Sort): Subject, From, Date, Read?, Proposed Folder, Reason, Approve (Y/N prefilled Y). Sheet 2 (Archive Triage): Subject, From, Date, Read?, Category, Confidence, Approve (Y/N prefilled Y). Paul reviews the spreadsheet, adjusts approvals, and Rocky executes only approved rows on the next run.
+
+**Execution model:** `--paul-inbox [--dry-run]`. Dry-run (default initially) generates the Excel only. Execution mode reads an approved Excel back and performs the moves, logging every action to `paul_inbox_activity.jsonl` with original folder IDs for undo capability. Nothing is ever deleted — only moved.
+
+**Permission requirement:** Rocky needs `Mail.ReadWrite` delegated access to Paul's mailbox (same pattern as Ella's delegation). Graph API folder operations: `GET /users/{paul}/mailFolders/{inbox}/messages` for metadata, `PATCH /users/{paul}/messages/{id}` to move.
+
+**Teams chat capability:** Rocky communicates with firm users via Microsoft Teams through the `rocky@gallagherllp.com` Teams account. Uses delegated permissions (Rocky's existing device code flow), not application permissions — Microsoft doesn't support sending Teams chat messages via client credentials.
+
+**Required delegated permissions:** `Chat.Create`, `Chat.ReadWrite`, `ChatMessage.Send`. Added to `GRAPH_SCOPES` in rocky.py alongside existing `Mail.Read` and `Mail.Send`.
+
+**Graph API pattern:** Create a 1:1 chat with `POST /chats` (members: Rocky + target user), then send messages with `POST /chats/{chat-id}/messages`. Rocky can receive replies by polling `GET /chats/{chat-id}/messages`.
+
 **Tracked-client capability (Phase E):** Specific clients can be flagged for high-touch tracking. For each tracked client, Rocky maintains a running communications log, a pending-items file, and can generate on-demand call agendas. This handles 5-15 high-volume or strategically-important clients.
 
 ---
