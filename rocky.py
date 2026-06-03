@@ -3595,19 +3595,48 @@ def run_ella_test_cli() -> None:
           f"totalItemCount: {inbox.get('totalItemCount', '?')}, "
           f"childFolderCount: {inbox.get('childFolderCount', '?')}")
 
-    # Test 2: Can we enumerate child folders?
-    print(f"\n=== Test 2: List Inbox child folders ===")
+    # Test 2: Walk the folder tree: Inbox → Clients & Cases → children → children.
+    print(f"\n=== Test 2: Walk folder tree ===")
     url = f"{GRAPH_API_BASE}/users/{ella}/mailFolders/Inbox/childFolders"
     resp = requests.get(url, headers=headers,
                         params={"$select": "id,displayName,childFolderCount", "$top": "50"},
                         timeout=30)
     if resp.status_code != 200:
-        print(f"FAILED — HTTP {resp.status_code}: {resp.text[:300]}")
+        print(f"FAILED listing Inbox children — HTTP {resp.status_code}: {resp.text[:300]}")
     else:
         folders = resp.json().get("value", [])
-        print(f"{len(folders)} child folder(s) of Inbox:")
+        print(f"Inbox has {len(folders)} child folder(s):")
         for f in folders:
-            print(f"  {f.get('displayName', '?')} (children: {f.get('childFolderCount', '?')})")
+            fname = f.get("displayName", "?")
+            fchildren = f.get("childFolderCount", 0)
+            print(f"  {fname} (children: {fchildren})")
+
+            # Drill into any folder with children.
+            if fchildren and int(fchildren) > 0:
+                fid = f["id"]
+                url2 = f"{GRAPH_API_BASE}/users/{ella}/mailFolders/{fid}/childFolders"
+                resp2 = requests.get(url2, headers=headers,
+                                     params={"$select": "id,displayName,childFolderCount", "$top": "50"},
+                                     timeout=30)
+                if resp2.status_code == 200:
+                    children2 = resp2.json().get("value", [])
+                    for c2 in children2:
+                        c2name = c2.get("displayName", "?")
+                        c2children = c2.get("childFolderCount", 0)
+                        print(f"    └─ {c2name} (children: {c2children})")
+
+                        # One more level deep.
+                        if c2children and int(c2children) > 0:
+                            c2id = c2["id"]
+                            url3 = f"{GRAPH_API_BASE}/users/{ella}/mailFolders/{c2id}/childFolders"
+                            resp3 = requests.get(url3, headers=headers,
+                                                 params={"$select": "id,displayName,childFolderCount", "$top": "50"},
+                                                 timeout=30)
+                            if resp3.status_code == 200:
+                                for c3 in resp3.json().get("value", []):
+                                    print(f"        └─ {c3.get('displayName', '?')} (children: {c3.get('childFolderCount', 0)})")
+                else:
+                    print(f"    (failed to list children: HTTP {resp2.status_code})")
 
     # Test 3: Resolve first case folder path.
     cases = load_ella_case_info()
