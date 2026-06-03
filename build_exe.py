@@ -40,7 +40,10 @@ def build_rocky():
         "--add-data", f"{ROOT / 'outbound.py'};.",
         "--add-data", f"{ROOT / 'remy_runner.py'};.",
         "--add-data", f"{ROOT / 'kill_switch.py'};.",
+        "--add-data", f"{ROOT / 'pending_llt.py'};.",
         "--add-data", f"{ROOT / 'Icon'};Icon",
+        # Jinja2 is used by pending_llt; ensure PyInstaller bundles it.
+        "--hidden-import", "jinja2",
         # Clean build each time.
         "--clean",
         str(ROOT / "rocky.py"),
