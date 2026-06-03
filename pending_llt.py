@@ -29,7 +29,7 @@ GRAPH_API_BASE = "https://graph.microsoft.com/v1.0"
 
 # SharePoint file paths (relative to the document library root).
 LLT_FILE_PATH = "General/PENDING LLT MATTERS.XLSX"
-CONTACTS_FILE_PATH = "General/BMC Contacts.xls"
+CONTACTS_FILE_PATH = "General/BMC Contacts.xlsx"
 
 # Default template path — overridden by config["templates_path"] if present.
 _DEFAULT_TEMPLATES = (
