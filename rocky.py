@@ -286,15 +286,8 @@ def resolve_folder_path(token: str, user_email: str, folder_path: str) -> str | 
             params["$filter"] = f"displayName eq '{segment}'"
             params["$top"] = "5"
 
-        # Include hidden folders — delegated mailbox access can hide child
-        # folders unless this preference is set.
-        req_headers = {
-            **headers,
-            "Prefer": 'outlook.include-hidden-folders="true"',
-        }
-
         try:
-            resp = requests.get(url, headers=req_headers, params=params, timeout=30)
+            resp = requests.get(url, headers=headers, params=params, timeout=30)
         except requests.RequestException as e:
             log.warning(f"Folder resolve failed at '{segment}': {e}")
             return None
