@@ -290,11 +290,6 @@ def resolve_folder_path(token: str, user_email: str, folder_path: str) -> str | 
             params["$filter"] = f"displayName eq '{segment}'"
             params["$top"] = "5"
 
-        req_headers = {
-            **headers,
-            "Prefer": 'outlook.include-hidden-folders="true"',
-        }
-
         # Paginate through all child folders — large parent folders (like
         # __Bozzuto Insured/Monitored Litigation) can have hundreds of children.
         match = None
@@ -304,9 +299,9 @@ def resolve_folder_path(token: str, user_email: str, folder_path: str) -> str | 
         while page == 0 or next_url:
             try:
                 if next_url:
-                    resp = requests.get(next_url, headers=req_headers, timeout=30)
+                    resp = requests.get(next_url, headers=headers, timeout=30)
                 else:
-                    resp = requests.get(url, headers=req_headers, params=params, timeout=30)
+                    resp = requests.get(url, headers=headers, params=params, timeout=30)
             except requests.RequestException as e:
                 log.warning(f"Folder resolve failed at '{segment}': {e}")
                 return None
