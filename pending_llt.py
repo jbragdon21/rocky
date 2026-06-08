@@ -361,6 +361,7 @@ def create_draft_email(
     to_addresses: list[str],
     subject: str,
     html_body: str,
+    cc_addresses: list[str] | None = None,
 ) -> dict:
     """Create a draft email in the user's Drafts folder.
 
@@ -380,6 +381,10 @@ def create_draft_email(
         "toRecipients": [{"emailAddress": {"address": addr}} for addr in to_addresses],
         "isDraft": True,
     }
+    if cc_addresses:
+        payload["ccRecipients"] = [
+            {"emailAddress": {"address": addr}} for addr in cc_addresses
+        ]
 
     try:
         resp = requests.post(url, headers=headers, json=payload, timeout=30)
@@ -415,16 +420,55 @@ def load_email_template(config: dict) -> Template:
     return Template(html)
 
 
+_RENT_KEYWORDS = re.compile(
+    r"(?i)\b(nonpayment|non-payment|rent|utilities|utility)\b"
+)
+_COURT_KEYWORDS = re.compile(
+    r"(?i)\b(filed|court|hearing|trial|docket|served)\b"
+)
+_RIPE_OVERRIDE_RENT = (
+    "Notice date has passed. Please submit updated ledger "
+    "if a balance remains for filing."
+)
+_RIPE_OVERRIDE_BREACH = "Notice date has passed. Have issues resolved?"
+
 _FALLBACK_TEMPLATE = """\
 <p>Pending LLT matters for <strong>{{ property_name }}</strong> ({{ date }}):</p>
 <table border="1" cellpadding="4" cellspacing="0">
-<tr><th>Tenant</th><th>Unit</th><th>Status</th><th>Ripe Date</th><th>Next Steps</th></tr>
+<tr><th>Tenant</th><th>Unit</th><th>Status</th><th>Next Steps</th></tr>
 {% for m in matters %}
-<tr><td>{{ m.name }}</td><td>{{ m.unit }}</td><td>{{ m.status }}</td><td>{{ m.ripe_date }}</td><td>{{ m.next_steps }}</td></tr>
+<tr><td>{{ m.name }}</td><td>{{ m.unit }}</td><td>{{ m.status }}</td><td>{{ m.next_steps }}</td></tr>
 {% endfor %}
 </table>
 <p>Total: {{ matters | length }}</p>
 """
+
+
+def _prepare_matters_for_template(matters: list[dict]) -> list[dict]:
+    """Add display flags and override next_steps for ripe rent/nonpayment cases."""
+    now = datetime.now(timezone.utc).date()
+    prepared = []
+    for m in matters:
+        m2 = dict(m)
+        status = m2.get("status", "")
+        next_steps = m2.get("next_steps", "")
+
+        ripe_passed = False
+        rd = m2.get("ripe_dt")
+        if rd and hasattr(rd, "date") and rd.date() <= now:
+            ripe_passed = True
+
+        m2["has_court_date"] = bool(_COURT_KEYWORDS.search(status)
+                                    or _COURT_KEYWORDS.search(next_steps))
+
+        if ripe_passed:
+            if _RENT_KEYWORDS.search(status):
+                m2["next_steps"] = _RIPE_OVERRIDE_RENT
+            else:
+                m2["next_steps"] = _RIPE_OVERRIDE_BREACH
+
+        prepared.append(m2)
+    return prepared
 
 
 def render_property_email(
@@ -434,19 +478,12 @@ def render_property_email(
     today: str,
 ) -> str:
     """Render the email body for a single property."""
-    now = datetime.now(timezone.utc)
-    ripe_count = 0
-    for m in matters:
-        rd = m.get("ripe_dt")
-        if rd and hasattr(rd, "date"):
-            if rd.date() <= now.date():
-                ripe_count += 1
+    prepared = _prepare_matters_for_template(matters)
 
     return template.render(
         property_name=property_name,
         date=today,
-        matters=matters,
-        ripe_matters=ripe_count if ripe_count > 0 else None,
+        matters=prepared,
     )
 
 
@@ -554,7 +591,8 @@ def run_pending_llt(token: str, config: dict, dry_run: bool = False,
             })
             drafts_created += 1
         else:
-            result = create_draft_email(token, user_email, to_addresses, subject, html_body)
+            cc = config.get("pending_llt_cc", ["caraviakis@gallagherllp.com"])
+            result = create_draft_email(token, user_email, to_addresses, subject, html_body, cc_addresses=cc)
             results.append({
                 "property": display_name,
                 "matters_count": len(prop_matters),
