@@ -24,6 +24,39 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-06-07 — Daily digest: date-awareness fix + "Cases with No Activity" section
+
+**What changed**
+
+- **`rocky.py` digest date-awareness.** The digest was describing past dates as future ("May 29 Status Hearing ... 23 days away" when May 29 was already past). Fixes:
+  - `build_case_digest_section` now prepends `TODAY: YYYY-MM-DD (Weekday)` to the per-case user prompt.
+  - `DIGEST_SYSTEM_PROMPT` gained a **DATES — READ CAREFULLY** block: a date earlier than TODAY is past; never call it upcoming/"N days away"; never recommend preparing for a past event; only give a day-count when correctly computed against TODAY, else give the date alone; don't invent/shift dates.
+  - **Upcoming dates** subsection now restricted to dates on/after TODAY; **Recommended next steps** told to exclude already-passed events.
+- **`rocky.py` "Cases with No Activity" section.** Open cases with no activity in the window were silently skipped; now they're listed at the bottom of the digest (both `.md` and HTML email), one row each: `RRID — Name (Next event: ____)`.
+  - New `_is_open_case(meta)` — open unless `Open/Closed` column says closed. Closed cases are omitted entirely.
+  - New `build_no_activity_next_events(client, cases, today_str)` — ONE batched Claude call across all dormant cases; reads each case's status memo, returns the most immediate future deadline/pending to-do per RRID (same TODAY-aware rules), fallback "None on file".
+  - `_build_digest_text` and `_build_digest_html` gained an optional `no_activity` param and render the new section. Per-lawyer co-counsel digests do NOT get it (default None).
+  - `daily_digest` collects `no_activity_cases` during the folder walk and builds `no_activity_rows` after the active sections. Result dict gained `cases_no_activity`.
+
+**Decisions made**
+
+- **Date reference passed as data, not hardcoded** — TODAY is injected into the prompt each run so the model stops miscomputing past/future. System prompt reinforces with explicit rules.
+- **Dormant-case "next event" via one batched call**, not per-case, to keep cost flat regardless of caseload. Depends on a `*Case Status*.docx` memo existing; cases without one show "None on file".
+- **Skip-if-no-activity preserved** — if NO case had activity, still no digest is written. The no-activity list only appears alongside real activity, so it never triggers a daily email by itself.
+- **Closed cases excluded** from the no-activity list to avoid clutter (read from the `Open/Closed` index column).
+
+**Open items**
+
+- Not yet run against live data / a real inbox — verified by `py_compile` + isolated render test of the markdown/HTML builders only.
+- "Next event" quality is only as good as each case's Case Status Memorandum; cases lacking one always read "None on file".
+
+**Watch-outs**
+
+- **`build_exe.py` bundles `pending_llt.py`**, which had uncommitted local changes this session (unrelated `--pending-llt` work, NOT touched here and NOT committed). The rebuilt `rocky.exe` therefore includes those working-copy changes even though git history doesn't. Reconcile pending_llt.py separately.
+- Digest header timestamps remain UTC (unchanged); only the content date-reasoning was fixed.
+
+---
+
 ## Session 2026-05-03 — Smarter local case matcher (no Claude in the matching path)
 
 **What changed**

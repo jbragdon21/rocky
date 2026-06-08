@@ -1412,9 +1412,16 @@ Your output is a markdown section with exactly three subsections, in this order:
 
 **Recommended next steps**
 - 1 to 3 concrete next actions James should consider, ordered by urgency. Prefer specific actions ("draft response to opposing counsel's discovery letter") over vague ones ("review the file"). If nothing requires action, write "(none — informational only)".
+- Do NOT recommend preparing for, attending, or confirming arrangements for an event whose date is before TODAY (see DATES below). A hearing or deadline that has already passed is done — do not surface it as a next step.
 
 **Upcoming dates**
-- Bulleted list of deadlines or hearings, pulled from the Case Status Memorandum text. Format each as "YYYY-MM-DD — description". If the memo is empty or has no future dates, write "(none on file)".
+- Bulleted list of deadlines or hearings on or after TODAY, pulled from the Case Status Memorandum text. Format each as "YYYY-MM-DD — description". Omit any date that has already passed. If the memo is empty or has no dates on or after TODAY, write "(none on file)".
+
+DATES — READ CAREFULLY
+TODAY's date is given at the top of the user message. Use it as the reference point for everything in this section.
+- A date EARLIER than TODAY is in the PAST. Never describe a past date as upcoming, future, or "N days away," and never tell James to prepare for it. If you catch yourself writing "X days away" for a date that already happened, you have made an error — re-check against TODAY.
+- Only state how many days until an event when you have correctly computed the difference against TODAY. When in doubt, give the date alone and omit the day count.
+- Do not invent or shift dates. Use only the dates that actually appear in the memo or activity text.
 
 TONE
 Terse, factual, attorney-readable. No filler ("Based on the activity provided..."). No emojis. Past-tense for events. No more than ~200 words total per case section.
@@ -1605,7 +1612,10 @@ def build_case_digest_section(
         for f in filed_docs
     ]
 
-    user_prompt = f"""CASE
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d (%A)")
+    user_prompt = f"""TODAY: {today_str}
+
+CASE
 RRID: {case_meta.get('RRID#')}
 Name: {case_meta.get('File Name')}
 Client: {case_meta.get('Client')}
@@ -1636,6 +1646,80 @@ Write the three markdown subsections (What happened / Recommended next steps / U
         return f"**Error generating digest section:** {e}"
 
 
+def _is_open_case(case_meta: dict) -> bool:
+    """True unless the case index explicitly marks the case Closed."""
+    val = str(case_meta.get("Open/Closed") or "").strip().lower()
+    return val in ("", "open", "o", "active")
+
+
+NO_ACTIVITY_SYSTEM_PROMPT = """You are Rocky. For each case listed below, identify the single most immediate UPCOMING item — the next deadline, hearing, or pending to-do — from that case's status memorandum text.
+
+TODAY's date is given at the top of the message. An item is "upcoming" only if its date is on or after TODAY. A date earlier than TODAY is in the PAST — never report a past date as the next event.
+
+Output one line per case, in this exact format:
+RRID-XXXX | <very short next event>
+
+Rules for the next-event text:
+- Under ~12 words. If there is a future date, lead with it formatted YYYY-MM-DD (e.g. "2026-07-14 — Pretrial conference").
+- If there is no date but there is a clear pending action, state it briefly (e.g. "Awaiting opposing counsel's discovery responses").
+- Use ONLY dates that actually appear in that case's memo text. Do not invent dates. If every date in the memo is before TODAY, there is no upcoming date — fall back to a pending to-do or "None on file".
+- If the memo is empty or has no future date and no clear pending item, write "None on file".
+
+Output ONLY the lines, one per case, no preamble or commentary."""
+
+
+def build_no_activity_next_events(
+    client: Anthropic,
+    cases: list[tuple[str, str, str]],
+    today_str: str,
+) -> dict[str, str]:
+    """
+    One batched Claude call for all no-activity cases.
+    `cases` is a list of (rrid, name, status_memo_text). Returns {rrid: next_event}.
+    Falls back to "None on file" for any case the model omits or on error.
+    """
+    fallback = {rrid: "None on file" for rrid, _, _ in cases}
+    if not cases:
+        return {}
+
+    blocks = []
+    for rrid, name, memo in cases:
+        memo_excerpt = (memo or "").strip()
+        if len(memo_excerpt) > 2500:
+            memo_excerpt = memo_excerpt[:2500] + "\n[...truncated...]"
+        blocks.append(
+            f"{rrid} — {name}\nSTATUS MEMO:\n{memo_excerpt or '(no memo on file)'}\n"
+        )
+
+    user_prompt = f"TODAY: {today_str}\n\n" + "\n---\n".join(blocks)
+
+    try:
+        response = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=1000,
+            system=NO_ACTIVITY_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        text = response.content[0].text.strip()
+    except Exception as e:
+        log.error(f"No-activity next-event summary failed: {e}")
+        return fallback
+
+    result = dict(fallback)
+    for line in text.splitlines():
+        if "|" not in line:
+            continue
+        left, _, right = line.partition("|")
+        m = RRID_PATTERN.search(left)
+        if not m:
+            continue
+        rrid = m.group(0).upper()
+        event = right.strip() or "None on file"
+        if rrid in result:
+            result[rrid] = event
+    return result
+
+
 def _get_digest_lawyers(case_meta: dict) -> list[str]:
     """Extract co-counsel email addresses from the digest column."""
     raw = str(case_meta.get("Any other GEJ lawyers to include on digest email") or "").strip()
@@ -1644,7 +1728,11 @@ def _get_digest_lawyers(case_meta: dict) -> list[str]:
     return [addr.strip().lower() for addr in re.split(r"[;,\s]+", raw) if "@" in addr]
 
 
-def _build_digest_text(sections: list[tuple[str, str]], hours_back: int) -> str:
+def _build_digest_text(
+    sections: list[tuple[str, str]],
+    hours_back: int,
+    no_activity: list[tuple[str, str, str]] | None = None,
+) -> str:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     parts = [
         f"Rocky Daily Digest — {today}",
@@ -1660,6 +1748,13 @@ def _build_digest_text(sections: list[tuple[str, str]], hours_back: int) -> str:
         parts.append(body)
         parts.append("")
         parts.append("---")
+        parts.append("")
+
+    if no_activity:
+        parts.append("## Cases with No Activity")
+        parts.append("")
+        for rrid, name, next_event in no_activity:
+            parts.append(f"- **{rrid} — {name}** (Next event: {next_event})")
         parts.append("")
     return "\n".join(parts)
 
@@ -1717,7 +1812,11 @@ def _md_section_to_html(md: str) -> str:
     return "\n".join(html_parts)
 
 
-def _build_digest_html(sections: list[tuple[str, str]], hours_back: int) -> str:
+def _build_digest_html(
+    sections: list[tuple[str, str]],
+    hours_back: int,
+    no_activity: list[tuple[str, str, str]] | None = None,
+) -> str:
     today = datetime.now(timezone.utc).strftime("%B %d, %Y")
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
@@ -1753,6 +1852,27 @@ def _build_digest_html(sections: list[tuple[str, str]], hours_back: int) -> str:
             </td></tr>""")
 
     cases_html = "\n".join(case_blocks)
+
+    no_activity_html = ""
+    if no_activity:
+        rows = []
+        for rrid, name, next_event in no_activity:
+            rows.append(f"""
+                <tr><td style="padding:6px 0;border-bottom:1px solid #edf2f7;">
+                    <span style="font-size:13px;font-weight:600;color:#2c5282;">{rrid}</span>
+                    <span style="font-size:13px;color:#1a202c;"> — {name}</span>
+                    <br/>
+                    <span style="font-size:12px;color:#718096;">Next event: {next_event}</span>
+                </td></tr>""")
+        no_activity_html = f"""
+                <!-- Cases with no activity -->
+                <tr><td style="border-top:1px solid #e0e0e0;padding:20px 32px 8px 32px;">
+                    <h3 style="margin:0 0 8px 0;font-size:15px;font-weight:700;color:#4a5568;">
+                        Cases with No Activity</h3>
+                    <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                        {''.join(rows)}
+                    </table>
+                </td></tr>"""
 
     return f"""<!DOCTYPE html>
 <html lang="en" xmlns="http://www.w3.org/1999/xhtml">
@@ -1817,6 +1937,7 @@ def _build_digest_html(sections: list[tuple[str, str]], hours_back: int) -> str:
                         {cases_html}
                     </table>
                 </td></tr>
+                {no_activity_html}
 
                 <!-- Footer -->
                 <tr><td style="background-color:#f7f8fa;padding:16px 32px;
@@ -1862,6 +1983,8 @@ def daily_digest(
 
     # (heading, body, rrid) — rrid tracked for co-counsel filtering.
     sections: list[tuple[str, str, str]] = []
+    # (rrid, name, child) for open cases with no activity in the window.
+    no_activity_cases: list[tuple[str, str, Path]] = []
     cases_examined = 0
 
     for child in sorted(ROCKY_CASES_ROOT.iterdir()):
@@ -1875,12 +1998,19 @@ def daily_digest(
             continue
         cases_examined += 1
 
+        meta = cases_by_rrid.get(rrid, {"RRID#": rrid, "File Name": child.name})
+
         activity = _read_activity_since(child, since_dt)
         filed = _read_filed_since(child, since_dt)
         if not activity and not filed:
+            # Open cases get listed at the bottom with their next event;
+            # closed cases are omitted entirely.
+            if _is_open_case(meta):
+                no_activity_cases.append(
+                    (rrid, str(meta.get("File Name") or child.name), child)
+                )
             continue
 
-        meta = cases_by_rrid.get(rrid, {"RRID#": rrid, "File Name": child.name})
         status_memo_text = _extract_status_memo_text(child)
 
         case_digest_instr = _read_case_digest_instructions(child)
@@ -1917,9 +2047,24 @@ def daily_digest(
         log.error(f"Could not create {DAILY_DIGESTS_DIR}: {e}")
         return {"written": False, "reason": f"mkdir_failed: {e}"}
 
+    # Resolve the "next event" for each open case with no activity (one batched
+    # Claude call), then build the bottom-of-digest list.
+    no_activity_rows: list[tuple[str, str, str]] = []
+    if no_activity_cases:
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d (%A)")
+        memo_inputs = [
+            (rrid, name, _extract_status_memo_text(child))
+            for rrid, name, child in no_activity_cases
+        ]
+        next_events = build_no_activity_next_events(client, memo_inputs, today_str)
+        no_activity_rows = [
+            (rrid, name, next_events.get(rrid, "None on file"))
+            for rrid, name, _ in no_activity_cases
+        ]
+
     all_sections_for_text = [(h, b) for h, b, _ in sections]
-    digest_text = _build_digest_text(all_sections_for_text, hours_back)
-    digest_html = _build_digest_html(all_sections_for_text, hours_back)
+    digest_text = _build_digest_text(all_sections_for_text, hours_back, no_activity_rows)
+    digest_html = _build_digest_html(all_sections_for_text, hours_back, no_activity_rows)
 
     try:
         digest_path.write_text(digest_text, encoding="utf-8")
@@ -1989,6 +2134,7 @@ def daily_digest(
         "written": True,
         "path": str(digest_path),
         "cases_with_activity": len(sections),
+        "cases_no_activity": len(no_activity_rows),
         "cases_examined": cases_examined,
         "emails_sent": emails_sent,
     }
