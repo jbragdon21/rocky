@@ -16,7 +16,7 @@ Usage:
 import io
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 import openpyxl
@@ -420,55 +420,128 @@ def load_email_template(config: dict) -> Template:
     return Template(html)
 
 
-_RENT_KEYWORDS = re.compile(
-    r"(?i)\b(nonpayment|non-payment|rent|utilities|utility)\b"
+# Matter classification — mirrors how Christina Araviakis segments her
+# property update emails: nonpayment (resolve via ledger), breach/conduct
+# (resolve or proceed to filing), recertification, and a read-only court bucket.
+#
+# A matter is classified from its "Status" (case type) and "Next Steps" cells:
+#   1. court  — already in litigation; surfaced as a status section, not an ask.
+#   2. recert — recertification / LIHTC notices.
+#   3. rent   — nonpayment of rent and non-rent *monetary* charges (utilities).
+#   4. breach — everything else (smoking, noise, conduct, occupant, NTCV, etc.).
+_COURT_RE = re.compile(
+    r"(?i)\b(hearing|trial|mediation|writ|judgment awarded|possession awarded|"
+    r"unlawful detainer|wrongful detainer|warrant in debt|tenant'?s assertion|"
+    r"small claims|civil action|civil complaint|appeal|motion|filed)\b"
 )
-_COURT_KEYWORDS = re.compile(
-    r"(?i)\b(filed|court|hearing|trial|docket|served)\b"
+_RECERT_RE = re.compile(r"(?i)(recert|lihtc)")
+# Monetary cases: rent, non-rent charges, utilities. "non-renew(al)" is NOT
+# matched because the substring is "non-ren", not "non-rent".
+_RENT_RE = re.compile(r"(?i)(^\s*rent\b|non-?rent|water bill|electric|utilit)")
+
+# Per-category lead-in sentences (the call-to-action differs by category).
+LEAD_IN_RENT = (
+    "We can file on the following nonpayment cases — could you send updated "
+    "ledgers if they still have a balance?"
 )
-_RIPE_OVERRIDE_RENT = (
-    "Notice date has passed. Please submit updated ledger "
-    "if a balance remains for filing."
+LEAD_IN_BREACH = (
+    "We also have the following breach/conduct notices pending. Please let us "
+    "know whether these issues have continued, or if the violations have resolved."
 )
-_RIPE_OVERRIDE_BREACH = "Notice date has passed. Have issues resolved?"
+LEAD_IN_RECERT = (
+    "We have the following recertification notices that are ripe for filing. "
+    "Please let us know if the residents have completed their recertifications, "
+    "or if we should proceed with filing."
+)
+LEAD_IN_COURT = (
+    "For your reference, the matters below are already in court — no action is "
+    "needed from you on these at this time."
+)
+
+
+def _classify_matter(status: str, next_steps: str) -> str:
+    """Return one of: 'court', 'recert', 'rent', 'breach'."""
+    blob = f"{status} {next_steps}"
+    if _COURT_RE.search(blob):
+        return "court"
+    if _RECERT_RE.search(status):
+        return "recert"
+    if _RENT_RE.search(status):
+        return "rent"
+    return "breach"
+
+
+def _ripe_note(ripe_dt, today) -> str:
+    """Bare 'M/D' when the notice is not yet ripe; '' when already ripe.
+
+    Templates add the 'after '/'ripe ' prefix so the wording can vary by section.
+    """
+    if ripe_dt and hasattr(ripe_dt, "date") and ripe_dt.date() > today:
+        return f"{ripe_dt.month}/{ripe_dt.day}"
+    return ""
+
+
+def _build_greeting(contacts: list[dict] | None) -> str:
+    """Address recipients by first name, Christina-style ('Hi Angel and Bertha,')."""
+    firsts: list[str] = []
+    for c in contacts or []:
+        nm = (c.get("name") or "").strip()
+        if not nm:
+            continue
+        first = nm.split()[0].strip().rstrip(",")
+        if first and first.lower() not in [f.lower() for f in firsts]:
+            firsts.append(first)
+    if not firsts:
+        return "Good afternoon,"
+    if len(firsts) == 1:
+        names = firsts[0]
+    elif len(firsts) == 2:
+        names = f"{firsts[0]} and {firsts[1]}"
+    else:
+        names = ", ".join(firsts[:-1]) + f", and {firsts[-1]}"
+    return f"Hi {names},"
+
+
+def _group_matters_for_template(matters: list[dict]) -> dict[str, list[dict]]:
+    """Split matters into category buckets with display fields composed.
+
+    Returns {'rent': [...], 'breach': [...], 'recert': [...], 'court': [...]}.
+    Each bullet dict carries: unit, name, issue (case type), ripe_note, detail.
+    """
+    today = datetime.now().date()
+    buckets: dict[str, list[dict]] = {"rent": [], "breach": [], "recert": [], "court": []}
+
+    for m in matters:
+        status = (m.get("status") or "").strip()
+        next_steps = (m.get("next_steps") or "").strip()
+        cat = _classify_matter(status, next_steps)
+        buckets[cat].append({
+            "unit": m.get("unit", ""),
+            "name": m.get("name", ""),
+            "issue": status,
+            "ripe_note": _ripe_note(m.get("ripe_dt"), today),
+            "detail": next_steps,
+        })
+
+    return buckets
+
 
 _FALLBACK_TEMPLATE = """\
-<p>Pending LLT matters for <strong>{{ property_name }}</strong> ({{ date }}):</p>
+<p>{{ greeting }}</p>
+<p>Below is a summary of the pending landlord-tenant matters for
+<strong>{{ property_name }}</strong> as of {{ date }}.</p>
+{% if rent %}<p>{{ lead_in_rent }}</p>
+<ul>{% for m in rent %}<li>{{ m.unit }}{% if m.ripe_note %} (after {{ m.ripe_note }}){% endif %}</li>{% endfor %}</ul>{% endif %}
+{% if breach %}<p>{{ lead_in_breach }}</p>
+<ul>{% for m in breach %}<li>{{ m.unit }}{% if m.issue %} ({{ m.issue }}){% endif %}{% if m.ripe_note %} — ripe {{ m.ripe_note }}{% endif %}</li>{% endfor %}</ul>{% endif %}
+{% if recert %}<p>{{ lead_in_recert }}</p>
+<ul>{% for m in recert %}<li>{{ m.unit }}{% if m.ripe_note %} (after {{ m.ripe_note }}){% endif %}</li>{% endfor %}</ul>{% endif %}
+{% if court %}<p>{{ lead_in_court }}</p>
 <table border="1" cellpadding="4" cellspacing="0">
-<tr><th>Tenant</th><th>Unit</th><th>Status</th><th>Next Steps</th></tr>
-{% for m in matters %}
-<tr><td>{{ m.name }}</td><td>{{ m.unit }}</td><td>{{ m.status }}</td><td>{{ m.next_steps }}</td></tr>
-{% endfor %}
-</table>
-<p>Total: {{ matters | length }}</p>
+<tr><th>Tenant</th><th>Unit</th><th>Type</th><th>Next Court Event</th></tr>
+{% for m in court %}<tr><td>{{ m.name }}</td><td>{{ m.unit }}</td><td>{{ m.issue }}</td><td>{{ m.detail }}</td></tr>{% endfor %}
+</table>{% endif %}
 """
-
-
-def _prepare_matters_for_template(matters: list[dict]) -> list[dict]:
-    """Add display flags and override next_steps for ripe rent/nonpayment cases."""
-    now = datetime.now(timezone.utc).date()
-    prepared = []
-    for m in matters:
-        m2 = dict(m)
-        status = m2.get("status", "")
-        next_steps = m2.get("next_steps", "")
-
-        ripe_passed = False
-        rd = m2.get("ripe_dt")
-        if rd and hasattr(rd, "date") and rd.date() <= now:
-            ripe_passed = True
-
-        m2["has_court_date"] = bool(_COURT_KEYWORDS.search(status)
-                                    or _COURT_KEYWORDS.search(next_steps))
-
-        if ripe_passed:
-            if _RENT_KEYWORDS.search(status):
-                m2["next_steps"] = _RIPE_OVERRIDE_RENT
-            else:
-                m2["next_steps"] = _RIPE_OVERRIDE_BREACH
-
-        prepared.append(m2)
-    return prepared
 
 
 def render_property_email(
@@ -476,14 +549,23 @@ def render_property_email(
     property_name: str,
     matters: list[dict],
     today: str,
+    contacts: list[dict] | None = None,
 ) -> str:
-    """Render the email body for a single property."""
-    prepared = _prepare_matters_for_template(matters)
+    """Render the email body for a single property, segmented by category."""
+    buckets = _group_matters_for_template(matters)
 
     return template.render(
+        greeting=_build_greeting(contacts),
         property_name=property_name,
         date=today,
-        matters=prepared,
+        rent=buckets["rent"],
+        breach=buckets["breach"],
+        recert=buckets["recert"],
+        court=buckets["court"],
+        lead_in_rent=LEAD_IN_RENT,
+        lead_in_breach=LEAD_IN_BREACH,
+        lead_in_recert=LEAD_IN_RECERT,
+        lead_in_court=LEAD_IN_COURT,
     )
 
 
@@ -576,7 +658,10 @@ def run_pending_llt(token: str, config: dict, dry_run: bool = False,
         display_name = contact_entry["property_name"]
         subject = f"Pending LLT Matters — {display_name}"
 
-        html_body = render_property_email(template, display_name, prop_matters, today)
+        html_body = render_property_email(
+            template, display_name, prop_matters, today,
+            contacts=contact_entry["contacts"],
+        )
 
         if dry_run:
             contact_names = ", ".join(

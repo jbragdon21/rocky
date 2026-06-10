@@ -1,0 +1,60 @@
+<div style="font-family: Arial, sans-serif; font-size: 14px; color: #222222; line-height: 1.45;">
+
+<p>{{ greeting }}</p>
+
+<p>Below is a summary of the pending landlord-tenant matters for <strong>{{ property_name }}</strong> that are ripe (or coming ripe) for filing. Some notes on next steps are below.</p>
+
+{% if rent %}
+<p>{{ lead_in_rent }}</p>
+<ul style="margin-top: 4px;">
+  {% for m in rent %}
+  <li>{{ m.unit }}{% if m.ripe_note %} <span style="color:#555;">(after {{ m.ripe_note }})</span>{% endif %}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+{% if breach %}
+<p>{{ lead_in_breach }}</p>
+<ul style="margin-top: 4px;">
+  {% for m in breach %}
+  <li>{{ m.unit }}{% if m.issue %} ({{ m.issue }}){% endif %}{% if m.ripe_note %} <span style="color:#555;">— ripe {{ m.ripe_note }}</span>{% endif %}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+{% if recert %}
+<p>{{ lead_in_recert }}</p>
+<ul style="margin-top: 4px;">
+  {% for m in recert %}
+  <li>{{ m.unit }}{% if m.ripe_note %} <span style="color:#555;">(after {{ m.ripe_note }})</span>{% endif %}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+{% if court %}
+<p style="margin-top: 18px;">{{ lead_in_court }}</p>
+<table style="border-collapse: separate; border-spacing: 0; font-family: Arial, sans-serif; font-size: 13px; border: 1px solid #b0b0b0; border-radius: 4px;">
+  <tr style="background-color: #003366; color: #ffffff;">
+    <th style="padding: 6px 12px; border-right: 1px solid #6a6a6a;">Tenant</th>
+    <th style="padding: 6px 12px; border-right: 1px solid #6a6a6a;">Unit</th>
+    <th style="padding: 6px 12px; border-right: 1px solid #6a6a6a;">Type</th>
+    <th style="padding: 6px 12px;">Next Court Event</th>
+  </tr>
+  {% for m in court %}
+  <tr style="background-color: {{ '#eef3f8' if loop.index is odd else '#f7f7f7' }};">
+    <td style="padding: 5px 12px; border-bottom: 1px solid #dddddd; border-right: 1px solid #e3e3e3;">{{ m.name }}</td>
+    <td style="padding: 5px 12px; border-bottom: 1px solid #dddddd; border-right: 1px solid #e3e3e3;">{{ m.unit }}</td>
+    <td style="padding: 5px 12px; border-bottom: 1px solid #dddddd; border-right: 1px solid #e3e3e3;">{{ m.issue }}</td>
+    <td style="padding: 5px 12px; border-bottom: 1px solid #dddddd;">{{ m.detail }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+<p style="margin-top: 18px;">Please let us know if you have any questions, or if it would be easier to set up a quick call to go through these together.</p>
+
+<p>Best regards,<br>
+James Bragdon<br>
+Gallagher LLP</p>
+
+</div>
