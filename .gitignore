@@ -22,6 +22,9 @@ state/
 # Append-only data files (classifications, reviews, activity)
 *.jsonl
 
+# PMA manifest — firm-confidential deal names + contacts; delivered via OneDrive
+pma_manifest.json
+
 # Python build artifacts
 __pycache__/
 *.pyc

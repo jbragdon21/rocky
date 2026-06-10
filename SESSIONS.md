@@ -24,6 +24,142 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-06-10 — Pending-LLT update format (Christina style) + PMA bozzuto forwarder
+
+**What changed**
+
+- **`pending_llt.py` — reshaped the property update emails to match Christina
+  Araviakis's style** (reviewed 30+ of her real per-property update `.msg`
+  files). Replaced the single Tenant|Unit|Status|Next-Steps table with
+  category-segmented sections: `_classify_matter` routes each row from its
+  Status + Next-Steps into **court / recert / rent / breach** (court posture
+  wins). Each category gets its own call-to-action — rent → "send updated
+  ledgers"; breach → "have the violations resolved, or should we file?";
+  recert → "have residents completed recertification?". Court matters move to a
+  read-only "already in court" status table. Rent bullets list the unit only
+  (+`(after M/D)` when not yet ripe); breach bullets append the issue in parens.
+  Added `_build_greeting` (first-name greeting). Retired `_RIPE_OVERRIDE_*` +
+  unused `timezone` import. Template rewritten (`pending_llt_email.html`).
+  Committed as `946c686`, exe rebuilt + pushed.
+- **`pma_tracker.py` — forwards from `pma@bozzuto.com` are now in-scope.**
+  `fetch_pma_messages` gained an `extra_senders` allowlist: a message is kept if
+  `pma_recipient_filter` (pmateam@) is in To/Cc **OR** its From is allowlisted.
+  Needed because Rocky polls rocky@'s inbox and a client forward to rocky@ won't
+  carry pmateam@ in To/Cc. `run_pma_poll` reads `pma_forwarder_senders` (default
+  `["pma@bozzuto.com"]`). Added `pma_instructions.md` rule (classify the
+  *forwarded* content, not the bozzuto.com forwarder) and the config key.
+
+**Decisions made**
+
+- **Pending-LLT grouping stays per-building** (the current `by_property` key),
+  so each draft is one building → category sections, no cross-building nesting
+  needed. Family-level grouping (one "Bridge District" email across
+  Alula/Poplar/Stratos) is deferred — it changes *recipients* and the BMC
+  Contacts sheet is keyed per-building. The email template lives in OneDrive
+  (runtime read); a version-controlled backup now sits at
+  `reference_files/templates/pending_llt_email.html`.
+- **Court cases excluded from the "please act" asks**, shown in a separate
+  status table (per James). Rent/breach/recert kept as separate *sections in one
+  email* (per James), not separate emails.
+
+**Watch-outs**
+
+- PMA keyword matcher (`match_candidates`) scans subject + sender domain + first
+  500 chars of body. Forwarded mail opens with a `From:/Sent:` header block, so a
+  deal/property name can fall past the 500-char window; the `FW:` subject is the
+  strongest remaining signal. If observe-week logs show forward misses, widen the
+  body-scan window for forwarded mail.
+- This session's deploy commit also *lands* the previously-uncommitted PMA
+  subsystem + image-handling work from the two 2026-06-07 sessions (they were
+  built and deployed via the OneDrive exe but never committed), bringing git into
+  line with the deployed exe.
+
+---
+
+## Session 2026-06-07 (3) — PMA NegotiationWatch: pmateam monitor + HubSpot updater (observe-mode build)
+
+**What changed**
+
+- **New subsystem: PMA tracker.** Watches `pmateam@gallagherllp.com`, keyword-matches each email against the ~125 HubSpot PMA tickets, asks Claude to classify + propose a status/summary update, and (when enabled) writes to HubSpot. Unmatched emails go to a daily 8 AM digest for Beth Crassweller + Kyle Virtue. Spec: `Desktop\PMA-NegotiationWatch-Agent-Spec.md`.
+- **`pma_tracker.py` (new).** Self-contained module (mirrors `pending_llt.py`): state, manifest load, Graph poller (`fetch_pma_messages`, app-token, Inbox `$filter=receivedDateTime gt`), keyword pre-filter (`match_candidates`, whole-word), Claude classifier (`classify_email`, spec §3 prompt + `pma_instructions.md` appended), gated HubSpot updater (`hubspot_get_ticket`/`patch_ticket`, read-then-append summary), digest builder, and two entry points `run_pma_poll` / `run_pma_digest`.
+- **`pma_bootstrap.py` (new, dev script).** Reads the HubSpot `.xls` export (via `xlrd`; `.xlsx` via openpyxl), maps real columns, **seeds `counterparty_keywords`** from ticket name + associated deal (Title-Case/numeric filter to drop junk), writes `pma_manifest.json`. Idempotent merge preserves hand-tuned keywords + stage IDs. Verified: 125 tickets, all with keywords.
+- **`pma_instructions.md` (new).** Plain-English "brain" James edits; reloaded every poll (no rebuild), folded into the classifier prompt. Includes a guide to reading `pma_activity.jsonl` during the observe week.
+- **`rocky.py`.** Added `run_pma_poll_cli` / `run_pma_digest_cli` (modeled on `run_ella_digest_cli`: app-token to read pmateam, delegated token to send digest) + `run_pma_test_cli` (`--pma-test`, mirrors `run_ella_test_cli`: verifies app-token reach to pmateam Inbox, manifest load, and matcher before the observe week). Wired `--pma-poll` / `--pma-digest` / `--pma-test` into `main()` + help + docstring.
+- **`config.example.json`.** Added PMA block: `pma_mailbox`, `pma_digest_recipients`, `pma_backfill_hours`, `pma_hubspot_enabled` (default **false**), `hubspot_token`, `hubspot_status_property`/`hubspot_summary_property`.
+- **`build_exe.py`** bundles `pma_tracker.py`. **`requirements.txt`** adds `xlrd>=2.0.1`. **`.gitignore`** adds `pma_manifest.json` (firm-confidential; delivered via OneDrive, not git).
+
+**Decisions made**
+
+- **Observe-week gating (per James).** Build everything now but default to OBSERVE MODE: poll → classify → **log the proposed HubSpot payload to `pma_activity.jsonl`, write nothing.** HubSpot writes require THREE gates: `pma_hubspot_enabled` true AND `status_changed` AND confidence in {high, medium}; `--dry-run` forces off regardless. James reads the log for ~1 week, tunes `pma_instructions.md` + manifest keywords, then flips the flag.
+- **Scheduled one-shot, not a loop** — `--pma-poll` every 15 min + `--pma-digest` at 8 AM via Task Scheduler, matching every other Rocky job.
+- **Reuse over new** — `acquire_app_token` (mailbox read), `send_mail_guarded` (digest from rocky@), `CLAUDE_MODEL` constant, `_extract_json_from_response` (duplicated into the module to avoid an import cycle, consistent with outbound/pending_llt keeping their own helpers).
+- **Real export columns** differ from the spec's guesses: append target is the custom **"Summary Status"** property (not `hs_ticket_body`); status lives in "Ticket status". The 6 distinct status values in the export exactly match the spec's list.
+- **Manifest + instructions live in the PMA Team root on OneDrive** (the Rocky laptop runs the .exe from a LOCAL copy, so `PROGRAM_DIR` is local and NOT a good home for synced/editable files). `_resolve_pma_file()` checks `pma_team_root` first, falls back to next-to-the-exe. `pma_bootstrap.py` now writes the manifest straight into `pma_team_root` (read from `config.json`) so it syncs dev→Rocky with no manual copy. Runtime state + logs stay in `DATA_DIR` (`C:\Rocky`).
+
+**Open items / blockers (none code-side)**
+
+0. **pmateam is a Microsoft 365 Group, not a mailbox (discovered on first server `--pma-test`).** Graph `/users/pmateam@` returns 404 ErrorInvalidUser. Fix (James's call): the pmateam group **forwards to rocky@gallagherllp.com**, and Rocky polls its OWN inbox, keeping only mail with pmateam@ in To/Cc. New `_addressed_to()` + `fetch_pma_messages(..., recipient_filter)`; config `pma_mailbox` now `rocky@gallagherllp.com` + `pma_recipient_filter` `pmateam@gallagherllp.com` (default). `--pma-test` reports inbox count vs. pmateam-addressed count. rocky@ is already in the app access policy (Test 0 passed). Caveat: relies on the forwarded copy preserving pmateam@ in To/Cc (true for group/DL delivery + redirect; "forward as attachment" would break it). Exe rebuilt + redeployed with this change.
+1. **Mailbox access:** An Exchange Application Access Policy is a *restriction*, not an enabler. James confirmed Ella's app-token flow works in production and the firm has **no restrictive policy in place yet**, so Rocky's app has broad `Mail.Read` across the tenant — meaning `pmateam@` is **likely already reachable now**, no IT step needed to start. Verify with `rocky.exe --pma-test` **on the Rocky laptop** (the dev laptop has no `client_secret`, so Test 0 fails there). Only if Test 1 returns 403 does IT need to add `pmateam@` to a policy. When the firm later implements scoping, the policy must include `pmateam@`.
+2. **HubSpot go-live:** Beth/Kyle create the `GEJ Rocky Integration` private app → paste `hubspot_token`; pull stage IDs via `pma_tracker.get_pipeline_stages()` (`GET /crm/v3/pipelines/tickets`) and fill `hs_pipeline_stage_id` in the manifest; confirm the "Summary Status" internal property name via `GET /crm/v3/properties/tickets`; then set `pma_hubspot_enabled: true`. First live test scoped to one ticket.
+3. **Keyword tuning** happens during the observe week from the activity log.
+
+**Knowledge corpus (added same session)**
+
+- **Goal (James):** start building a "brain" now — capture every pmateam email + draft into a structured corpus during the observe week, synthesize it with Claude daily, train on it later.
+- **Capture (in `--pma-poll`, deterministic, no extra Claude cost):** for every email, `archive_email()` saves the body (`Raw Emails/*.txt`) + draft/redline attachments (`Drafts/`, with text extracted via lazy import of rocky's `fetch_attachments`/`extract_text_from_attachment`) into a per-deal folder under the **PMA Team** root, and appends a structured event (parties, subject, body excerpt, attachment text) to that deal's `events.jsonl`. Filing key is deterministic: exactly-one keyword candidate → that deal; zero/ambiguous → `_unmatched/` bucket. Runs regardless of HubSpot `--dry-run`.
+- **Synthesis (`--pma-knowledge`, new, once daily):** for each deal with events newer than its last-synthesized cursor, ONE Claude call merges prior brief + new events → updated `negotiation.json` (structured: parties, what's negotiated, key_terms, open_issues, document_versions, chronology, current_posture) + rendered `negotiation.md`. Then ONE call refreshes `_knowledge/pma_general_knowledge.md` (cross-deal patterns). `--dry-run` lists deals with new activity, no Claude calls.
+- **Location:** OneDrive `PMA Team` (sibling of Rocky Cases), config `pma_team_root` (default derives from `cases_root` parent). Config also adds `pma_archive_enabled` (default true). James chose OneDrive + extract-text-now.
+- **Cost bounded:** per-deal synthesis only for deals active that day (a few during observe week), incremental via the `last_event_synthesized` cursor. Verified end-to-end offline in `smoke_test_pma.py` (archive 2 emails → 1 deal, unmatched bucket, synth writes json/md/general, re-run skips).
+- **Status calibration / supervised learning (per James):** during `--pma-knowledge`, each deal's synthesis now receives the manifest's **human-authored ground truth** (`current_status` + `summary_status` from the HubSpot snapshot). The brief records `hubspot_status` / `hubspot_summary_status` verbatim plus a model-generated `status_evidence` (which emails justify the recorded status). A new cross-deal `update_status_calibration()` writes `_knowledge/status_calibration.md` — learned rules for (1) email-event → status-value mapping, (2) the team's summary-line style/voice, (3) common transitions + triggers, (4) staleness flags. This is the supervised signal for tuning the classifier before go-live (the dated summary lines like "6/4: Sam sent…" align to specific corpus emails). `run_pma_knowledge` now takes `program_dir` to load the manifest. Verified in smoke test (ground truth captured onto brief, calibration md written).
+- **Self-contained for the frozen exe:** `pma_tracker` carries its OWN `_fetch_attachments` + `_extract_attachment_text` (PDF/DOCX/XLSX/text) rather than importing them from `rocky.py`. The earlier `from rocky import …` would fail silently in a PyInstaller `--onefile` build (entry script isn't importable by name), which would have dropped draft-saving/extraction in production. `build_exe.py` already bundles `pypdf`/`docx`/`openpyxl` as hidden imports.
+- **Initial 60-day backfill (per James):** first `--pma-poll` with no saved cursor looks back `config["pma_backfill_days"]` (default **60**) to seed the corpus; `--pma-poll --backfill-days N` forces an N-day lookback regardless of cursor. `archive_email` is now fully idempotent (early-returns if the body `.txt` already exists), so re-running a backfill does NOT duplicate `events.jsonl` lines or re-download drafts. The 60-day pull paginates and batches (10 + 2s sleep); the instance lock means an overlapping scheduled poll just exits. (Replaced the old `pma_backfill_hours`/24h default.)
+
+**HubSpot write arming — two affirmative switches (per James)**
+
+- HubSpot writes are now gated by **both** a config master (`pma_hubspot_enabled`) **and** a runtime **arm flag file** (`state/pma_hubspot.armed`), AND-ed with the existing confidence gates + `--dry-run`. Default = **asleep** (flag absent). The arm flag is local + not synced + not in config, so it can't be flipped on by an errant config sync.
+- Toggle with `rocky.exe --pma-arm` (creates flag; reports combined posture) and `--pma-sleep` (removes it). `--pma-poll` logs the posture each run (ARMED / ASLEEP / OBSERVE), and `--pma-test` gained a "Test 4: HubSpot write posture" line. `pma_activity.jsonl` records `hubspot_armed` per email.
+- Go-live is now a deliberate two-step: set `pma_hubspot_enabled: true` in config **and** run `--pma-arm`. Verified by smoke-test Case 6 (enabled + token + not dry-run but NOT armed → still "proposed", no write).
+
+**Watch-outs**
+
+- **`pma_manifest.json` is git-ignored** (firm data) — it must reach the Rocky laptop via OneDrive (placed in `Program Files\Rocky` beside the .exe), like `instructions.md`. A rebuild is NOT needed to update it.
+- **Status writes are skipped if `hs_pipeline_stage_id` is empty** (logged), but the summary still appends — so before go-live, stage IDs MUST be populated or status never advances.
+- **Local dev API key was invalid (401)** this session, so the live Claude classification call couldn't be exercised here; keyword matching, gating, logging, and JSON parsing were all verified offline (`smoke_test_pma.py`, gitignored). The production laptop has the working key.
+- **`build_exe.py` still bundles `pending_llt.py`** with its prior uncommitted local changes (noted last session) — unchanged here.
+
+---
+
+## Session 2026-06-07 (2) — Image files: convert to PDF + read via Claude vision
+
+**What changed**
+
+- **New "Image handling" section in `rocky.py`** (after `build_attachment_text_block`). Helpers: `_is_image_file`, `_image_to_pdf_bytes` (Pillow), `ensure_image_pdf` (writes a sibling `.pdf`, idempotent), `_image_bytes_for_vision` (normalizes/​downscales to a Claude-supported media type), and `extract_image_text_via_vision` (sends the image to Claude vision → verbatim transcription + a one-line "[Image type]" tag). All best-effort; never raise.
+- **Ingestion (`save_email_to_case`).** When an email attachment is an image (and not a skipped inline signature), Rocky writes the image *and* a converted PDF companion into `Raw Documents/`.
+- **Daily run (`process_case_folder` gather loop).** Preprocess pass converts any loose image in `Raw Documents/` to a sibling PDF. Loose images are then skipped in favor of their PDF for *filing*; the PDF's text is read from the **source image via Claude vision** (pypdf returns nothing for an image-only PDF). Non-image PDFs are unchanged (pypdf path). This covers both of James's scenarios — image downloaded from email, and image already sitting in `Raw Documents/`.
+- **`requirements.txt`** — added `Pillow>=10.0.0`.
+
+**Decisions made**
+
+- **Vision, not Tesseract OCR.** Reuses the Anthropic key Rocky already has; nothing to install on the Rocky laptop or bundle into `rocky.exe`; far better on photos/handwriting/screenshots. (User declined the structured A/B/C question; picked the option that actually achieves "so it can review and process it" with least ops burden.)
+- **Vision is scoped to the daily-run path, NOT the per-email classifier.** Keeps API cost off the hot path (every inbound email) and on the once-daily, idempotent case-processing path. Trade-off noted below.
+- **Image→PDF honors the literal request** ("convert it to PDF") and keeps case folders uniformly PDF; the original image is preserved as the immutable raw record.
+- **The image-derived PDF is the filed unit; the source image is the read unit.** Avoids double-filing and keeps idempotency keyed on the PDF in `master_file_index.json`.
+
+**Open items**
+
+- **Classifier still can't "see" images.** A property manager who sends *only* a photo of a notice with an empty body won't get smarter triage at classification time (the PDF/vision read happens later in the daily run). If this matters, add a vision call into `build_attachment_text_block` — but weigh the per-email cost first.
+- **HEIC/HEIF (iPhone photos).** Pillow can't open these without the `pillow-heif` plugin (not added). Such files degrade gracefully: no PDF, no vision text, image still filed. Add `pillow-heif` to requirements if iPhone photos become common.
+- **Not run against real data / live token.** Verified by: `py_compile`, plus an offline smoke test (detection, `ensure_image_pdf` produces a valid `%PDF-`, idempotency, TIFF→PNG vision-prep). The vision API call itself was not exercised live.
+- **`build_exe.py` (PyInstaller)** not re-tested with the new Pillow dependency. PIL has built-in PyInstaller hooks, so it should bundle without changes — confirm on next build.
+
+**Watch-outs**
+
+- **Cost:** each new image triggers one Claude vision call on its first daily-run pass (then it's in `master_file_index.json` and skipped). A case folder seeded with many image files will fan out one call per image on first run — same shape as the 42-PDF `--folder-update` caution from 2026-05-02.
+- **Windows console logging is cp1252** — non-ASCII in `log.*()` messages raises a `UnicodeEncodeError` in the emit handler. Used `->` (not `→`) in the conversion log line for this reason. Keep log strings ASCII.
+- **Sibling-stem matching** assumes the image and its PDF share a stem (`photo.jpg` → `photo.pdf`). The email-ingest prefix scheme makes collisions near-impossible; a manually dropped image whose stem matches an unrelated real PDF is a remote edge case.
+
+---
+
 ## Session 2026-06-07 — Daily digest: date-awareness fix + "Cases with No Activity" section
 
 **What changed**

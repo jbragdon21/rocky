@@ -33,5 +33,27 @@
   "sharepoint_site_path": "/sites/MultifamilyHousing",
   "llt_file_path": "General/PENDING LLT MATTERS.XLSX",
   "contacts_file_path": "General/BMC Contacts.xlsx",
-  "templates_path": "C:\\Users\\jbragdon\\OneDrive\\OneDrive - gejlaw.com\\Program Files\\Rocky\\Rocky reference files\\templates"
+  "templates_path": "C:\\Users\\jbragdon\\OneDrive\\OneDrive - gejlaw.com\\Program Files\\Rocky\\Rocky reference files\\templates",
+
+  "_pma_comment": "PMA NegotiationWatch. HubSpot writes are ASLEEP by default and require TWO affirmative switches: pma_hubspot_enabled:true here (master) AND running 'rocky.exe --pma-arm' (runtime arm flag). Either one absent = writes off. During the observe week leave both off: Rocky polls, classifies, and LOGS proposed updates only. '--pma-sleep' disarms.",
+  "_pma_mailbox_comment": "pmateam@ is a Microsoft 365 Group (not a readable mailbox), so it forwards to rocky@. Rocky polls its OWN inbox and keeps only mail addressed (To/Cc) to pma_recipient_filter.",
+  "pma_mailbox": "rocky@gallagherllp.com",
+  "pma_recipient_filter": "pmateam@gallagherllp.com",
+  "_pma_forwarder_comment": "Senders whose mail is treated as PMA review material even when pma_recipient_filter is NOT in To/Cc — e.g. PMA negotiation emails forwarded in from the client. Matched on exact From address (case-insensitive).",
+  "pma_forwarder_senders": [
+    "pma@bozzuto.com"
+  ],
+  "pma_digest_recipients": [
+    "bcrassweller@gallagherllp.com",
+    "kvirtue@gallagherllp.com"
+  ],
+  "pma_backfill_days": 60,
+  "_pma_corpus_comment": "Knowledge corpus. Rocky saves every pmateam email + draft into per-deal folders under pma_team_root and synthesizes briefs daily via --pma-knowledge. Omit pma_team_root to default to a 'PMA Team' folder beside Rocky Cases on OneDrive.",
+  "pma_team_root": "C:\\Users\\jbragdon\\OneDrive\\OneDrive - gejlaw.com\\PMA Team",
+  "pma_archive_enabled": true,
+  "pma_hubspot_enabled": false,
+  "hubspot_token": "PASTE-HUBSPOT-PRIVATE-APP-TOKEN-HERE-AT-GO-LIVE",
+  "_hubspot_property_comment": "Confirm these internal property names via GET /crm/v3/properties/tickets before go-live. hubspot_summary_property is the custom 'Summary Status' field; the internal name may differ.",
+  "hubspot_status_property": "hs_pipeline_stage",
+  "hubspot_summary_property": "summary_status"
 }
