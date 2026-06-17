@@ -25,6 +25,10 @@ state/
 # PMA manifest — firm-confidential deal names + contacts; delivered via OneDrive
 pma_manifest.json
 
+# Generated digest output (local/operational, not source)
+digests/
+maple_digests/
+
 # Python build artifacts
 __pycache__/
 *.pyc

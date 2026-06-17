@@ -26,6 +26,13 @@ Rocky — Virtual Paralegal
       Download LLT spreadsheet + contacts from SharePoint, group by
       property, create draft status-update emails in James's Drafts.
 
+  python rocky.py --pma-activity [--dry-run] [--backfill-days N]  (once daily)
+      Export new emails from rocky@'s "Inbox\\PMA emails" folder to a JSONL
+      feed (full body + extracted attachment text) in the Maple Updater Agent
+      folder. No classification/HubSpot/email — the Maple agent reads the feed
+      and updates the PMA Ticket Tracker itself. First run with no cursor
+      backfills pma_activity_backfill_days (default 30).
+
   python rocky.py --pma-poll [--dry-run] [--backfill-days N]   (every 15 min)
       Poll pmateam@gallagherllp.com, classify each email against the PMA
       ticket manifest, and update HubSpot (writes gated by pma_hubspot_enabled).
@@ -38,6 +45,11 @@ Rocky — Virtual Paralegal
   python rocky.py --pma-knowledge [--dry-run]            (once daily)
       Synthesize the PMA Team corpus into per-deal negotiation briefs +
       cross-deal general knowledge (the "brain" to train on later).
+
+  python rocky.py --maple-digest [--date YYYY-MM-DD] [--yesterday] [--dry-run]  (4:30 PM)
+      Read the Maple app's activity logs for the day, summarize what each
+      user did (Claude narrative), and email a Maple-branded digest from
+      rocky@ to the Maple team. --dry-run writes the HTML preview, no send.
 
   python rocky.py --pma-arm  /  --pma-sleep              (manual)
       Affirmatively arm (or sleep) HubSpot writes. Writes require BOTH the
@@ -1652,6 +1664,12 @@ TODAY's date is given at the top of the user message. Use it as the reference po
 - Only state how many days until an event when you have correctly computed the difference against TODAY. When in doubt, give the date alone and omit the day count.
 - Do not invent or shift dates. Use only the dates that actually appear in the memo or activity text.
 
+CONTEMPLATED / CONDITIONAL EVENTS — READ CAREFULLY
+A contemplated, threatened, proposed, or conditional event is NOT a completed event. Examples: a Rule 2-507 contemplated-dismissal notice, a notice to cure, a show-cause order, a "will be dismissed unless X is filed" deadline, a motion that has been drafted but not yet filed or granted.
+- Report these as pending/threatened, never as having occurred. Do not write "case dismissed," "motion granted," or "order entered" unless a source document in the activity or memo text explicitly confirms that outcome.
+- A passed deadline does NOT mean the threatened outcome happened. If a conditional deadline (e.g., the date by which a good-cause motion was due) is on or before TODAY and no source confirms the result, describe the status as unconfirmed — e.g., "contemplated-dismissal deadline (June 10) has passed; docket status unconfirmed" — and put confirming the docket as the first recommended next step.
+- Never fabricate the downstream consequences of an unconfirmed outcome (a dismissal order, a post-dismissal memo, a refiling plan). Stop at "verify what actually happened."
+
 TONE
 Terse, factual, attorney-readable. No filler ("Based on the activity provided..."). No emojis. Past-tense for events. No more than ~200 words total per case section.
 
@@ -1990,6 +2008,7 @@ def _build_digest_text(
 
 _BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 ROCKY_ICON_PATH = _BUNDLE_DIR / "Icon" / "rocky_no_shadow_256.png"
+MAPLE_LOGO_PATH = _BUNDLE_DIR / "Icon" / "maple_logo.png"
 
 
 def _md_section_to_html(md: str) -> str:
@@ -4276,6 +4295,54 @@ def run_pma_knowledge_cli() -> None:
     log.info(f"[pma-knowledge] Done: {result}")
 
 
+def run_pma_activity_cli() -> None:
+    """Entry point for `python rocky.py --pma-activity [--dry-run] [--backfill-days N]`.
+
+    Exports new emails from rocky@'s 'Inbox\\PMA emails' folder to a JSONL feed
+    in the Maple Updater Agent folder for the Maple agent to read. No
+    classification, no HubSpot, no email — just the raw email content (incl.
+    extracted attachment text). First run with no saved cursor backfills
+    pma_activity_backfill_days (default 30); --backfill-days N forces a lookback."""
+    import pma_tracker
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    dry_run = "--dry-run" in sys.argv
+
+    backfill_days = None
+    for i, arg in enumerate(sys.argv):
+        if arg == "--backfill-days" and i + 1 < len(sys.argv):
+            try:
+                backfill_days = int(sys.argv[i + 1])
+            except ValueError:
+                print(f"Invalid --backfill-days value: {sys.argv[i + 1]}")
+                sys.exit(1)
+
+    config = load_config()
+    # App-level token to read rocky@'s own mailbox folder (client credentials).
+    app_token = acquire_app_token(config)
+
+    mailbox = config.get("pma_activity_mailbox") or config.get("rocky_email", "rocky@gallagherllp.com")
+    folder_path = config.get("pma_activity_folder", "Inbox\\PMA emails")
+    folder_id = resolve_folder_path(app_token, mailbox, folder_path)
+    if not folder_id:
+        log.error(f"[pma-activity] Could not resolve folder {folder_path!r} in {mailbox}. Aborting.")
+        sys.exit(1)
+
+    log.info(f"[pma-activity] Starting ({'DRY RUN' if dry_run else 'LIVE'})"
+             + (f" backfill {backfill_days}d" if backfill_days is not None else ""))
+    result = pma_tracker.run_pma_activity(
+        app_token=app_token,
+        config=config,
+        program_dir=PROGRAM_DIR,
+        data_dir=DATA_DIR,
+        folder_id=folder_id,
+        source_folder=folder_path.replace("\\", "/"),
+        dry_run=dry_run,
+        backfill_days=backfill_days,
+    )
+    log.info(f"[pma-activity] Done: {result}")
+
+
 def run_pma_arm_cli() -> None:
     """Affirmatively ARM HubSpot writes (`python rocky.py --pma-arm`).
 
@@ -4393,6 +4460,546 @@ def acquire_instance_lock(command: str):
         sys.exit(0)
 
 
+# =============================================================================
+# Maple activity digest — daily email summarizing work done in the Maple app
+# =============================================================================
+# Maple (a separate app the firm is building) logs every Claude Code session
+# into per-session JSONL files on OneDrive. This subsystem reads a given day's
+# logs, asks Claude for a short per-user narrative of what each person did, and
+# emails a Maple-branded digest from rocky@ through the guarded outbound path.
+# Scheduled 4:30 PM daily. Read-only over the shared log folder — no Maple code
+# is touched, so the two apps stay decoupled.
+
+_DEFAULT_MAPLE_LOGS_DIR = (
+    r"C:\Users\jbragdon\OneDrive\OneDrive - gejlaw.com"
+    r"\Program Files\Maple\logs\activity"
+)
+# All firm-domain, so the outbound guard passes. Override in config.json with
+# "maple_digest_recipients". Code default makes the job work without a config
+# edit on the Rocky laptop.
+_DEFAULT_MAPLE_DIGEST_RECIPIENTS = [
+    "jbragdon@gallagherllp.com",
+    "asantarelli@gallagherllp.com",
+    "kvirtue@gallagherllp.com",
+]
+MAPLE_DIGESTS_DIR = DATA_DIR / "maple_digests"
+
+
+def _read_maple_events(logs_dir: Path, date_str: str) -> tuple[list[dict], int]:
+    """Read + parse all <date>__*.jsonl events; skip unparseable lines.
+
+    Returns (events, skipped_line_count). A half-written last line in an
+    in-progress session is skipped rather than crashing the digest.
+    """
+    events: list[dict] = []
+    skipped = 0
+    if not logs_dir.exists():
+        return events, skipped
+    for path in sorted(logs_dir.glob(f"{date_str}__*.jsonl")):
+        try:
+            # utf-8-sig: Maple's PowerShell hook writes each file with a UTF-8
+            # BOM; without -sig, json.loads would reject the first line.
+            text = path.read_text(encoding="utf-8-sig", errors="replace")
+        except OSError as e:
+            log.warning(f"[Maple] Could not read {path.name}: {e}")
+            continue
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                skipped += 1
+    return events, skipped
+
+
+def _aggregate_maple_by_user(events: list[dict]) -> dict:
+    """Roll events up per user. Events are sorted by ts first."""
+    ordered = sorted(events, key=lambda e: e.get("ts") or "")
+    users: dict[str, dict] = {}
+    for ev in ordered:
+        user = ev.get("user") or "(unknown)"
+        u = users.setdefault(user, {
+            "user": user,
+            "machines": set(),
+            "sessions": set(),
+            "prompts": [],
+            "files": [],
+            "commands": [],   # list of (command, description, success)
+            "failures": 0,
+            "first_ts": None,
+            "last_ts": None,
+            "git": {},        # session -> {start, stop, branch}
+        })
+        if ev.get("machine"):
+            u["machines"].add(ev["machine"])
+        sess = ev.get("session")
+        if sess:
+            u["sessions"].add(sess)
+        ts = ev.get("ts")
+        if ts:
+            if u["first_ts"] is None or ts < u["first_ts"]:
+                u["first_ts"] = ts
+            if u["last_ts"] is None or ts > u["last_ts"]:
+                u["last_ts"] = ts
+        etype = ev.get("event")
+        if etype == "UserPromptSubmit":
+            p = (ev.get("prompt") or "").strip()
+            if p:
+                u["prompts"].append(p)
+        elif etype == "PostToolUse":
+            if ev.get("file"):
+                u["files"].append(ev["file"])
+            if ev.get("command"):
+                u["commands"].append(
+                    (ev["command"], ev.get("description"), ev.get("success"))
+                )
+            if ev.get("success") is False:
+                u["failures"] += 1
+        elif etype in ("SessionStart", "Stop") and sess:
+            g = u["git"].setdefault(sess, {})
+            if etype == "SessionStart":
+                if "start" not in g and ev.get("git_head"):
+                    g["start"] = ev["git_head"]
+            elif ev.get("git_head"):
+                g["stop"] = ev["git_head"]   # last Stop wins (ts-sorted)
+            if ev.get("git_branch"):
+                g.setdefault("branch", ev["git_branch"])
+    return users
+
+
+def _maple_time(ts: str) -> str:
+    """Format an ISO-8601-with-offset ts as local HH:MM; fall back to raw."""
+    if not ts:
+        return "??:??"
+    try:
+        return datetime.fromisoformat(ts).strftime("%H:%M")
+    except ValueError:
+        return ts
+
+
+def _maple_user_brief(u: dict) -> dict:
+    """Compact, de-duplicated view of one user's day for the Claude prompt."""
+    files = list(dict.fromkeys(Path(f).name for f in u["files"]))
+    cmds = []
+    for cmd, desc, success in u["commands"]:
+        c = re.sub(r"\s+", " ", str(desc or cmd)).strip()
+        if len(c) > 140:
+            c = c[:140] + " ..."
+        if success is False:
+            c = "[FAILED] " + c
+        cmds.append(c)
+    committed = any(
+        g.get("start") and g.get("stop") and g["start"] != g["stop"]
+        for g in u["git"].values()
+    )
+    return {
+        "user": u["user"],
+        "prompts": [re.sub(r"\s+", " ", p).strip()[:400] for p in u["prompts"]],
+        "files_changed": files,
+        "commands": cmds,
+        "failures": u["failures"],
+        "committed": committed,
+        "sessions": len(u["sessions"]),
+    }
+
+
+def _summarize_maple_users(
+    client: Anthropic, date_str: str, briefs: list[dict]
+) -> dict[str, str]:
+    """One Claude call → {user: 1-2 sentence summary}. {} on failure."""
+    payload = json.dumps(briefs, indent=2, ensure_ascii=False)
+    prompt = (
+        f"You are writing an internal daily activity digest for a software app "
+        f"called Maple. Below is structured data on what each user did in the "
+        f"Maple codebase on {date_str}: their prompts/intents, the files they "
+        f"changed, commands they ran, whether anything failed, and whether they "
+        f"committed to git.\n\n"
+        f"For EACH user, write a tight 1-2 sentence plain-English summary of "
+        f"what they worked on and accomplished. Be concrete (name the "
+        f"feature/area in plain terms), note if they committed, and call out "
+        f"any failures. No fluff, no marketing tone. Do not invent anything not "
+        f"supported by the data.\n\n"
+        f"Return ONLY a JSON object mapping each user name to their summary "
+        f'string, e.g. {{"jbragdon": "Wrote ...", "asantarelli": "Reworked ..."}}.\n\n'
+        f"DATA:\n{payload}"
+    )
+    try:
+        resp = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=1024,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = resp.content[0].text if resp.content else ""
+        data = _extract_json_from_response(text)
+        if isinstance(data, dict):
+            return {str(k): str(v) for k, v in data.items()}
+    except Exception as e:
+        log.warning(f"[Maple] Claude summary failed ({e}); using factual fallback.")
+    return {}
+
+
+def _maple_fallback_summary(brief: dict) -> str:
+    """Deterministic one-liner when Claude is unavailable."""
+    bits = []
+    if brief["files_changed"]:
+        bits.append(f"changed {len(brief['files_changed'])} file(s)")
+    if brief["commands"]:
+        bits.append(f"ran {len(brief['commands'])} command(s)")
+    if not bits:
+        bits.append("submitted prompts but made no recorded file/command changes")
+    s = "Worked in Maple: " + ", ".join(bits) + "."
+    if brief["committed"]:
+        s += " Committed to git."
+    if brief["failures"]:
+        s += f" {brief['failures']} command(s) failed."
+    return s
+
+
+def _esc(text: str) -> str:
+    """Minimal HTML escape for text interpolated into the digest."""
+    return (
+        str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    )
+
+
+def _build_maple_digest_html(
+    date_str: str, day: dict, blocks: list[dict]
+) -> str:
+    """Maple-branded HTML email. `blocks` are per-user, pre-ordered."""
+    pretty_date = date_str
+    try:
+        pretty_date = datetime.strptime(date_str, "%Y-%m-%d").strftime("%B %d, %Y")
+    except ValueError:
+        pass
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    GREEN = "#234d2e"
+    ACCENT = "#e2641f"
+
+    fail_txt = (
+        f'<span style="color:#c0392b;font-weight:600;">{day["failures"]} failure(s)</span>'
+        if day["failures"] else "0 failures"
+    )
+    summary_line = (
+        f'<strong>{day["sessions"]}</strong> session(s) &middot; '
+        f'<strong>{day["contributors"]}</strong> contributor(s) &middot; '
+        f'<strong>{day["files"]}</strong> file(s) changed &middot; '
+        f'<strong>{day["commands"]}</strong> command(s) &middot; {fail_txt}'
+    )
+
+    if blocks:
+        user_html_parts = []
+        for i, b in enumerate(blocks):
+            border_top = (
+                'border-top:1px solid #e6e0d8;' if i > 0 else ''
+            )
+            fails = (
+                f' &middot; <span style="color:#c0392b;font-weight:600;">'
+                f'{b["failures"]} failed</span>' if b["failures"] else ''
+            )
+            git = ' &middot; committed' if b["committed"] else ''
+            files_html = ""
+            if b["file_names"]:
+                shown = b["file_names"][:8]
+                more = len(b["file_names"]) - len(shown)
+                chips = " ".join(
+                    f'<code style="background:#f1efe9;color:#3a3a3a;'
+                    f'padding:1px 6px;border-radius:3px;font-size:12px;">'
+                    f'{_esc(n)}</code>' for n in shown
+                )
+                if more > 0:
+                    chips += f' <span style="color:#8a8378;font-size:12px;">+{more} more</span>'
+                files_html = (
+                    f'<p style="margin:8px 0 0 0;line-height:1.9;">{chips}</p>'
+                )
+            user_html_parts.append(f"""
+            <tr><td style="padding:18px 0 0 0;{border_top}">
+                <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                    <tr><td style="border-left:4px solid {ACCENT};padding:6px 0 6px 14px;">
+                        <span style="font-size:16px;font-weight:700;color:#1a2e1f;">
+                            {_esc(b["name"])}</span>
+                        <span style="font-size:13px;color:#8a8378;">
+                            &nbsp;&middot; {_esc(b["machine"])} &middot; {b["span"]}
+                            &middot; {b["sessions"]} session(s)</span>
+                    </td></tr>
+                </table>
+            </td></tr>
+            <tr><td style="padding:8px 0 4px 18px;">
+                <p style="margin:0;font-size:15px;color:#2b2b2b;line-height:1.5;">
+                    {_esc(b["narrative"])}</p>
+                <p style="margin:8px 0 0 0;font-size:13px;color:#8a8378;">
+                    {b["n_files"]} file(s) changed &middot; {b["n_commands"]} command(s){fails}{git}</p>
+                {files_html}
+            </td></tr>""")
+        body_section = "\n".join(user_html_parts)
+    else:
+        body_section = f"""
+            <tr><td style="padding:28px 0;text-align:center;">
+                <p style="margin:0;font-size:16px;color:#5a5a5a;">
+                    No Maple activity recorded for {pretty_date}.</p>
+            </td></tr>"""
+
+    return f"""<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Maple — Daily Activity Digest — {pretty_date}</title>
+    <!--[if mso]>
+    <style type="text/css">
+        table {{border-collapse:collapse;}}
+        td {{font-family:Segoe UI,Arial,sans-serif;}}
+    </style>
+    <![endif]-->
+</head>
+<body style="margin:0;padding:0;background-color:#f4f2ec;font-family:Segoe UI,Calibri,Arial,sans-serif;">
+    <table width="100%" cellpadding="0" cellspacing="0" border="0"
+           style="background-color:#f4f2ec;">
+        <tr><td align="center" style="padding:24px 16px;">
+
+            <table width="640" cellpadding="0" cellspacing="0" border="0"
+                   style="background-color:#ffffff;border-radius:8px;
+                          box-shadow:0 1px 3px rgba(0,0,0,0.08);max-width:640px;">
+
+                <!-- Header -->
+                <tr><td style="background-color:{GREEN};padding:26px 32px;
+                               border-radius:8px 8px 0 0;">
+                    <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                        <tr>
+                            <td width="60" valign="middle" style="padding-right:16px;">
+                                <img src="cid:maple_logo" width="52" height="52"
+                                     alt="Maple"
+                                     style="display:block;border-radius:8px;"/>
+                            </td>
+                            <td valign="middle">
+                                <h1 style="margin:0;font-size:22px;font-weight:700;
+                                           color:#ffffff;line-height:1.2;">
+                                    Maple — Daily Activity Digest</h1>
+                                <p style="margin:4px 0 0 0;font-size:15px;
+                                          color:#c7d6c1;font-weight:500;">
+                                    {pretty_date}</p>
+                            </td>
+                        </tr>
+                    </table>
+                </td></tr>
+
+                <!-- Summary bar -->
+                <tr><td style="background-color:#eef2ea;padding:12px 32px;
+                               border-bottom:1px solid #e2e8e0;">
+                    <p style="margin:0;font-size:13px;color:#4a5a4a;">
+                        {summary_line}</p>
+                </td></tr>
+
+                <!-- Per-user sections -->
+                <tr><td style="padding:8px 32px 18px 32px;">
+                    <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                        {body_section}
+                    </table>
+                </td></tr>
+
+                <!-- Footer -->
+                <tr><td style="background-color:#f4f2ec;padding:16px 32px;
+                               border-top:1px solid #e2e8e0;
+                               border-radius:0 0 8px 8px;">
+                    <p style="margin:0;font-size:11px;color:#a8a294;text-align:center;">
+                        Generated automatically by Rocky from Maple's activity logs
+                        on {now_str}. Summaries are written by Claude from the raw
+                        logs and may simplify; consult the logs for detail.</p>
+                </td></tr>
+
+            </table>
+        </td></tr>
+    </table>
+</body>
+</html>"""
+
+
+def maple_daily_digest(
+    client: Anthropic,
+    send_token: str,
+    rocky_email: str,
+    recipients: list[str],
+    logs_dir: Path,
+    date_str: str,
+    dry_run: bool = False,
+    skip_if_empty: bool = False,
+) -> dict:
+    """Build and email the Maple activity digest for a single day."""
+    from outbound import send_mail_guarded
+
+    events, skipped = _read_maple_events(logs_dir, date_str)
+    if skipped:
+        log.info(f"[Maple] Skipped {skipped} unparseable log line(s).")
+
+    users = _aggregate_maple_by_user(events)
+
+    if not users and skip_if_empty:
+        log.info(f"[Maple] No activity for {date_str}; skip_if_empty set — no email.")
+        return {"sent": False, "reason": "no_activity_skipped", "contributors": 0}
+
+    # Day-level rollups.
+    day = {
+        "sessions": len({e.get("session") for e in events if e.get("session")}),
+        "contributors": len(users),
+        "files": len({
+            e["file"] for e in events
+            if e.get("event") == "PostToolUse" and e.get("file")
+        }),
+        "commands": sum(
+            1 for e in events
+            if e.get("event") == "PostToolUse" and e.get("command")
+        ),
+        "failures": sum(
+            1 for e in events
+            if e.get("event") == "PostToolUse" and e.get("success") is False
+        ),
+    }
+
+    # Per-user briefs + Claude narrative (one call for the whole day).
+    ordered_users = sorted(users.values(), key=lambda u: u["first_ts"] or "")
+    briefs = [_maple_user_brief(u) for u in ordered_users]
+    narratives = _summarize_maple_users(client, date_str, briefs) if briefs else {}
+
+    blocks = []
+    for u, brief in zip(ordered_users, briefs):
+        narrative = narratives.get(u["user"]) or _maple_fallback_summary(brief)
+        machine = ", ".join(sorted(u["machines"])) or "(unknown)"
+        blocks.append({
+            "name": u["user"],
+            "machine": machine,
+            "span": f'{_maple_time(u["first_ts"])}–{_maple_time(u["last_ts"])}',
+            "sessions": len(u["sessions"]),
+            "narrative": narrative,
+            "n_files": len(brief["files_changed"]),
+            "file_names": brief["files_changed"],
+            "n_commands": len(brief["commands"]),
+            "failures": brief["failures"],
+            "committed": brief["committed"],
+        })
+
+    html = _build_maple_digest_html(date_str, day, blocks)
+
+    # Archive the rendered digest to disk (alongside emailing it).
+    MAPLE_DIGESTS_DIR.mkdir(parents=True, exist_ok=True)
+    archive_path = MAPLE_DIGESTS_DIR / f"maple-activity-{date_str}.html"
+    try:
+        archive_path.write_text(html, encoding="utf-8")
+        log.info(f"[Maple] Wrote digest archive: {archive_path}")
+    except OSError as e:
+        log.warning(f"[Maple] Could not write digest archive: {e}")
+
+    if dry_run:
+        log.info(
+            f"[Maple] DRY RUN — not sending. {day['contributors']} contributor(s), "
+            f"{day['files']} file(s), {day['commands']} command(s), "
+            f"{day['failures']} failure(s). Preview: {archive_path}"
+        )
+        return {"sent": False, "reason": "dry_run", "archive": str(archive_path),
+                **day}
+
+    icon_attachment = []
+    if MAPLE_LOGO_PATH.exists():
+        icon_attachment = [
+            {"path": str(MAPLE_LOGO_PATH), "name": "maple_logo.png",
+             "contentId": "maple_logo"},
+        ]
+    else:
+        log.warning(f"[Maple] Logo not found at {MAPLE_LOGO_PATH}; sending without it.")
+
+    pretty_date = date_str
+    try:
+        pretty_date = datetime.strptime(date_str, "%Y-%m-%d").strftime("%B %d, %Y")
+    except ValueError:
+        pass
+
+    result = send_mail_guarded(
+        token=send_token,
+        sender_mailbox=rocky_email,
+        to=recipients,
+        subject=f"Maple — Daily Activity Digest — {pretty_date}",
+        body=html,
+        body_type="HTML",
+        attachments=icon_attachment,
+    )
+
+    if result.get("sent"):
+        log.info(
+            f"[Maple] Digest sent to {recipients} "
+            f"({day['contributors']} contributor(s), {day['files']} file(s))"
+        )
+    else:
+        log.warning(f"[Maple] Failed to send digest: {result.get('reason')}")
+
+    return {"sent": result.get("sent", False), "reason": result.get("reason"),
+            "archive": str(archive_path), **day}
+
+
+def run_maple_digest_cli() -> None:
+    """Entry point for `python rocky.py --maple-digest [--date YYYY-MM-DD]
+    [--yesterday] [--dry-run]` (4:30 PM)."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    log.info("=" * 60)
+    log.info("Rocky — Maple Daily Activity Digest")
+    log.info("=" * 60)
+
+    config = load_config()
+
+    # Resolve target date from args (local date — Maple filenames use local date).
+    date_str = None
+    args = sys.argv[1:]
+    for i, arg in enumerate(args):
+        if arg == "--date" and i + 1 < len(args):
+            date_str = args[i + 1]
+        elif arg == "--yesterday":
+            date_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    if not date_str:
+        date_str = datetime.now().strftime("%Y-%m-%d")
+
+    # Validate the date string.
+    try:
+        datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        log.error(f"Invalid --date {date_str!r}; expected YYYY-MM-DD.")
+        sys.exit(1)
+
+    dry_run = "--dry-run" in sys.argv
+    logs_dir = Path(config.get("maple_logs_dir", _DEFAULT_MAPLE_LOGS_DIR))
+    recipients = config.get("maple_digest_recipients") or _DEFAULT_MAPLE_DIGEST_RECIPIENTS
+    skip_if_empty = bool(config.get("maple_digest_skip_if_empty", False))
+    rocky_email = config.get("rocky_email", "rocky@gallagherllp.com")
+
+    log.info(f"Date: {date_str} | Logs: {logs_dir}")
+    log.info(f"Recipients: {recipients} | Dry run: {dry_run}")
+
+    anthropic_client = Anthropic(api_key=config["anthropic_api_key"])
+
+    # Rocky's delegated token for sending mail (no mailbox read needed).
+    send_token = None
+    if not dry_run:
+        app = get_msal_app(config)
+        send_token = acquire_token(app)
+        audit_token_scopes(send_token)
+
+    result = maple_daily_digest(
+        client=anthropic_client,
+        send_token=send_token,
+        rocky_email=rocky_email,
+        recipients=recipients,
+        logs_dir=logs_dir,
+        date_str=date_str,
+        dry_run=dry_run,
+        skip_if_empty=skip_if_empty,
+    )
+
+    if result.get("sent"):
+        log.info(f"Maple digest sent for {date_str}.")
+    else:
+        log.info(f"Maple digest not sent. Reason: {result.get('reason')}.")
+    log.info("=" * 60)
+
+
 def main():
     command = next(
         (a.lstrip("-") for a in sys.argv[1:] if a.startswith("--")), None
@@ -4416,6 +5023,8 @@ def main():
         run_ella_test_cli()
     elif "--pending-llt" in sys.argv:
         run_pending_llt_cli()
+    elif "--pma-activity" in sys.argv:
+        run_pma_activity_cli()
     elif "--pma-poll" in sys.argv:
         run_pma_poll_cli()
     elif "--pma-digest" in sys.argv:
@@ -4428,6 +5037,8 @@ def main():
         run_pma_sleep_cli()
     elif "--pma-test" in sys.argv:
         run_pma_test_cli()
+    elif "--maple-digest" in sys.argv:
+        run_maple_digest_cli()
     else:
         print(__doc__)
         print("Available commands:")
@@ -4438,12 +5049,14 @@ def main():
         print("  --steve-todo                            Steve's daily to-do list from inbox")
         print("  --ella-digest  [--hours N]              Ella's daily case digest from inbox")
         print("  --pending-llt  [--dry-run] [--limit N]  Draft LLT status emails by property")
+        print("  --pma-activity [--dry-run] [--backfill-days N]  Export PMA emails folder to JSONL for Maple")
         print("  --pma-poll [--dry-run] [--backfill-days N]  Poll pmateam, classify, update HubSpot")
         print("  --pma-digest   [--dry-run]              Email PMA unmatched digest to Beth + Kyle")
         print("  --pma-knowledge [--dry-run]             Synthesize PMA negotiation knowledge (daily)")
         print("  --pma-arm                               Affirmatively turn ON HubSpot writes")
         print("  --pma-sleep                             Put HubSpot writes back to sleep (default)")
         print("  --pma-test                              Diagnose pmateam access + manifest + matcher")
+        print("  --maple-digest [--date YYYY-MM-DD] [--yesterday] [--dry-run]  Email the Maple daily activity digest")
         sys.exit(0)
 
 

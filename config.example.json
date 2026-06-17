@@ -11,6 +11,15 @@
   "_cases_root_comment": "Path to the Rocky Cases folder on OneDrive. Omit to use the default (James's dev laptop path).",
   "cases_root": "C:\\Users\\jbragdon\\OneDrive\\OneDrive - gejlaw.com\\Rocky Cases",
 
+  "_maple_comment": "Maple daily activity digest (--maple-digest, 4:30 PM). Reads Maple's per-session JSONL logs and emails a per-user summary from rocky@. Omit any key to use the code default. Set maple_digest_skip_if_empty:true to suppress the email on days with no Maple activity (e.g. weekends).",
+  "maple_logs_dir": "C:\\Users\\jbragdon\\OneDrive\\OneDrive - gejlaw.com\\Program Files\\Maple\\logs\\activity",
+  "maple_digest_recipients": [
+    "jbragdon@gallagherllp.com",
+    "asantarelli@gallagherllp.com",
+    "kvirtue@gallagherllp.com"
+  ],
+  "maple_digest_skip_if_empty": false,
+
   "_remy_comment": "Remy invocation paths. remy_cli_path is where remy_cli.py lives on disk. remy_outputs_path is where generated drafts get written.",
   "enable_remy_invocation": false,
   "remy_cli_path": "C:\\Users\\jbragdon\\Desktop\\REMY\\remy_cli.py",
@@ -55,5 +64,12 @@
   "hubspot_token": "PASTE-HUBSPOT-PRIVATE-APP-TOKEN-HERE-AT-GO-LIVE",
   "_hubspot_property_comment": "Confirm these internal property names via GET /crm/v3/properties/tickets before go-live. hubspot_summary_property is the custom 'Summary Status' field; the internal name may differ.",
   "hubspot_status_property": "hs_pipeline_stage",
-  "hubspot_summary_property": "summary_status"
+  "hubspot_summary_property": "summary_status",
+
+  "_pma_activity_comment": "PMA Activity exporter (--pma-activity, once daily). Rocky pulls new emails from pma_activity_folder in pma_activity_mailbox and appends each (full body + extracted attachment text) as one JSONL line to pma_activity_feed.jsonl in maple_activity_dir, for the Maple Updater Agent to read. No classification/HubSpot/email. First run with no cursor backfills pma_activity_backfill_days.",
+  "pma_activity_mailbox": "rocky@gallagherllp.com",
+  "pma_activity_folder": "Inbox\\PMA emails",
+  "maple_activity_dir": "C:\\Users\\jbragdon\\OneDrive\\OneDrive - gejlaw.com\\Program Files\\Maple\\Maple updater agent\\PMA Activity",
+  "pma_activity_backfill_days": 30,
+  "pma_activity_extract_attachments": true
 }

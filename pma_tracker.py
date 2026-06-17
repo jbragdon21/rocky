@@ -1554,3 +1554,207 @@ def run_pma_digest(
         log.warning(f"[pma] Digest send failed: {result.get('reason')}")
     return {"sent": result.get("sent", False), "unmatched": len(unmatched),
             "recipients": recipients, **result}
+
+
+# =============================================================================
+# PMA Activity feed — raw email export for the Maple Updater Agent
+# =============================================================================
+# A deliberately simple, Claude-free exporter. It pulls new emails from rocky@'s
+# "Inbox\PMA emails" folder and appends each one (full body + extracted
+# attachment text) as a single JSONL line to a feed file in Maple's folder on
+# OneDrive. Rocky does NOT classify, match tickets, or recommend changes here —
+# the Maple Updater Agent reads the feed and does all of that itself.
+
+DEFAULT_MAPLE_ACTIVITY_DIR = (
+    r"C:\Users\jbragdon\OneDrive\OneDrive - gejlaw.com\Program Files\Maple"
+    r"\Maple updater agent\PMA Activity"
+)
+ACTIVITY_FEED_FILE = "pma_activity_feed.jsonl"
+DEFAULT_ACTIVITY_BACKFILL_DAYS = 30
+# How many recently-exported message ids to remember for idempotent re-runs.
+ACTIVITY_SEEN_CAP = 2000
+
+
+def maple_activity_dir(config: dict) -> Path:
+    """Folder where the PMA Activity JSONL feed is written (the Maple Updater
+    Agent folder on OneDrive). Overridable via config['maple_activity_dir']."""
+    return Path(config.get("maple_activity_dir") or DEFAULT_MAPLE_ACTIVITY_DIR)
+
+
+def fetch_folder_messages(app_token: str, mailbox: str, folder_id: str,
+                          since: datetime) -> list[dict]:
+    """Fetch all messages in a specific Outlook folder received after `since`,
+    paginated, with plain-text bodies. No recipient filter — the folder itself is
+    the scope. Mirrors fetch_pma_messages but folder-scoped. Returns [] on error."""
+    since_iso = since.strftime("%Y-%m-%dT%H:%M:%SZ")
+    url = f"{GRAPH_API_BASE}/users/{mailbox}/mailFolders/{folder_id}/messages"
+    params = {
+        "$filter": f"receivedDateTime gt {since_iso}",
+        "$orderby": "receivedDateTime asc",
+        "$top": "50",
+        "$select": (
+            "id,subject,from,toRecipients,ccRecipients,receivedDateTime,"
+            "bodyPreview,body,conversationId,internetMessageId,hasAttachments"
+        ),
+    }
+    headers = {
+        "Authorization": f"Bearer {app_token}",
+        "Accept": "application/json",
+        "Prefer": 'outlook.body-content-type="text"',
+    }
+
+    messages: list[dict] = []
+    next_url: str | None = None
+    page = 0
+    while page == 0 or next_url:
+        try:
+            if next_url:
+                resp = requests.get(next_url, headers=headers, timeout=30)
+            else:
+                resp = requests.get(url, headers=headers, params=params, timeout=30)
+        except requests.RequestException as e:
+            log.error(f"[pma-activity] Network error fetching folder in {mailbox}: {e}")
+            return messages
+        if resp.status_code == 403:
+            log.error(
+                f"[pma-activity] 403 reading {mailbox}. The mailbox is likely not in "
+                f"the Exchange Application Access Policy. Ask IT to add {mailbox}."
+            )
+            return messages
+        if resp.status_code != 200:
+            log.error(f"[pma-activity] Graph API {resp.status_code} for {mailbox}: {resp.text[:300]}")
+            return messages
+        data = resp.json()
+        messages.extend(data.get("value", []))
+        next_url = data.get("@odata.nextLink")
+        page += 1
+
+    log.info(f"[pma-activity] Fetched {len(messages)} message(s) from folder since {since_iso}.")
+    return messages
+
+
+def _recipients(email: dict, field: str) -> list[dict]:
+    out = []
+    for r in email.get(field, []) or []:
+        ea = r.get("emailAddress", {}) or {}
+        out.append({"name": ea.get("name"), "address": ea.get("address")})
+    return out
+
+
+def build_activity_record(email: dict, app_token: str, mailbox: str,
+                          source_folder: str, extract_attachments: bool) -> dict:
+    """Build one JSONL feed record for an email: full body + (optionally)
+    extracted attachment text. Never raises on attachment failures."""
+    sender = email.get("from", {}).get("emailAddress", {}) or {}
+    record = {
+        "id": email.get("id"),
+        "internet_message_id": email.get("internetMessageId"),
+        "conversation_id": email.get("conversationId"),
+        "received": email.get("receivedDateTime"),
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "source_folder": source_folder,
+        "from": {"name": sender.get("name"), "address": sender.get("address")},
+        "to": _recipients(email, "toRecipients"),
+        "cc": _recipients(email, "ccRecipients"),
+        "subject": email.get("subject"),
+        "body": _email_text(email),
+        "has_attachments": bool(email.get("hasAttachments")),
+        "attachments": [],
+    }
+
+    if email.get("hasAttachments"):
+        try:
+            atts = _fetch_attachments(app_token, mailbox, email["id"])
+        except Exception as e:
+            log.warning(f"[pma-activity] Attachment fetch failed for {email.get('subject')!r}: {e}")
+            atts = []
+        for att in atts:
+            raw = att.get("contentBytes")
+            ct = (att.get("contentType") or "").lower()
+            # Skip small inline signature images, matching the corpus archiver.
+            if att.get("isInline") and ct.startswith("image/") and raw and len(raw) <= SIGNATURE_IMAGE_MAX:
+                continue
+            text = None
+            if extract_attachments and raw:
+                text = _extract_attachment_text(att.get("name") or "", ct, raw)
+            record["attachments"].append({
+                "name": att.get("name"),
+                "content_type": att.get("contentType"),
+                "size": att.get("size") or 0,
+                "is_inline": att.get("isInline", False),
+                "text": text,
+            })
+    return record
+
+
+def run_pma_activity(
+    app_token: str, config: dict, program_dir: Path, data_dir: Path,
+    folder_id: str, source_folder: str = "Inbox/PMA emails",
+    dry_run: bool = False, backfill_days: int | None = None,
+) -> dict:
+    """Export new emails from the PMA emails folder to a JSONL feed for Maple.
+
+    Reads only emails newer than the saved cursor (or a backfill window on the
+    first run / when backfill_days is given), appends one JSONL record per email
+    to the feed in Maple's folder, and advances the cursor. Idempotent: messages
+    already exported (tracked by id) are skipped, so re-runs and forced backfills
+    don't duplicate lines. One-shot."""
+    state_path = data_dir / "state" / "pma_activity_state.json"
+    state = load_pma_state(state_path)
+    seen_ids = set(state.get("seen_ids", []))
+
+    if backfill_days is not None:
+        since = datetime.now(timezone.utc) - timedelta(days=backfill_days)
+        log.info(f"[pma-activity] Forced backfill: last {backfill_days} day(s) (ignoring cursor).")
+    elif state.get("last_received"):
+        since = datetime.fromisoformat(state["last_received"].replace("Z", "+00:00"))
+    else:
+        days = int(config.get("pma_activity_backfill_days", DEFAULT_ACTIVITY_BACKFILL_DAYS))
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+        log.info(f"[pma-activity] No state — first run, backfilling last {days} day(s).")
+
+    mailbox = config.get("pma_activity_mailbox") or config.get("rocky_email", "rocky@gallagherllp.com")
+    extract_attachments = config.get("pma_activity_extract_attachments", True)
+
+    messages = fetch_folder_messages(app_token, mailbox, folder_id, since)
+    if not messages:
+        return {"exported": 0, "skipped_seen": 0, "since": since.isoformat(), "dry_run": dry_run}
+
+    feed_path = (data_dir / "pma_activity_feed.dryrun.jsonl") if dry_run \
+        else (maple_activity_dir(config) / ACTIVITY_FEED_FILE)
+
+    exported = 0
+    skipped = 0
+    newest = since
+    new_ids: list[str] = []
+    for email in messages:
+        mid = email.get("id")
+        if mid and mid in seen_ids:
+            skipped += 1
+        else:
+            record = build_activity_record(email, app_token, mailbox, source_folder, extract_attachments)
+            _append_jsonl(feed_path, record)
+            exported += 1
+            if mid:
+                new_ids.append(mid)
+        rdt = email.get("receivedDateTime")
+        if rdt:
+            try:
+                dt = datetime.fromisoformat(rdt.replace("Z", "+00:00"))
+                if dt > newest:
+                    newest = dt
+            except ValueError:
+                pass
+
+    # Advance the cursor and remember exported ids (capped) for idempotency.
+    state["last_received"] = newest.strftime("%Y-%m-%dT%H:%M:%SZ")
+    state["seen_ids"] = (list(seen_ids) + new_ids)[-ACTIVITY_SEEN_CAP:]
+    if not dry_run:
+        save_pma_state(state_path, state)
+    else:
+        log.info(f"[pma-activity] DRY RUN — cursor NOT advanced; wrote to {feed_path}.")
+
+    result = {"exported": exported, "skipped_seen": skipped, "feed": str(feed_path),
+              "since": since.isoformat(), "dry_run": dry_run}
+    log.info(f"[pma-activity] Done: {result}")
+    return result
