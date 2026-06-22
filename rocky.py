@@ -1899,18 +1899,23 @@ def _is_open_case(case_meta: dict) -> bool:
     return val in ("", "open", "o", "active")
 
 
-NO_ACTIVITY_SYSTEM_PROMPT = """You are Rocky. For each case listed below, identify the single most immediate UPCOMING item — the next deadline, hearing, or pending to-do — from that case's status memorandum text.
+NO_ACTIVITY_SYSTEM_PROMPT = """You are Rocky. For each case listed below, derive TWO things from that case's status memorandum text: (1) the single most important recommended NEXT STEP, and (2) the next BIG DEADLINE.
 
-TODAY's date is given at the top of the message. An item is "upcoming" only if its date is on or after TODAY. A date earlier than TODAY is in the PAST — never report a past date as the next event.
+TODAY's date is given at the top of the message. A deadline is "upcoming" only if its date is on or after TODAY. A date earlier than TODAY is in the PAST — never report a past date as the next deadline.
 
 Output one line per case, in this exact format:
-RRID-XXXX | <very short next event>
+RRID-XXXX | <next step> | <next big deadline>
 
-Rules for the next-event text:
-- Under ~12 words. If there is a future date, lead with it formatted YYYY-MM-DD (e.g. "2026-07-14 — Pretrial conference").
-- If there is no date but there is a clear pending action, state it briefly (e.g. "Awaiting opposing counsel's discovery responses").
-- Use ONLY dates that actually appear in that case's memo text. Do not invent dates. If every date in the memo is before TODAY, there is no upcoming date — fall back to a pending to-do or "None on file".
-- If the memo is empty or has no future date and no clear pending item, write "None on file".
+Rules for the NEXT STEP (middle field):
+- The most important action to move the case forward — what the attorney should do next. Under ~14 words.
+- Phrase as an action (e.g. "Serve discovery responses", "Follow up with opposing counsel on settlement", "Draft pretrial statement").
+- If the memo gives no clear pending action, write "None on file".
+
+Rules for the NEXT BIG DEADLINE (last field):
+- The single most immediate UPCOMING deadline, hearing, or filing date. Under ~12 words.
+- If there is a future date, lead with it formatted YYYY-MM-DD (e.g. "2026-07-14 — Pretrial conference").
+- Use ONLY dates that actually appear in that case's memo text. Do not invent dates. If every date in the memo is before TODAY, there is no upcoming deadline — write "None on file".
+- If the memo is empty or has no future date, write "None on file".
 
 Output ONLY the lines, one per case, no preamble or commentary."""
 
@@ -1919,13 +1924,15 @@ def build_no_activity_next_events(
     client: Anthropic,
     cases: list[tuple[str, str, str]],
     today_str: str,
-) -> dict[str, str]:
+) -> dict[str, tuple[str, str]]:
     """
     One batched Claude call for all no-activity cases.
-    `cases` is a list of (rrid, name, status_memo_text). Returns {rrid: next_event}.
-    Falls back to "None on file" for any case the model omits or on error.
+    `cases` is a list of (rrid, name, status_memo_text).
+    Returns {rrid: (next_step, next_deadline)}.
+    Falls back to ("None on file", "None on file") for any case the model omits
+    or on error.
     """
-    fallback = {rrid: "None on file" for rrid, _, _ in cases}
+    fallback = {rrid: ("None on file", "None on file") for rrid, _, _ in cases}
     if not cases:
         return {}
 
@@ -1943,7 +1950,7 @@ def build_no_activity_next_events(
     try:
         response = client.messages.create(
             model=CLAUDE_MODEL,
-            max_tokens=1000,
+            max_tokens=1200,
             system=NO_ACTIVITY_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_prompt}],
         )
@@ -1956,14 +1963,15 @@ def build_no_activity_next_events(
     for line in text.splitlines():
         if "|" not in line:
             continue
-        left, _, right = line.partition("|")
-        m = RRID_PATTERN.search(left)
+        parts = [p.strip() for p in line.split("|")]
+        m = RRID_PATTERN.search(parts[0])
         if not m:
             continue
         rrid = m.group(0).upper()
-        event = right.strip() or "None on file"
+        next_step = (parts[1] if len(parts) > 1 else "") or "None on file"
+        next_deadline = (parts[2] if len(parts) > 2 else "") or "None on file"
         if rrid in result:
-            result[rrid] = event
+            result[rrid] = (next_step, next_deadline)
     return result
 
 
@@ -1978,7 +1986,7 @@ def _get_digest_lawyers(case_meta: dict) -> list[str]:
 def _build_digest_text(
     sections: list[tuple[str, str]],
     hours_back: int,
-    no_activity: list[tuple[str, str, str]] | None = None,
+    no_activity: list[tuple[str, str, str, str]] | None = None,
 ) -> str:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     parts = [
@@ -2000,9 +2008,12 @@ def _build_digest_text(
     if no_activity:
         parts.append("## Cases with No Activity")
         parts.append("")
-        for rrid, name, next_event in no_activity:
-            parts.append(f"- **{rrid} — {name}** (Next event: {next_event})")
-        parts.append("")
+        for rrid, name, next_step, next_deadline in no_activity:
+            parts.append(f"**{rrid} — {name}** — No new activity")
+            parts.append(
+                f"  Next Step: {next_step}. Next Big Deadline: {next_deadline}."
+            )
+            parts.append("")
     return "\n".join(parts)
 
 
@@ -2063,7 +2074,7 @@ def _md_section_to_html(md: str) -> str:
 def _build_digest_html(
     sections: list[tuple[str, str]],
     hours_back: int,
-    no_activity: list[tuple[str, str, str]] | None = None,
+    no_activity: list[tuple[str, str, str, str]] | None = None,
 ) -> str:
     today = datetime.now(timezone.utc).strftime("%B %d, %Y")
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -2104,13 +2115,17 @@ def _build_digest_html(
     no_activity_html = ""
     if no_activity:
         rows = []
-        for rrid, name, next_event in no_activity:
+        for rrid, name, next_step, next_deadline in no_activity:
             rows.append(f"""
-                <tr><td style="padding:6px 0;border-bottom:1px solid #edf2f7;">
+                <tr><td style="padding:8px 0;border-bottom:1px solid #edf2f7;">
                     <span style="font-size:13px;font-weight:600;color:#2c5282;">{rrid}</span>
                     <span style="font-size:13px;color:#1a202c;"> — {name}</span>
+                    <span style="font-size:12px;color:#a0aec0;"> — No new activity</span>
                     <br/>
-                    <span style="font-size:12px;color:#718096;">Next event: {next_event}</span>
+                    <span style="font-size:12px;color:#718096;">
+                        <strong style="color:#4a5568;">Next Step:</strong> {next_step}
+                        &nbsp;·&nbsp;
+                        <strong style="color:#4a5568;">Next Big Deadline:</strong> {next_deadline}</span>
                 </td></tr>""")
         no_activity_html = f"""
                 <!-- Cases with no activity -->
@@ -2297,7 +2312,7 @@ def daily_digest(
 
     # Resolve the "next event" for each open case with no activity (one batched
     # Claude call), then build the bottom-of-digest list.
-    no_activity_rows: list[tuple[str, str, str]] = []
+    no_activity_rows: list[tuple[str, str, str, str]] = []
     if no_activity_cases:
         today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d (%A)")
         memo_inputs = [
@@ -2306,7 +2321,7 @@ def daily_digest(
         ]
         next_events = build_no_activity_next_events(client, memo_inputs, today_str)
         no_activity_rows = [
-            (rrid, name, next_events.get(rrid, "None on file"))
+            (rrid, name, *next_events.get(rrid, ("None on file", "None on file")))
             for rrid, name, _ in no_activity_cases
         ]
 
