@@ -265,6 +265,19 @@ main {
     min-width: 65px;
 }
 
+/* Plain-English mode tags */
+.plain-lead {
+    font-weight: 700;
+    margin-right: 4px;
+}
+.plain-lead.warn { color: var(--yellow); }
+.plain-lead.err  { color: var(--red); }
+.plain-proc {
+    color: var(--purple);
+    font-weight: 600;
+    margin-right: 6px;
+}
+
 .log-footer {
     display: flex;
     align-items: center;
@@ -474,6 +487,229 @@ main {
 }
 
 /* ================================================================
+   Run-command card
+   ================================================================ */
+.run-group-label {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--text-dim);
+    margin: 10px 0 4px;
+}
+.run-group-label:first-child { margin-top: 0; }
+
+.run-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 0;
+}
+
+.run-item .run-info { flex: 1; min-width: 0; }
+
+.run-item .run-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.run-item .run-desc {
+    font-size: 11px;
+    color: var(--text-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.danger-tag {
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: rgba(248, 81, 73, 0.15);
+    color: var(--red);
+}
+
+.dry-check {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 10px;
+    color: var(--text-dim);
+    cursor: pointer;
+    user-select: none;
+}
+.dry-check input { accent-color: var(--blue); }
+
+.btn-run {
+    padding: 4px 10px;
+    border-radius: 5px;
+    border: 1px solid var(--green-dim);
+    background: rgba(63, 185, 80, 0.1);
+    color: var(--green);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+    flex-shrink: 0;
+}
+.btn-run:hover { background: rgba(63, 185, 80, 0.22); }
+.btn-run:disabled { opacity: 0.5; cursor: default; }
+.btn-run.is-running {
+    border-color: var(--yellow);
+    background: rgba(210, 153, 34, 0.12);
+    color: var(--yellow);
+    cursor: default;
+}
+
+.btn-sched {
+    padding: 4px 8px;
+    border-radius: 5px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-dim);
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s;
+    flex-shrink: 0;
+}
+.btn-sched:hover { border-color: var(--blue); color: var(--blue); }
+
+/* New-schedule form + task controls */
+.btn-add {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--green-dim);
+    background: transparent;
+    color: var(--green);
+    cursor: pointer;
+}
+.btn-add:hover { background: rgba(63, 185, 80, 0.12); }
+
+.sched-form {
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 0 14px;
+    margin-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+}
+.sched-form.open { display: flex; }
+
+.sched-form select,
+.sched-form input[type="text"],
+.sched-form input[type="time"] {
+    padding: 5px 8px;
+    border-radius: 5px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 12px;
+    font-family: var(--font-sans);
+    outline: none;
+    width: 100%;
+}
+.sched-form select:focus,
+.sched-form input:focus { border-color: var(--blue); }
+
+.sched-form-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+.sched-form-row > * { flex: 1; }
+
+.sched-form-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+.btn-primary {
+    padding: 5px 14px;
+    border-radius: 5px;
+    border: 1px solid var(--green-dim);
+    background: var(--green-dim);
+    color: white;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+}
+.btn-primary:hover { filter: brightness(1.1); }
+
+.btn-ghost {
+    padding: 5px 14px;
+    border-radius: 5px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-dim);
+    font-size: 12px;
+    cursor: pointer;
+}
+.btn-ghost:hover { color: var(--text); border-color: var(--text); }
+
+.task-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.btn-task-icon {
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-dim);
+    font-size: 11px;
+    cursor: pointer;
+}
+.btn-task-icon:hover { color: var(--text); border-color: var(--text); }
+.btn-task-icon.danger:hover { color: var(--red); border-color: var(--red); }
+
+.task-edit-time {
+    display: none;
+    gap: 6px;
+    align-items: center;
+    margin-top: 8px;
+}
+.task-edit-time.open { display: flex; }
+.task-edit-time input {
+    padding: 3px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 12px;
+    outline: none;
+}
+.task-edit-time input:focus { border-color: var(--blue); }
+
+.toast {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 10px 18px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    z-index: 1000;
+    opacity: 0;
+    transition: opacity 0.25s;
+    pointer-events: none;
+    max-width: 80vw;
+}
+.toast.show { opacity: 1; }
+.toast.ok  { background: var(--green-dim); color: white; }
+.toast.err { background: var(--red-dim); color: white; }
+
+/* ================================================================
    Responsive — collapse sidebar below
    ================================================================ */
 @media (max-width: 900px) {
@@ -515,7 +751,11 @@ main {
     <!-- Log viewer -->
     <div class="log-panel">
         <div class="log-toolbar">
-            <label>Filter:</label>
+            <label>View:</label>
+            <button class="filter-btn view-btn active" data-view="plain" onclick="setLogMode('plain')">Plain English</button>
+            <button class="filter-btn view-btn" data-view="tech" onclick="setLogMode('tech')">Technical</button>
+            <span style="width:1px; height:18px; background:var(--border); margin:0 4px;"></span>
+            <label>Show:</label>
             <button class="filter-btn active" data-level="all" onclick="setFilter('all')">All</button>
             <button class="filter-btn" data-level="info" onclick="setFilter('info')">Info</button>
             <button class="filter-btn" data-level="warning" onclick="setFilter('warning')">Warn</button>
@@ -567,13 +807,51 @@ main {
             </div>
         </div>
 
+        <!-- Run a command -->
+        <div class="card">
+            <div class="card-header">Run a Command</div>
+            <div class="card-body">
+                <div id="run-list">
+                    <div class="tasks-loading">Loading commands…</div>
+                </div>
+            </div>
+        </div>
+
         <!-- Scheduled tasks -->
         <div class="card">
             <div class="card-header">
                 Scheduled Tasks
-                <button class="btn-icon" onclick="refreshStatus()" title="Refresh" style="font-size: 11px; padding: 2px 8px;">↻</button>
+                <span style="display:flex; gap:6px;">
+                    <button class="btn-add" onclick="setupRecommended()" title="Create the standard daily schedule in one click">⚡ Auto-setup</button>
+                    <button class="btn-add" onclick="toggleSchedForm()" title="New scheduled task">+ New</button>
+                    <button class="btn-icon" onclick="refreshStatus()" title="Refresh" style="font-size: 11px; padding: 2px 8px;">↻</button>
+                </span>
             </div>
             <div class="card-body">
+                <!-- New-schedule form -->
+                <div class="sched-form" id="sched-form">
+                    <select id="sched-flag"></select>
+                    <input type="text" id="sched-name" placeholder="Task name (optional)">
+                    <div class="sched-form-row">
+                        <select id="sched-freq" onchange="onFreqChange()">
+                            <option value="DAILY">Daily</option>
+                            <option value="WEEKLY">Weekly</option>
+                            <option value="HOURLY">Hourly</option>
+                            <option value="MINUTE">Every N min</option>
+                            <option value="ONCE">Once</option>
+                        </select>
+                        <input type="time" id="sched-time" value="16:00">
+                        <input type="text" id="sched-interval" placeholder="N" style="display:none;">
+                    </div>
+                    <label class="dry-check" id="sched-dry-wrap" style="display:none;">
+                        <input type="checkbox" id="sched-dry"> dry-run
+                    </label>
+                    <div class="sched-form-actions">
+                        <button class="btn-ghost" onclick="toggleSchedForm(false)">Cancel</button>
+                        <button class="btn-primary" onclick="createSchedule()">Create</button>
+                    </div>
+                </div>
+
                 <div class="task-list" id="task-list">
                     <div class="tasks-loading">Loading tasks…</div>
                 </div>
@@ -582,6 +860,8 @@ main {
 
     </div>
 </main>
+
+<div class="toast" id="toast"></div>
 
 <!-- ============================================================
      JavaScript
@@ -594,10 +874,13 @@ main {
     let autoScroll = true;
     let currentFilter = "all";
     let searchText = "";
-    let logLines = [];         // all raw lines (strings)
+    let plainMode = true;      // Plain English view by default
+    let logLines = [];         // log entries: { raw, level, _plain? }
     const MAX_LINES = 5000;
     let sseConnected = false;
     let statusInterval = null;
+    let commands = [];          // Rocky command registry from /api/commands
+    let runningSet = [];        // flags currently running (from /api/status)
 
     const viewer   = document.getElementById("log-viewer");
     const lineCount = document.getElementById("log-line-count");
@@ -610,6 +893,15 @@ main {
         return d.innerHTML;
     }
 
+    let toastTimer = null;
+    function toast(msg, ok = true) {
+        const el = document.getElementById("toast");
+        el.textContent = msg;
+        el.className = "toast show " + (ok ? "ok" : "err");
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => { el.className = "toast"; }, 3500);
+    }
+
     function parseLevel(line) {
         if (line.includes("[ERROR]"))   return "error";
         if (line.includes("[WARNING]")) return "warning";
@@ -618,12 +910,10 @@ main {
         return "info";
     }
 
-    function formatLogLine(raw) {
-        const level = parseLevel(raw);
-        const escaped = escapeHtml(raw);
+    // --- Technical (raw) formatting ---
 
-        // Highlight timestamp and level tag
-        const formatted = escaped
+    function techFormat(raw) {
+        return escapeHtml(raw)
             .replace(
                 /^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}[,.\d]*)/,
                 '<span class="timestamp">$1</span>'
@@ -632,11 +922,119 @@ main {
                 /\[(INFO|WARNING|WARN|ERROR|DEBUG)\]/,
                 '<span class="level-tag">[$1]</span>'
             );
+    }
 
-        return { level, html: formatted, raw };
+    // --- Plain-English humanizing ---
+    //
+    // The log is written for engineers. In Plain mode we translate the lines
+    // most people care about into ordinary language, hide pure noise, shorten
+    // file paths to just the filename, and show a friendly clock time. Lines
+    // we don't have a rule for still display — just cleaned up — so nothing is
+    // ever silently lost (and Technical mode always shows the raw line).
+
+    // Subsystem tag -> friendly process name (looked up case-insensitively).
+    const PROCESS_NAMES = {
+        maple: "Daily activity digest",
+        pma:   "Property-management mail",
+        ella:  "Ella's case digest",
+        steve: "Steve's to-do list",
+        remy:  "Remy notice requests",
+        llt:   "Landlord-tenant drafts",
+    };
+
+    // Lines that are pure noise in Plain mode.
+    const PLAIN_HIDE = [
+        /^=+$/,                                   // separator bars
+        /HTTP Request:/i,                         // raw API calls
+        /\bHTTP\/1\.1\b/i,
+        /token|tokens used|usage:/i,
+    ];
+
+    // [pattern, replacement] applied to the message text. $1.. capture groups.
+    const PLAIN_RULES = [
+        [/^Rocky\s*[—–-]\s*(.+)$/i,                    "▸ $1"],
+        [/Wrote digest archive:?\s*(.+)$/i,            "Saved the digest file ($1)."],
+        [/DRY RUN\s*[—–-]\s*not sending\.?\s*(.*?)\.?\s*(?:Preview:.*)?$/i, "Test run — prepared but did not send ($1)."],
+        [/^.*\bnot sent\.\s*Reason:\s*dry_run\b.*$/i,  "Nothing was emailed (this was a test run)."],
+        [/^.*?(\w[\w ]*?) not sent\.\s*Reason:\s*(.+)$/i,  "$1 was not sent (reason: $2)."],
+        [/Recipients:\s*\[(.*?)\]\s*\|\s*Dry run:\s*True/i,  "Would email to: $1 (test run — not actually sent)."],
+        [/Recipients:\s*\[(.*?)\]\s*\|\s*Dry run:\s*False/i, "Emailing to: $1."],
+        [/Date:\s*(\S+)\s*\|\s*Logs:.*$/i,             "Reviewing activity for $1."],
+        [/Claude summary failed.*authentication_error.*$/i, "Couldn't reach the AI service (login/key problem) — used a basic summary instead."],
+        [/Claude summary failed.*$/i,                  "The AI summary step failed — used a basic summary instead."],
+        [/LOGS FOLDER NOT FOUND:?\s*(.*?)\s*[—–-].*$/i, "Couldn't find the activity-logs folder ($1) — sent an alert instead."],
+        [/Invalid\s+--?\w+\s*'?(.*?)'?;?\s*expected.*$/i, "The value provided wasn't valid ($1)."],
+        [/Another rocky (\S+) is already running.*$/i, "'$1' is already running — skipped this start."],
+        [/Launched '(.*?)'.*$/i,                       "Started '$1'."],
+        [/(\d+)\s+contributor\(s\),\s*(\d+)\s+file\(s\),\s*(\d+)\s+command\(s\),\s*(\d+)\s+failure\(s\)/i,
+            "$1 people, $2 files, $3 actions, $4 problems"],
+        [/Knowledge synthesis complete:.*?'updated':\s*(\d+).*$/i, "Knowledge synthesis finished — $1 deal(s) updated."],
+        [/Synthesized\s+\d+\s*[—–-]\s*(.+?)\s*[—–-]\s*PMA\s*\((\d+)\s*new event\(s\)\)\.?$/i, "Updated the brief for $1 ($2 new event(s))."],
+        [/Updated general knowledge\s*\((\d+)\s*chars?\)\.?$/i, "Updated the general knowledge notes."],
+        [/Converted image\s+\S+\s*[→>—–-]+\s*(\S+).*$/i, "Converted an image to PDF ($1)."],
+        [/Polling every\s+(\d+)s\b.*$/i,               "Checks for new mail every $1 seconds."],
+        [/Rocky starting up\b.*$/i,                     "Rocky is starting up."],
+        [/Loaded\s+\d+\s+chars?\s+of\s+instructions.*$/i, "Loaded its instructions."],
+        [/Classifications will be written to:.*$/i,     "Ready to record what it finds."],
+        [/Mailboxes:\s*(.+)$/i,                         "Watching mailboxes: $1"],
+        [/(Program|Data) dir:.*$/i,                     ""],   // drop path-only setup lines
+    ];
+
+    function prettyTime(raw) {
+        const m = raw.match(/^\d{4}-\d{2}-\d{2}\s+(\d{2}):(\d{2}):\d{2}/);
+        if (!m) return "";
+        let h = parseInt(m[1], 10);
+        const ap = h >= 12 ? "PM" : "AM";
+        h = h % 12 || 12;
+        return `${h}:${m[2]} ${ap}`;
+    }
+
+    function shortenPaths(s) {
+        return s.replace(/[A-Za-z]:\\[^\s'")\]]+/g, p => {
+            const parts = p.split("\\");
+            return parts[parts.length - 1] || p;
+        });
+    }
+
+    // Returns { hide, html } for Plain mode.
+    function humanize(raw) {
+        const m = raw.match(/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}[,.\d]*)\s+\[(\w+)\]\s*(.*)$/);
+        const level = parseLevel(raw);
+        let msg = m ? m[3] : raw;
+
+        // Pull off a subsystem tag like "[Maple]" for a friendly label.
+        let proc = "";
+        const pm = msg.match(/^\[(\w+)\]\s*(.*)$/);
+        if (pm) { proc = PROCESS_NAMES[pm[1].toLowerCase()] || pm[1]; msg = pm[2]; }
+
+        if (PLAIN_HIDE.some(re => re.test(msg)) || msg.trim() === "")
+            return { hide: true, html: "" };
+
+        for (const [re, repl] of PLAIN_RULES) {
+            if (re.test(msg)) { msg = msg.replace(re, repl); break; }
+        }
+        msg = shortenPaths(msg).trim();
+        if (msg === "") return { hide: true, html: "" };
+
+        const time = prettyTime(raw);
+        const lead = level === "error"   ? '<span class="plain-lead err">✗ Problem</span> '
+                   : level === "warning" ? '<span class="plain-lead warn">⚠ Heads-up</span> '
+                   : "";
+        const procTag = proc ? `<span class="plain-proc">${escapeHtml(proc)}</span> ` : "";
+        const timeTag = time ? `<span class="timestamp">${time}</span>  ` : "";
+        return { hide: false, html: `${timeTag}${lead}${procTag}${escapeHtml(msg)}` };
+    }
+
+    function entryHidden(entry) {
+        if (plainMode) {
+            if (entry._plain === undefined) entry._plain = humanize(entry.raw);
+            return entry._plain.hide;
+        }
+        return false;
     }
 
     function shouldShow(entry) {
+        if (entryHidden(entry)) return false;
         if (currentFilter !== "all" && entry.level !== currentFilter) return false;
         if (searchText && !entry.raw.toLowerCase().includes(searchText)) return false;
         return true;
@@ -647,7 +1045,12 @@ main {
     function renderLine(entry) {
         const div = document.createElement("div");
         div.className = `log-line level-${entry.level}`;
-        div.innerHTML = entry.html;
+        if (plainMode) {
+            if (entry._plain === undefined) entry._plain = humanize(entry.raw);
+            div.innerHTML = entry._plain.html;
+        } else {
+            div.innerHTML = techFormat(entry.raw);
+        }
         div.dataset.level = entry.level;
         div.dataset.raw = entry.raw;
         if (!shouldShow(entry)) div.style.display = "none";
@@ -655,7 +1058,7 @@ main {
     }
 
     function appendLine(raw) {
-        const entry = formatLogLine(raw);
+        const entry = { raw, level: parseLevel(raw) };
         logLines.push(entry);
 
         // Cap memory.
@@ -689,11 +1092,21 @@ main {
             : `${visible} / ${total} lines`;
     }
 
+    // --- View mode (Plain English / Technical) ---
+
+    window.setLogMode = function(mode) {
+        plainMode = (mode === "plain");
+        document.querySelectorAll(".view-btn").forEach(btn => {
+            btn.classList.toggle("active", btn.dataset.view === mode);
+        });
+        rebuildView();
+    };
+
     // --- Filters ---
 
     window.setFilter = function(level) {
         currentFilter = level;
-        document.querySelectorAll(".filter-btn").forEach(btn => {
+        document.querySelectorAll(".filter-btn[data-level]").forEach(btn => {
             btn.classList.toggle("active", btn.dataset.level === level);
         });
         applyFilters();
@@ -701,16 +1114,13 @@ main {
 
     window.applyFilters = function() {
         searchText = document.getElementById("log-search").value.toLowerCase();
-        // Instead of rebuilding, toggle visibility.
-        const lines = viewer.querySelectorAll(".log-line");
-        lines.forEach(el => {
-            const level = el.dataset.level;
-            const raw = el.dataset.raw;
-            let show = true;
-            if (currentFilter !== "all" && level !== currentFilter) show = false;
-            if (searchText && !raw.toLowerCase().includes(searchText)) show = false;
-            el.style.display = show ? "" : "none";
-        });
+        // Toggle visibility per line (cheaper than a full rebuild).
+        const els = viewer.querySelectorAll(".log-line");
+        let i = 0;
+        for (const entry of logLines) {
+            const el = els[i++];
+            if (el) el.style.display = shouldShow(entry) ? "" : "none";
+        }
         updateLineCount();
     };
 
@@ -851,6 +1261,8 @@ main {
             }
 
             // --- Running processes ---
+            runningSet = data.running || [];
+            updateRunButtons();
             const procList = document.getElementById("process-list");
             const runCount = document.getElementById("running-count");
             if (data.running && data.running.length > 0) {
@@ -879,19 +1291,31 @@ main {
                     let statusText = task.enabled ? "Enabled" : "Disabled";
                     if (isRunning) { statusClass = "running"; statusText = "Running"; }
 
+                    const nameJs = escapeHtml(task.name).replace(/'/g, "\\'");
+                    const safe = btoa(task.name).replace(/=/g, "");
                     return `<div class="task-item">
                         <div class="task-top">
                             <span class="task-name">${escapeHtml(displayName)}</span>
-                            <label class="toggle" title="${task.enabled ? 'Disable' : 'Enable'} this task">
-                                <input type="checkbox" ${task.enabled ? "checked" : ""}
-                                       onchange="toggleTask('${escapeHtml(task.name).replace(/'/g, "\\'")}', this.checked)">
-                                <span class="toggle-slider"></span>
-                            </label>
+                            <div class="task-actions">
+                                <button class="btn-task-icon" title="Edit start time"
+                                        onclick="editTaskTime('${nameJs}')">🕑</button>
+                                <button class="btn-task-icon danger" title="Delete task"
+                                        onclick="deleteTaskSched('${nameJs}')">🗑</button>
+                                <label class="toggle" title="${task.enabled ? 'Disable' : 'Enable'} this task">
+                                    <input type="checkbox" ${task.enabled ? "checked" : ""}
+                                           onchange="toggleTask('${nameJs}', this.checked)">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
                         </div>
                         <div class="task-meta">
                             <span><span class="task-status-badge ${statusClass}">${statusText}</span></span>
                             <span>Next: ${escapeHtml(task.next_run || "N/A")}</span>
                             <span>Last: ${escapeHtml(task.last_run || "N/A")}</span>
+                        </div>
+                        <div class="task-edit-time" id="edit-${safe}">
+                            <input type="time" value="16:00">
+                            <button class="btn-primary" onclick="saveTaskTime('${nameJs}', '${safe}')">Save</button>
                         </div>
                     </div>`;
                 }).join("");
@@ -942,6 +1366,252 @@ main {
         }
     };
 
+    // --- Run a command ---
+
+    async function loadCommands() {
+        try {
+            const res = await fetch("/api/commands");
+            const data = await res.json();
+            commands = data.commands || [];
+            runningSet = data.running || [];
+            renderRunList();
+            populateSchedFlags();
+        } catch (e) {
+            console.warn("Failed to load commands:", e);
+        }
+    }
+
+    function renderRunList() {
+        const host = document.getElementById("run-list");
+        if (!commands.length) {
+            host.innerHTML = '<div class="empty-state">No commands available.</div>';
+            return;
+        }
+        const groups = {};
+        for (const c of commands) (groups[c.group] = groups[c.group] || []).push(c);
+
+        let html = "";
+        for (const group of Object.keys(groups)) {
+            html += `<div class="run-group-label">${escapeHtml(group)}</div>`;
+            for (const c of groups[group]) {
+                const isRunning = runningSet.includes(c.flag);
+                const dry = c.dry_run
+                    ? `<label class="dry-check" title="Run without making changes">
+                           <input type="checkbox" data-dry="${c.flag}"> dry</label>`
+                    : "";
+                const danger = c.danger ? '<span class="danger-tag">writes</span>' : "";
+                const sched = c.sched_time
+                    ? `<button class="btn-sched" data-sched="${c.flag}"
+                               title="Schedule this to run automatically"
+                               onclick="quickSchedule('${c.flag}')">📅</button>`
+                    : "";
+                html += `<div class="run-item">
+                    <div class="run-info">
+                        <div class="run-name">${escapeHtml(c.label)} ${danger}</div>
+                        <div class="run-desc" title="${escapeHtml(c.desc)}">${escapeHtml(c.desc)}</div>
+                    </div>
+                    ${dry}
+                    ${sched}
+                    <button class="btn-run ${isRunning ? "is-running" : ""}"
+                            data-run="${c.flag}"
+                            ${isRunning ? "disabled" : ""}
+                            onclick="runCommand('${c.flag}', this)">
+                        ${isRunning ? "running…" : "▶ Run"}
+                    </button>
+                </div>`;
+            }
+        }
+        host.innerHTML = html;
+    }
+
+    // Reflect the running set onto the run buttons (called from refreshStatus).
+    function updateRunButtons() {
+        document.querySelectorAll("[data-run]").forEach(btn => {
+            const flag = btn.dataset.run;
+            const running = runningSet.includes(flag);
+            btn.classList.toggle("is-running", running);
+            btn.disabled = running;
+            btn.textContent = running ? "running…" : "▶ Run";
+        });
+    }
+
+    window.runCommand = async function(flag, btn) {
+        const cmd = commands.find(c => c.flag === flag);
+        if (cmd && cmd.danger &&
+            !confirm(`Run "${cmd.label}"? ${cmd.desc}.`)) return;
+
+        const dryEl = document.querySelector(`[data-dry="${flag}"]`);
+        const dryRun = dryEl ? dryEl.checked : false;
+
+        btn.disabled = true;
+        btn.textContent = "starting…";
+        try {
+            const res = await fetch("/api/run", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ flag, dry_run: dryRun }),
+            });
+            const data = await res.json();
+            if (data.success) {
+                toast(`Started ${flag}${dryRun ? " (dry-run)" : ""}`, true);
+                runningSet.push(flag);
+                updateRunButtons();
+                setTimeout(refreshStatus, 1500);
+            } else {
+                toast(data.error || "Failed to start", false);
+                btn.disabled = false;
+                btn.textContent = "▶ Run";
+            }
+        } catch (e) {
+            toast("Request failed", false);
+            btn.disabled = false;
+            btn.textContent = "▶ Run";
+        }
+    };
+
+    // --- Schedule create / edit / delete ---
+
+    function populateSchedFlags() {
+        const sel = document.getElementById("sched-flag");
+        sel.innerHTML = commands.map(c =>
+            `<option value="${c.flag}">${escapeHtml(c.label)}</option>`
+        ).join("");
+        onFlagOrFreqChange();
+        sel.onchange = onFlagOrFreqChange;
+    }
+
+    function onFlagOrFreqChange() {
+        const flag = document.getElementById("sched-flag").value;
+        const cmd = commands.find(c => c.flag === flag);
+        const wrap = document.getElementById("sched-dry-wrap");
+        wrap.style.display = (cmd && cmd.dry_run) ? "" : "none";
+        if (!cmd || !cmd.dry_run) document.getElementById("sched-dry").checked = false;
+    }
+
+    window.onFreqChange = function() {
+        const freq = document.getElementById("sched-freq").value;
+        const timeEl = document.getElementById("sched-time");
+        const intEl = document.getElementById("sched-interval");
+        const needsTime = ["DAILY", "WEEKLY", "ONCE"].includes(freq);
+        timeEl.style.display = needsTime ? "" : "none";
+        intEl.style.display = (freq === "HOURLY" || freq === "MINUTE") ? "" : "none";
+    };
+
+    window.toggleSchedForm = function(open) {
+        const form = document.getElementById("sched-form");
+        const show = (open === undefined) ? !form.classList.contains("open") : open;
+        form.classList.toggle("open", show);
+    };
+
+    // Open the new-schedule form pre-filled with a command's recommended slot.
+    window.quickSchedule = function(flag) {
+        const cmd = commands.find(c => c.flag === flag);
+        if (!cmd) return;
+        document.getElementById("sched-flag").value = flag;
+        document.getElementById("sched-name").value = "";
+        const freq = cmd.sched_freq || "DAILY";
+        document.getElementById("sched-freq").value = freq;
+        if (cmd.sched_time) document.getElementById("sched-time").value = cmd.sched_time;
+        if (cmd.sched_interval)
+            document.getElementById("sched-interval").value = cmd.sched_interval;
+        onFreqChange();
+        onFlagOrFreqChange();
+        toggleSchedForm(true);
+        document.getElementById("sched-form").scrollIntoView({ behavior: "smooth", block: "center" });
+    };
+
+    // One-click install of the standard daily schedule.
+    window.setupRecommended = async function() {
+        const recs = commands.filter(c => c.recommended);
+        const lines = recs.map(c => {
+            const when = c.sched_freq === "MINUTE"
+                ? `every ${c.sched_interval} min`
+                : `daily ${c.sched_time}`;
+            return `  • ${c.label} — ${when}`;
+        }).join("\n");
+        if (!confirm(`Create the recommended schedule?\n\n${lines}\n\nExisting tasks are left untouched.`))
+            return;
+        try {
+            const res = await fetch("/api/schedule/setup-recommended", { method: "POST" });
+            const d = await res.json();
+            const parts = [];
+            if (d.created.length) parts.push(`${d.created.length} created`);
+            if (d.skipped.length) parts.push(`${d.skipped.length} already existed`);
+            if (d.failed.length)  parts.push(`${d.failed.length} failed`);
+            toast(parts.join(" · ") || "Nothing to do", !d.failed.length);
+            setTimeout(refreshStatus, 800);
+        } catch (e) {
+            toast("Request failed", false);
+        }
+    };
+
+    window.createSchedule = async function() {
+        const flag = document.getElementById("sched-flag").value;
+        const name = document.getElementById("sched-name").value.trim();
+        const freq = document.getElementById("sched-freq").value;
+        const time = document.getElementById("sched-time").value;
+        const interval = document.getElementById("sched-interval").value;
+        const dryEl = document.getElementById("sched-dry");
+        const dry_run = dryEl && dryEl.offsetParent !== null ? dryEl.checked : false;
+
+        try {
+            const res = await fetch("/api/schedule/create", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    flag, name: name || undefined, frequency: freq,
+                    time, interval: interval ? Number(interval) : undefined, dry_run,
+                }),
+            });
+            const data = await res.json();
+            if (data.success) {
+                toast("Scheduled task created", true);
+                document.getElementById("sched-name").value = "";
+                toggleSchedForm(false);
+                setTimeout(refreshStatus, 800);
+            } else {
+                toast(data.message || data.error || "Create failed", false);
+            }
+        } catch (e) {
+            toast("Request failed", false);
+        }
+    };
+
+    window.editTaskTime = function(name) {
+        const safe = btoa(name).replace(/=/g, "");
+        const row = document.getElementById("edit-" + safe);
+        if (row) row.classList.toggle("open");
+    };
+
+    window.saveTaskTime = async function(name, safe) {
+        const input = document.querySelector(`#edit-${safe} input`);
+        const time = input ? input.value : "";
+        try {
+            const res = await fetch("/api/schedule/update-time", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ name, time }),
+            });
+            const data = await res.json();
+            if (data.success) { toast("Start time updated", true); setTimeout(refreshStatus, 800); }
+            else toast(data.message || data.error || "Update failed", false);
+        } catch (e) { toast("Request failed", false); }
+    };
+
+    window.deleteTaskSched = async function(name) {
+        if (!confirm(`Delete scheduled task?\n${name}`)) return;
+        try {
+            const res = await fetch("/api/schedule/delete", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ name }),
+            });
+            const data = await res.json();
+            if (data.success) { toast("Task deleted", true); setTimeout(refreshStatus, 800); }
+            else toast(data.message || data.error || "Delete failed", false);
+        } catch (e) { toast("Request failed", false); }
+    };
+
     // --- Boot ---
 
     async function init() {
@@ -953,6 +1623,9 @@ main {
         // Load recent log history, then start SSE for new lines.
         await loadHistory();
         connectSSE();
+
+        // Load the runnable/schedulable command registry.
+        await loadCommands();
 
         // Poll status every 10 seconds.
         await refreshStatus();

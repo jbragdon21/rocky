@@ -24,6 +24,226 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-06-25 — Dashboard: run-now buttons + schedule create/edit/delete
+
+(Same-day continuation below adds: plain-English log view, per-command
+quick-schedule (📅), and one-click ⚡ Auto-setup of the recommended schedule.)
+
+**What changed (continuation — plain-English log + automatic scheduling)**
+
+- **Plain-English log view (`templates/dashboard.html`).** New
+  **View: Plain English | Technical** toggle in the log toolbar (Plain is the
+  default). Plain mode runs each line through a `humanize()` layer: friendly
+  clock time (`2:43 PM`), level words (`✗ Problem`, `⚠ Heads-up`) instead of
+  `[ERROR]`/`[WARNING]`, a purple process tag from the `[maple]/[pma]/…`
+  subsystem prefix (case-insensitive → friendly name), Windows paths shortened
+  to just the filename, `PLAIN_HIDE` regexes to drop pure noise (separator
+  bars, raw `HTTP Request:` calls, token lines), and a `PLAIN_RULES` phrase map
+  for the common Rocky messages (dry-run "not sent", "Couldn't reach the AI
+  service", "Saved the digest file", etc.). Unmatched lines still show (cleaned
+  up), and Technical mode always shows the verbatim raw line — nothing is lost.
+- **Automatic-scheduling buttons (`dashboard.py` + template).** Each command in
+  the registry now carries `sched_time` / `sched_freq` / `sched_interval` /
+  `recommended`. Two new affordances: a per-command **📅** button that opens the
+  New-schedule form pre-filled with that command's documented slot, and a
+  header **⚡ Auto-setup** button → `POST /api/schedule/setup-recommended` →
+  `setup_recommended()` creates the whole standard daily routine in one click
+  (idempotent: skips tasks that already exist). The 8 `recommended` commands use
+  their **documented** times (Daily Cases 16:00, Daily Run 16:30, Daily/Ella
+  Digest 17:00, Steve 07:30, PMA Digest 08:00, Maple 16:30, PMA Poll every
+  15 min). pma-activity/pma-knowledge/email-brain have no documented time, so
+  they get a *suggested* time on 📅 only and are left out of Auto-setup.
+- **Latent bug found via testing:** Flask/Jinja caches the compiled template in
+  memory, so template edits need a dashboard restart to show (matters for the
+  build→deploy loop, not runtime).
+
+**What changed**
+
+- **`dashboard.py` — added a Rocky command registry + run/schedule backend.**
+  `ROCKY_COMMANDS` is the single allowlist of commands the UI can launch or
+  schedule (flag, label, group, `dry_run`, optional `danger`). The `flag`
+  doubles as the lock-file stem (`state/rocky_<flag>.lock`) so the existing
+  running-now indicator lines up for free, and as the dispatch flag in
+  `rocky.py` `main()`. New routes:
+  - `GET /api/commands` — registry + current running set.
+  - `POST /api/run` — `launch_command()` fires `rocky.exe --<flag>`
+    (`python rocky.py --<flag>` in dev) as a detached `Popen`. No stdout
+    capture — Rocky logs to `rocky.log`, so the live log viewer is the feedback
+    channel. Rocky's own per-command lock blocks a duplicate run.
+  - `POST /api/schedule/create|update-time|delete` — `schtasks` wrappers that
+    create in the `\Rocky\` folder (so the task query finds them), change the
+    start time, or delete (guarded to Rocky-named tasks only).
+- **`templates/dashboard.html` — two new sidebar pieces.** A **"Run a Command"**
+  card (commands grouped Cases/Inbox/PMA/Other, ▶ Run per row, a `dry` checkbox
+  on dry-run-capable commands, a red **WRITES** tag on `pma-arm`), and a
+  **"+ New"** schedule form in the Scheduled Tasks card (command dropdown,
+  optional name, frequency Daily/Weekly/Hourly/EveryNmin/Once, time picker).
+  Each existing task row gained 🕑 edit-time and 🗑 delete controls alongside
+  the enable/disable toggle. Added a toast for action feedback. Run buttons
+  reflect running state from the 10 s status poll.
+
+**Decisions made**
+
+- **No `/rl HIGHEST` on created tasks.** It forces an *elevated* create —
+  tested, fails with "Access is denied" from a non-admin process. Rocky's jobs
+  only need the logged-on rocky user's rights (OneDrive + token cache live in
+  that profile), so a default run level lets the dashboard create/edit/delete
+  without admin. Tasks created this way are also editable non-elevated.
+- **`/it` (run only when logged on) on create + `stdin=DEVNULL` on all
+  `schtasks` calls.** `schtasks /change /st` otherwise prompts "Please enter the
+  run as password" and would hang the dashboard. `/it` stores no password
+  (correct for the always-logged-in Rocky laptop) and DEVNULL guarantees no
+  prompt can ever block. Verified full create→edit-time→toggle→delete cycle
+  non-elevated.
+- **Allowlist, not free-form.** `/api/run` and the schedule routes only accept
+  flags in `ROCKY_COMMANDS`; time is regex-validated `HH:MM`, name is
+  `[A-Za-z0-9 _-]`, delete refuses non-Rocky tasks — so the run/schedule
+  endpoints can't become an arbitrary-command sink.
+
+**Open items / watch-outs**
+
+- **Latent bug fixed:** `main()` printed a `→`/`—` that crashed under cp1252
+  stdout (Task Scheduler / redirected output). Now reconfigures stdout/stderr
+  to UTF-8 at startup.
+- **Run-now not live-fired on dev** (no real Anthropic/Graph keys here, same as
+  email-brain). Validated: registry endpoint, bad-flag rejection, and the full
+  schedule create/edit/delete lifecycle against real Task Scheduler. First live
+  smoke on the Rocky laptop: click ▶ on a cheap command (e.g. `pma-test`) and
+  confirm output appears in the log viewer.
+- **Enable/disable of *pre-existing* tasks** (created elsewhere, possibly
+  elevated) may still need an elevated dashboard — the UI already warns. Tasks
+  the dashboard creates won't have that problem.
+- **Plain-English log is best-effort, not exhaustive.** `humanize()` covers the
+  log lines seen so far; new/unmatched lines still render (cleaned), they just
+  aren't rephrased. When a subsystem starts emitting a new important message,
+  add a `PLAIN_RULES` entry (and a `PROCESS_NAMES` key for any new `[tag]`).
+  Verified live: Plain shows 72 lines, Technical 104 (noise hidden), toggle and
+  filters interoperate.
+- **Auto-setup invents no times for documented jobs**, but pma-activity/
+  pma-knowledge/email-brain times on the 📅 button are my suggestions
+  (18:00 / 18:30 / 02:00) — adjust if James wants different slots.
+- **Rebuild + redeploy:** `python build_exe.py --dashboard` (flask/jinja2 +
+  template already wired) then OneDrive-sync `dashboard.exe` to the laptop.
+
+## Session 2026-06-22 — Email Brain: sent-mail corpus + retrieval index
+
+**What changed**
+
+- **New module `email_brain.py` + `--email-brain` command (rocky.py).** Pulls
+  ALL of James's sent mail from `config['sent_brain_folders']` into a local
+  single-file **SQLite** DB (`brain.db`, with an FTS5 keyword index) plus a raw
+  `sent_emails.jsonl` export. For each sent message it reconstructs the inbound
+  message it answered (via Graph `conversationId`) and stores a `(received →
+  reply)` **pair**; pairs are embedded via **Voyage AI** (`voyage-3-large`,
+  REST, vectors stored as float32 BLOBs) for similarity search. The data/index
+  layer of a future "respond like James" brain — wiring retrieval into live
+  drafting is deliberately a later phase.
+- **Quoted-history fallback for pairing (`extract_quoted_inbound`).** When the
+  real inbound isn't reachable via Graph (the archived-sends case), the brain
+  parses the prior message out of the **sent body's quoted history** (Outlook
+  `From:/Sent:/Subject:` blocks, `-----Original Message-----`, and Gmail/Apple
+  `On … wrote:` styles) and stores it as an `inbound_quoted` pair — so old sends
+  become real Q→A pairs, not just style samples. Graph inbound is still
+  preferred; quoted is the fallback. `embed_source` ∈ {`inbound`, `inbound_quoted`,
+  `reply`}; `_embed_key_text` embeds the inbound text whenever present (Graph or
+  quoted), else the reply. Quoted inbounds get NO `messages` row (no real id) —
+  just the pair's inbound_* columns. `--stats` breaks pairs out by source.
+- **CLI handler `run_email_brain_cli()`** (modeled on `run_pma_activity_cli`):
+  flags `--rebuild`, `--backfill-days N`, `--no-embed`, `--limit N`,
+  `--query "..."` (retrieval smoke test), `--stats`. Wired into `main()` + help.
+- **config.example.json:** added the Email Brain block (`sent_brain_mailbox`,
+  `sent_brain_folders`, `voyage_api_key`, `voyage_model`, `email_brain_dir`).
+- **requirements.txt:** added `numpy` (cosine over stored vectors). Voyage uses
+  `requests` — no new SDK.
+- **.gitignore:** added `email_brain/`, `*.db`, `*.sqlite*` — the corpus is
+  confidential client correspondence and must never be committed (verified via
+  `git check-ignore`).
+
+**Decisions made**
+
+- **Mailbox-aware folders (decided this session).** The Online Archive
+  (`__Older Sent Items`) is an In-Place Archive mailbox Graph can't read, and
+  James's primary Inbox lacks room to re-import it — so James will **drag the
+  archived sends into a dedicated folder in rocky@** (`Inbox\James Older Sent`;
+  NOT rocky@'s bare Inbox, which holds Rocky's operational mail). `sent_brain_folders`
+  now accepts per-entry `{mailbox, path}` objects, so current Sent Items
+  (jbragdon@) + archived sends (rocky@) ingest in one run. New `sent_brain_author`
+  config field is the single identity treated as "James" for pairing even when
+  the host mailbox is rocky@; `find_inbound_parent` skips messages from
+  `{author, host_mailbox}`. App token's Application Access Policy already covers
+  both jbragdon@ and rocky@.
+- **Reuses the app-level token** (`acquire_app_token`) — **no new Graph
+  permission**, same path as `--pma-activity`. `email_brain.py` reuses rocky helpers
+  (`resolve_folder_path`, `fetch_attachments`, `build_attachment_text_block`,
+  `extract_text_from_attachment`) via lazy import to avoid a circular import.
+- **SQLite over pure JSONL** (James's call) because the goal is a queryable
+  retrieval brain; it's still a single serverless file, consistent with the
+  no-servers principle. JSONL kept as a raw export.
+- **Embed the inbound side** of each pair (the query we'll match future incoming
+  mail against); style-only sends (no inbound found) embed the reply instead.
+- **Standalone FTS5 table keyed by `graph_id`**, NOT external-content — because
+  `INSERT OR REPLACE` on `messages` changes rowid and corrupts external-content
+  FTS ("database disk image is malformed"). Found + fixed during offline test.
+- Corpus stored **locally** (`C:\Rocky\email_brain\`), not OneDrive — private +
+  avoids syncing a large DB.
+
+**Open items / watch-outs**
+
+- **Archive ingestion plan = drag into rocky@.** James creates
+  `Inbox\James Older Sent` in rocky@ and drags the Online Archive's
+  `__Older Sent Items` into it; config already points the 2nd folder entry there.
+  Folder resolution still skips gracefully if the folder doesn't exist yet.
+  Archived sends' inbound counterparts aren't in rocky@, but the quoted-history
+  fallback recovers most of them from the sent body — true style-only (no
+  parseable quote) should be the minority. Confirm the `--stats` source split on
+  the first live run.
+- **Not yet run live.** Dev laptop has placeholder Anthropic/Voyage keys; live
+  Graph + Voyage runs happen on the **Rocky laptop**. Verified offline: both
+  modules compile (py 3.14), CLI dispatch + `--stats`, and the full DB layer
+  (pairing, idempotent upserts, FTS keyword search, embed-key selection, vector
+  blob round-trip). Run order on Rocky laptop: `--email-brain --limit 25
+  --no-embed` → inspect `brain.db` → add real `voyage_api_key` → `--limit 25` →
+  `--query "..."` → full `--email-brain` backfill.
+- **Not yet scheduled/deployed.** Needs `python build_exe.py` and (optionally) a
+  daily incremental Task Scheduler entry once the backfill is validated.
+
+## Session 2026-06-19 — Ella digest: role-based categories
+
+**What changed**
+
+- **Rewrote `ELLA_DIGEST_SYSTEM_PROMPT` (rocky.py).** Per-case output changed
+  from the old two-subsection format (**What happened** / **Action items**) to
+  five role-based categories, in fixed order: **Internal Updates**,
+  **Plaintiff Updates**, **Expert Review**, **Client Updates**, **Other**,
+  followed by **Action Items** (kept from the old format). Empty categories are
+  omitted. Added cross-referencing rule (an email fitting two categories appears
+  in both with a "(also under …)" note) and inline `**FLAG: …**` prefixes for
+  CV/rate-sheet/retention (Expert Review) and items needing client
+  response/approval (Client Updates).
+- **Updated the per-case `user_prompt`** in `_build_ella_case_section` to ask for
+  the five categories + Action Items instead of "two subsections."
+- Bumped the per-case word cap 200 → ~300 to fit the extra structure.
+
+**Decisions made**
+
+- **Role assignment is by email domain / sender, not body text.** Internal =
+  any `@gallagherllp.com` address. This is robust because the From/To addresses
+  are NOT run through the name-swap (only body/subject/case-name are), so domains
+  reach the API intact. Generic role inference means the prompt still works for
+  any of Ella's matters; the named parties (Ramos/Fish = plaintiff's counsel,
+  Mathura/Mercy/Stella Maris = client, Aiken/Rowell/Webster/Kannan = internal)
+  are concrete examples for the current lead matter.
+- **Kept Action Items** even though the new guidance didn't mention it — dropping
+  action-tracking from a litigation digest is a regression, and it's additive.
+- **No renderer/HTML change needed** — `_md_section_to_html` already maps
+  `**Header**` → uppercase h4 and `- ` → bullets, so the new categories render as-is.
+
+**Open items / watch-outs**
+
+- The five-category scheme is matter-shaped (med-mal defense). For non-litigation
+  or differently-shaped matters in Ella's spreadsheet, most traffic will land in
+  **Other**. Revisit if Ella's digest covers cases that don't fit this mold.
+
 ## Session 2026-06-17 (2) — Maple activity digest (daily branded email from Rocky)
 
 **What changed**
@@ -121,25 +341,48 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
   This is the new front-end: Rocky feeds raw email → Maple owns association +
   tracker + HubSpot sync.
 
+**Production-path + permission fix (same session, after first laptop run)**
+
+- **First laptop run failed to write** every line with `[WinError 5] Access is
+  denied: 'C:\Users\jbragdon'`, yet still reported `exported: 27` and advanced the
+  cursor — because `_append_jsonl` swallows OSErrors. Root cause: the Rocky laptop
+  runs as user **`rocky`**, where Maple mounts at
+  `C:\Users\rocky\OneDrive - gejlaw.com\James D. Bragdon's files - Program Files\Maple\...`
+  (same base as `_DEFAULT_MAPLE_LOGS_DIR`), NOT the `jbragdon` profile. My initial
+  `maple_activity_dir` default was the dev-laptop (`jbragdon`) path.
+- **Fixes:** (1) `DEFAULT_MAPLE_ACTIVITY_DIR` now points at the `rocky`-profile
+  production path (`...\Maple\Maple updater agent\PMA Activity`); dev laptop
+  overrides via `maple_activity_dir` in config. (2) `run_pma_activity` now does a
+  **pre-flight write check** (mkdir + open-append) and returns
+  `{"error":"feed_not_writable"}` WITHOUT advancing the cursor if it fails — no
+  more silent loss.
+- **Decision (James):** keep writing into the Maple updater agent folder; grant
+  the `rocky` account **Edit** (not view-only) share access to that OneDrive
+  folder so the feed can be written in place.
+- **State recovery:** because the failed run advanced the cursor, delete
+  `C:\Rocky\state\pma_activity_state.json` before the next run so the 27 emails
+  re-export.
+
 **Watch-outs**
 
 - A real `--pma-activity` run needs the **Rocky laptop** (the dev laptop has no
   `client_secret`, so the app token / folder resolve fail there). Logic was
   validated offline by monkeypatching `fetch_folder_messages` (JSONL shape, cursor
-  advance, idempotency all green). First on-laptop check:
-  `rocky.exe --pma-activity --dry-run --backfill-days 7`, then inspect
-  `C:\Rocky\pma_activity_feed.dryrun.jsonl`.
+  advance, idempotency all green).
 - The `Inbox\PMA emails` folder must exist in rocky@ and be fed by an Outlook
   rule. If `resolve_folder_path` returns None, the command aborts with a logged
   error (check the folder name/separator).
 - `build_exe.py` already bundles `pma_tracker.py` + `pypdf`/`docx`/`openpyxl`; no
-  build change needed. Not yet committed or exe-rebuilt/deployed.
+  build change needed.
 
 **Open items**
 
+- Grant `rocky` Edit access to the Maple updater agent OneDrive folder; confirm a
+  clean write end-to-end.
+- Commit + `python build_exe.py` + OneDrive deploy the production-path + pre-flight
+  fixes (the first laptop test used config override + the already-deployed exe).
 - Schedule `--pma-activity` in Task Scheduler (suggest ~4:45 AM, ahead of Maple's
   5 AM sync; can add 11:45/6:45 to feed all three Maple syncs).
-- Commit + `python build_exe.py` + OneDrive deploy when ready.
 
 ---
 
