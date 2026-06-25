@@ -35,6 +35,8 @@ def build_rocky():
         "--hidden-import", "openpyxl",
         "--hidden-import", "pypdf",
         "--hidden-import", "docx",
+        # numpy is imported (lazily) by email_brain for vector similarity.
+        "--hidden-import", "numpy",
         # Bundle the local modules alongside rocky.py.
         "--add-data", f"{ROOT / 'permissions.py'};.",
         "--add-data", f"{ROOT / 'outbound.py'};.",
@@ -42,6 +44,7 @@ def build_rocky():
         "--add-data", f"{ROOT / 'kill_switch.py'};.",
         "--add-data", f"{ROOT / 'pending_llt.py'};.",
         "--add-data", f"{ROOT / 'pma_tracker.py'};.",
+        "--add-data", f"{ROOT / 'email_brain.py'};.",
         "--add-data", f"{ROOT / 'Icon'};Icon",
         # Jinja2 is used by pending_llt; ensure PyInstaller bundles it.
         "--hidden-import", "jinja2",

@@ -125,6 +125,24 @@ quick-schedule (📅), and one-click ⚡ Auto-setup of the recommended schedule.
 - **Rebuild + redeploy:** `python build_exe.py --dashboard` (flask/jinja2 +
   template already wired) then OneDrive-sync `dashboard.exe` to the laptop.
 
+**Session-end state (committed)**
+- `91dec16` dashboard run/schedule/plain-log; `64effad` DASHBOARD.md launch
+  guide; `85a0260` brought prior multi-session work into git (email_brain.py,
+  research_agent_*, rocky/pma updates, deps); `build_exe.py` fix to bundle
+  `email_brain.py` + `numpy` for rocky.exe.
+- **dashboard.exe is built + deployed** to OneDrive (smoke-tested OK).
+- Still untracked on purpose: `.claude/` (worktrees + launch.json).
+
+**PENDING — rocky.exe rebuild (next session, do on the Rocky laptop or a
+fully-provisioned machine)**
+- The dev laptop this session lacked the runtime deps; rocky.exe was NOT
+  rebuilt here. `build_exe.py` is now correct (bundles email_brain + numpy).
+- Steps: `pip install -r requirements.txt` → `python build_exe.py --rocky`
+  (or `--all`) → it copies rocky.exe to OneDrive `Program Files\Rocky`.
+- After deploy, smoke-test the new commands on the laptop, especially
+  `rocky.exe --email-brain --stats` (verifies email_brain + numpy bundled) and
+  a cheap `--pma-test`.
+
 ## Session 2026-06-22 — Email Brain: sent-mail corpus + retrieval index
 
 **What changed**
