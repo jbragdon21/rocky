@@ -11,7 +11,7 @@
   "_cases_root_comment": "Path to the Rocky Cases folder on OneDrive. Omit to use the default (James's dev laptop path).",
   "cases_root": "C:\\Users\\jbragdon\\OneDrive\\OneDrive - gejlaw.com\\Rocky Cases",
 
-  "_maple_comment": "Maple daily activity digest (--maple-digest, 4:30 PM). Reads Maple's per-session JSONL logs and emails a per-user summary from rocky@. Omit any key to use the code default. Set maple_digest_skip_if_empty:true to suppress the email on days with no Maple activity (e.g. weekends).",
+  "_maple_comment": "Maple daily activity digest (--maple-digest, 4:30 PM). Reads Maple's per-session JSONL logs and emails a per-user summary from rocky@. maple_logs_dir defaults IN CODE to the Rocky-laptop production path; override it here only on other machines (e.g. the dev laptop, where Maple mounts under the jbragdon profile). Set maple_digest_skip_if_empty:true to suppress the email on days with no Maple activity (e.g. weekends) — a missing logs folder still sends an alert regardless.",
   "maple_logs_dir": "C:\\Users\\jbragdon\\OneDrive\\OneDrive - gejlaw.com\\Program Files\\Maple\\logs\\activity",
   "maple_digest_recipients": [
     "jbragdon@gallagherllp.com",
@@ -66,10 +66,22 @@
   "hubspot_status_property": "hs_pipeline_stage",
   "hubspot_summary_property": "summary_status",
 
-  "_pma_activity_comment": "PMA Activity exporter (--pma-activity, once daily). Rocky pulls new emails from pma_activity_folder in pma_activity_mailbox and appends each (full body + extracted attachment text) as one JSONL line to pma_activity_feed.jsonl in maple_activity_dir, for the Maple Updater Agent to read. No classification/HubSpot/email. First run with no cursor backfills pma_activity_backfill_days.",
+  "_pma_activity_comment": "PMA Activity exporter (--pma-activity, once daily). Rocky pulls new emails from pma_activity_folder in pma_activity_mailbox and appends each (full body + extracted attachment text) as one JSONL line to pma_activity_feed.jsonl in maple_activity_dir, for the Maple Updater Agent to read. No classification/HubSpot/email. First run with no cursor backfills pma_activity_backfill_days. maple_activity_dir defaults IN CODE to the Rocky-laptop production path (under the rocky profile, same base as maple_logs_dir); override it here only on other machines (e.g. this dev-laptop value, under the jbragdon profile). rocky@ needs EDIT (not view-only) share access to the Maple updater agent folder to write the feed.",
   "pma_activity_mailbox": "rocky@gallagherllp.com",
   "pma_activity_folder": "Inbox\\PMA emails",
   "maple_activity_dir": "C:\\Users\\jbragdon\\OneDrive\\OneDrive - gejlaw.com\\Program Files\\Maple\\Maple updater agent\\PMA Activity",
   "pma_activity_backfill_days": 30,
-  "pma_activity_extract_attachments": true
+  "pma_activity_extract_attachments": true,
+
+  "_email_brain_comment": "Email Brain (--email-brain). Pulls ALL of James's sent mail from sent_brain_folders into a local SQLite DB (brain.db, with FTS5) + a raw sent_emails.jsonl export, pairs each reply with the inbound message it answered (via conversationId), and embeds the retrieval-key text via Voyage AI for similarity search. DB/JSONL live in email_brain_dir (blank = C:\\Rocky\\email_brain — LOCAL and private, not OneDrive). Reads via the app-level token + Application Access Policy (covers jbragdon@ AND rocky@); no new Graph permission. voyage_api_key from voyageai.com; voyage_model defaults to voyage-3-large.",
+  "_sent_brain_folders_comment": "Each entry is either a bare path string (read from sent_brain_mailbox) or {mailbox, path}. Current sent mail lives in jbragdon@'s Sent Items. The Online Archive ('__Older Sent Items') is a separate In-Place Archive mailbox Graph CANNOT read, so drag those archived sends into a DEDICATED folder in rocky@ (e.g. create 'Inbox\\James Older Sent' first — do NOT use Rocky's bare Inbox or you'll ingest Rocky's operational mail) and point an entry at it. sent_brain_author is the single identity treated as 'James' for pairing, even when the host mailbox is rocky@.",
+  "sent_brain_mailbox": "jbragdon@gallagherllp.com",
+  "sent_brain_author": "jbragdon@gallagherllp.com",
+  "sent_brain_folders": [
+    {"mailbox": "jbragdon@gallagherllp.com", "path": "Sent Items"},
+    {"mailbox": "rocky@gallagherllp.com", "path": "Inbox\\James Older Sent"}
+  ],
+  "voyage_api_key": "PASTE-VOYAGE-KEY-HERE",
+  "voyage_model": "voyage-3-large",
+  "email_brain_dir": ""
 }

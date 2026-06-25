@@ -25,6 +25,13 @@ state/
 # PMA manifest — firm-confidential deal names + contacts; delivered via OneDrive
 pma_manifest.json
 
+# Email Brain corpus — James's entire sent-mail corpus + retrieval index.
+# NEVER commit: confidential client correspondence. Lives locally on the Rocky laptop.
+email_brain/
+*.db
+*.sqlite
+*.sqlite3
+
 # Generated digest output (local/operational, not source)
 digests/
 maple_digests/

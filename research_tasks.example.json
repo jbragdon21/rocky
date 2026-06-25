@@ -1,0 +1,13 @@
+[
+  {
+    "title": "Smith v. Acme Property Mgmt - retaliation defense",
+    "question": "Under Virginia law, can a landlord rebut a presumption of retaliation under Va. Code 55.1-1258 by showing the termination notice was issued before the tenant's complaint to the housing authority? Identify the controlling standard and the leading cases.",
+    "jurisdiction": "Virginia",
+    "case_folder": "C:\\Users\\jbragdon\\OneDrive - gejlaw.com\\Cases\\Smith v Acme",
+    "input_files": [
+      "C:\\Users\\jbragdon\\OneDrive - gejlaw.com\\Cases\\Smith v Acme\\Pleadings\\PLD-001 Complaint.pdf"
+    ],
+    "max_iterations": 5,
+    "status": "pending"
+  }
+]

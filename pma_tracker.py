@@ -1565,9 +1565,14 @@ def run_pma_digest(
 # OneDrive. Rocky does NOT classify, match tickets, or recommend changes here —
 # the Maple Updater Agent reads the feed and does all of that itself.
 
+# Default = the Rocky-laptop PRODUCTION path (where the exe runs, as user "rocky",
+# with Maple shared into rocky@'s OneDrive — same base as rocky.py's
+# _DEFAULT_MAPLE_LOGS_DIR). Other machines (e.g. the dev laptop, where the folder
+# mounts under the jbragdon profile) override this with "maple_activity_dir" in
+# config.json.
 DEFAULT_MAPLE_ACTIVITY_DIR = (
-    r"C:\Users\jbragdon\OneDrive\OneDrive - gejlaw.com\Program Files\Maple"
-    r"\Maple updater agent\PMA Activity"
+    r"C:\Users\rocky\OneDrive - gejlaw.com"
+    r"\James D. Bragdon's files - Program Files\Maple\Maple updater agent\PMA Activity"
 )
 ACTIVITY_FEED_FILE = "pma_activity_feed.jsonl"
 DEFAULT_ACTIVITY_BACKFILL_DAYS = 30
@@ -1722,6 +1727,23 @@ def run_pma_activity(
 
     feed_path = (data_dir / "pma_activity_feed.dryrun.jsonl") if dry_run \
         else (maple_activity_dir(config) / ACTIVITY_FEED_FILE)
+
+    # Pre-flight: confirm we can actually create the dir AND write the feed
+    # BEFORE exporting. If this fails we must NOT advance the cursor, or the
+    # fetched emails would be marked "seen" and skipped forever despite never
+    # being written. (Append failures inside the loop are otherwise swallowed.)
+    try:
+        feed_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(feed_path, "a", encoding="utf-8"):
+            pass
+    except OSError as e:
+        log.error(
+            f"[pma-activity] Cannot write feed at {feed_path}: {e}. "
+            f"Cursor NOT advanced (no emails lost). Point maple_activity_dir at a "
+            f"path this process can write to."
+        )
+        return {"error": "feed_not_writable", "feed": str(feed_path),
+                "detail": str(e), "fetched": len(messages), "dry_run": dry_run}
 
     exported = 0
     skipped = 0

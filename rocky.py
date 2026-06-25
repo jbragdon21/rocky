@@ -3591,30 +3591,66 @@ Ella Aiken's daily case digest at Gallagher LLP.
 
 You receive:
 - The case name
-- All emails received in the last N hours from the case's Outlook folder
+- All emails received in the last N hours from the case's Outlook folder, \
+each with its From, To, Date, Subject, and Body.
 
-Your output is a markdown section with exactly two subsections, in this order:
+Organize the case's emails into the categories below, IN THIS ORDER. Output a \
+category ONLY when at least one email belongs to it — omit empty categories \
+entirely. Within each category, use one "- " bullet per meaningful email or \
+thread, describing the substance (who wrote, what they said or requested) in \
+plain English. Group the emails of a single thread into one bullet.
 
-**What happened**
-- Bulleted list. One bullet per meaningful email or thread. Describe the \
-substance (who wrote, what they said/requested) in plain English. Group \
-related emails. Skip automated notifications unless they contain something \
-actionable.
+Assign each email by the ROLE of the people on it, judged from the From/To \
+addresses and sender names (not the body alone). Gallagher LLP staff are \
+internal — any @gallagherllp.com address (e.g., Ella Aiken, Leah Rowell, \
+Carrie Webster, Sang Kannan).
 
-**Action items**
-- 1 to 3 concrete next actions, ordered by urgency. Prefer specific actions \
-("respond to opposing counsel's discovery requests") over vague ones \
-("review emails"). If nothing requires action, write "(none — informational \
-only)".
+**Internal Updates**
+- Emails exchanged EXCLUSIVELY among Gallagher LLP attorneys and staff. \
+Exclude any email that also involves a client, plaintiff's/opposing counsel, \
+or any third party — those belong in another category.
+
+**Plaintiff Updates**
+- All correspondence with plaintiff's counsel (currently Ana Ramos / Law \
+Offices of Sloane L. Fish). Do NOT place internal-only emails here even if \
+they discuss what plaintiff's counsel said.
+
+**Expert Review**
+- All correspondence — internal OR external — regarding the identification, \
+retention, or status of defense experts, plus any direct correspondence with \
+physicians, nurses, or other experts. Identify the expert by name where \
+possible. Begin the bullet with "**FLAG: CV / rate sheet / retention**" for \
+any email that includes a CV, a rate sheet, or a retention discussion.
+
+**Client Updates**
+- All correspondence with the client: Karen Mathura, any named Mercy Medical \
+Center provider, or anyone with a Mercy Medical Center or Stella Maris email \
+address. Begin the bullet with "**FLAG: needs client response/approval**" for \
+any item requiring the client's response or approval.
+
+**Other**
+- Any correspondence that does not fit the categories above — e.g., the court, \
+third-party vendors, or unidentified senders. For each, note the sender, the \
+recipient, and why it was categorized separately.
+
+CROSS-REFERENCING
+If an email reasonably fits more than one category, include it under BOTH and \
+note the cross-reference in the bullet (e.g., "(also under Expert Review)").
+
+**Action Items**
+- After the categories, list 1 to 3 concrete next actions, ordered by urgency \
+(prefer "respond to plaintiff's counsel's discovery requests" over "review \
+emails"). If nothing requires action, write "(none — informational only)".
 
 TONE
-Terse, factual, attorney-readable. No filler. No emojis. Past-tense for \
-events. No more than ~200 words total per case section.
+Terse, factual, attorney-readable. No filler. No emojis. Past tense for \
+events. Keep the whole case section under ~300 words.
 
 OUTPUT
-Output ONLY the markdown for the two subsections. Do NOT include the case \
-heading (the caller adds it). Do NOT wrap in code fences. Do NOT add a \
-preamble or sign-off.
+Output ONLY the markdown for the categories (and Action Items). Put each \
+category name on its own line as "**Category Name**" with "- " bullets \
+beneath it. Do NOT include the case heading (the caller adds it). Do NOT wrap \
+in code fences. Do NOT add a preamble or sign-off.
 """
 
 
@@ -3795,8 +3831,9 @@ def _build_ella_case_section(
         f"CASE: {prompt_case_name}\n\n"
         f"EMAILS ({len(emails)} total):\n\n"
         f"{all_emails_text}\n\n"
-        f"Write the two markdown subsections (What happened / Action items) "
-        f"for this case. No heading."
+        f"Sort these emails into the digest categories (Internal Updates / "
+        f"Plaintiff Updates / Expert Review / Client Updates / Other) and add "
+        f"Action Items, per your instructions. Omit empty categories. No heading."
     )
 
     try:
@@ -4358,6 +4395,126 @@ def run_pma_activity_cli() -> None:
     log.info(f"[pma-activity] Done: {result}")
 
 
+def run_email_brain_cli() -> None:
+    """Entry point for `python rocky.py --email-brain [flags]`.
+
+    Pulls ALL of James's sent mail from config['sent_brain_folders'] into a local
+    SQLite DB (+ JSONL export), pairs each reply with the inbound message it
+    answered (via conversationId), and embeds the retrieval-key text via Voyage.
+    Incremental on re-run (per-folder sentDateTime cursor). Uses the app-level
+    token (same Mail.Read + Application Access Policy as --pma-activity).
+
+    Flags:
+      --rebuild              wipe db/jsonl/cursor and rebuild from scratch
+      --backfill-days N      first-run lookback (default: entire folder)
+      --no-embed             skip the Voyage embedding phase
+      --limit N              process at most N sent messages (testing)
+      --query "text"         embed the query and print top-k past exchanges
+      --stats                print corpus stats and exit
+    """
+    import email_brain
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    config = load_config()
+
+    rebuild = "--rebuild" in sys.argv
+    no_embed = "--no-embed" in sys.argv
+
+    backfill_days = None
+    limit = None
+    query = None
+    for i, arg in enumerate(sys.argv):
+        if arg == "--backfill-days" and i + 1 < len(sys.argv):
+            try:
+                backfill_days = int(sys.argv[i + 1])
+            except ValueError:
+                print(f"Invalid --backfill-days value: {sys.argv[i + 1]}")
+                sys.exit(1)
+        elif arg == "--limit" and i + 1 < len(sys.argv):
+            try:
+                limit = int(sys.argv[i + 1])
+            except ValueError:
+                print(f"Invalid --limit value: {sys.argv[i + 1]}")
+                sys.exit(1)
+        elif arg == "--query" and i + 1 < len(sys.argv):
+            query = sys.argv[i + 1]
+
+    # --stats: report and exit (no Graph calls).
+    if "--stats" in sys.argv:
+        result = email_brain.stats(config, DATA_DIR)
+        print(json.dumps(result, indent=2))
+        return
+
+    # --query: retrieval smoke test (needs DB + voyage key, no Graph calls).
+    if query is not None:
+        brain_dir = Path(config["email_brain_dir"]) if config.get("email_brain_dir") \
+            else (DATA_DIR / "email_brain")
+        db_path = brain_dir / "brain.db"
+        if not db_path.exists():
+            print(f"No database at {db_path}. Run --email-brain first.")
+            sys.exit(1)
+        conn = email_brain.open_db(db_path)
+        try:
+            results = email_brain.vector_search(conn, config, query, k=5)
+        finally:
+            conn.close()
+        print(f"\nTop matches for: {query!r}\n" + "=" * 60)
+        for i, r in enumerate(results, 1):
+            print(f"\n[{i}] score={r['score']:.3f}  source={r['embed_source']}")
+            if r.get("inbound_subject"):
+                print(f"    Incoming ({r['inbound_from']}): {r['inbound_subject']}")
+                print(f"    > {r['inbound_text'][:300].replace(chr(10), ' ')}")
+            print(f"    James replied: {r['reply_text'][:400].replace(chr(10), ' ')}")
+        return
+
+    # Resolve source folders. Each entry may be a bare path string (uses the
+    # default mailbox) or {"mailbox": ..., "path": ...} so current Sent Items
+    # (jbragdon@) and archived sends dragged into rocky@ can be mixed in one run.
+    # Skip any that don't resolve (e.g. an unreachable Online Archive mailbox).
+    app_token = acquire_app_token(config)
+    default_mailbox = config.get("sent_brain_mailbox") or config.get("user_email") \
+        or "jbragdon@gallagherllp.com"
+    folder_entries = config.get("sent_brain_folders") or ["Sent Items"]
+
+    resolved: list[tuple[str, str, str]] = []
+    for entry in folder_entries:
+        if isinstance(entry, dict):
+            mbox = entry.get("mailbox") or default_mailbox
+            path = entry.get("path") or entry.get("folder") or ""
+        else:
+            mbox, path = default_mailbox, entry
+        if not path:
+            continue
+        fid = resolve_folder_path(app_token, mbox, path)
+        if fid:
+            resolved.append((path.replace("\\", "/"), mbox, fid))
+            log.info(f"[email-brain] resolved {mbox}:{path!r}")
+        else:
+            log.warning(f"[email-brain] could NOT resolve {mbox}:{path!r} — skipping. "
+                        f"(Online Archive mailboxes are not reachable via Graph; see the "
+                        f"available-folders list logged above.)")
+
+    if not resolved:
+        log.error("[email-brain] no source folders resolved; nothing to do.")
+        sys.exit(1)
+
+    log.info(f"[email-brain] starting "
+             f"({'REBUILD' if rebuild else 'incremental'}"
+             f"{', no-embed' if no_embed else ''}"
+             f"{f', limit {limit}' if limit else ''})")
+    result = email_brain.run_email_brain(
+        app_token=app_token,
+        config=config,
+        data_dir=DATA_DIR,
+        resolved_folders=resolved,
+        rebuild=rebuild,
+        backfill_days=backfill_days,
+        no_embed=no_embed,
+        limit=limit,
+    )
+    log.info(f"[email-brain] done: {json.dumps(result, indent=2)}")
+
+
 def run_pma_arm_cli() -> None:
     """Affirmatively ARM HubSpot writes (`python rocky.py --pma-arm`).
 
@@ -4485,9 +4642,13 @@ def acquire_instance_lock(command: str):
 # Scheduled 4:30 PM daily. Read-only over the shared log folder — no Maple code
 # is touched, so the two apps stay decoupled.
 
+# Default is the PRODUCTION path on the Rocky laptop (where the exe actually
+# runs, as user "rocky", with Maple shared into rocky@'s OneDrive). Other
+# machines (e.g. the dev laptop, where the same folder mounts under the
+# jbragdon profile) override this with "maple_logs_dir" in config.json.
 _DEFAULT_MAPLE_LOGS_DIR = (
-    r"C:\Users\jbragdon\OneDrive\OneDrive - gejlaw.com"
-    r"\Program Files\Maple\logs\activity"
+    r"C:\Users\rocky\OneDrive - gejlaw.com"
+    r"\James D. Bragdon's files - Program Files\Maple\logs\activity"
 )
 # All firm-domain, so the outbound guard passes. Override in config.json with
 # "maple_digest_recipients". Code default makes the job work without a config
@@ -4680,9 +4841,14 @@ def _esc(text: str) -> str:
 
 
 def _build_maple_digest_html(
-    date_str: str, day: dict, blocks: list[dict]
+    date_str: str, day: dict, blocks: list[dict], warning: str | None = None
 ) -> str:
-    """Maple-branded HTML email. `blocks` are per-user, pre-ordered."""
+    """Maple-branded HTML email. `blocks` are per-user, pre-ordered.
+
+    `warning`, when set, renders a prominent banner — used when the logs
+    folder couldn't be found, so a misconfiguration never looks like a
+    genuinely quiet day.
+    """
     pretty_date = date_str
     try:
         pretty_date = datetime.strptime(date_str, "%Y-%m-%d").strftime("%B %d, %Y")
@@ -4692,6 +4858,15 @@ def _build_maple_digest_html(
 
     GREEN = "#234d2e"
     ACCENT = "#e2641f"
+
+    warning_html = ""
+    if warning:
+        warning_html = f"""
+                <tr><td style="background-color:#fbeaea;padding:12px 32px;
+                               border-bottom:1px solid #e8c9c9;">
+                    <p style="margin:0;font-size:13px;color:#8a1f1f;font-weight:600;">
+                        &#9888; {_esc(warning)}</p>
+                </td></tr>"""
 
     fail_txt = (
         f'<span style="color:#c0392b;font-weight:600;">{day["failures"]} failure(s)</span>'
@@ -4799,7 +4974,7 @@ def _build_maple_digest_html(
                         </tr>
                     </table>
                 </td></tr>
-
+                {warning_html}
                 <!-- Summary bar -->
                 <tr><td style="background-color:#eef2ea;padding:12px 32px;
                                border-bottom:1px solid #e2e8e0;">
@@ -4844,13 +5019,28 @@ def maple_daily_digest(
     """Build and email the Maple activity digest for a single day."""
     from outbound import send_mail_guarded
 
+    # A missing logs folder is a configuration/sync error, NOT a quiet day.
+    # Detect it explicitly so it can't masquerade as "no activity".
+    dir_exists = logs_dir.exists()
+    warning = None
+    if not dir_exists:
+        warning = (
+            f"Could not find the Maple logs folder, so this digest may be "
+            f"incomplete. This is almost certainly a path or OneDrive-sync "
+            f"issue, not a quiet day. Folder checked: {logs_dir}"
+        )
+        log.warning(f"[Maple] LOGS FOLDER NOT FOUND: {logs_dir} — "
+                    f"sending an alert digest instead of a false 'no activity'.")
+
     events, skipped = _read_maple_events(logs_dir, date_str)
     if skipped:
         log.info(f"[Maple] Skipped {skipped} unparseable log line(s).")
 
     users = _aggregate_maple_by_user(events)
 
-    if not users and skip_if_empty:
+    # skip_if_empty suppresses only genuine quiet days (folder present, no
+    # events) — never a missing folder, which must be surfaced.
+    if not users and skip_if_empty and dir_exists:
         log.info(f"[Maple] No activity for {date_str}; skip_if_empty set — no email.")
         return {"sent": False, "reason": "no_activity_skipped", "contributors": 0}
 
@@ -4894,7 +5084,7 @@ def maple_daily_digest(
             "committed": brief["committed"],
         })
 
-    html = _build_maple_digest_html(date_str, day, blocks)
+    html = _build_maple_digest_html(date_str, day, blocks, warning=warning)
 
     # Archive the rendered digest to disk (alongside emailing it).
     MAPLE_DIGESTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -5054,6 +5244,8 @@ def main():
         run_pma_test_cli()
     elif "--maple-digest" in sys.argv:
         run_maple_digest_cli()
+    elif "--email-brain" in sys.argv:
+        run_email_brain_cli()
     else:
         print(__doc__)
         print("Available commands:")
@@ -5072,6 +5264,8 @@ def main():
         print("  --pma-sleep                             Put HubSpot writes back to sleep (default)")
         print("  --pma-test                              Diagnose pmateam access + manifest + matcher")
         print("  --maple-digest [--date YYYY-MM-DD] [--yesterday] [--dry-run]  Email the Maple daily activity digest")
+        print("  --email-brain  [--rebuild] [--backfill-days N] [--no-embed] [--limit N] [--query \"...\"] [--stats]")
+        print("                                          Build the sent-mail corpus + retrieval index")
         sys.exit(0)
 
 
