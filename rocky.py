@@ -33,27 +33,10 @@ Rocky — Virtual Paralegal
       and updates the PMA Ticket Tracker itself. First run with no cursor
       backfills pma_activity_backfill_days (default 30).
 
-  python rocky.py --pma-poll [--dry-run] [--backfill-days N]   (every 15 min)
-      Poll pmateam@gallagherllp.com, classify each email against the PMA
-      ticket manifest, and update HubSpot (writes gated by pma_hubspot_enabled).
-      First run with no saved cursor backfills pma_backfill_days (default 60);
-      --backfill-days N forces an N-day lookback regardless of the cursor.
-
-  python rocky.py --pma-digest [--dry-run]               (8:00 AM)
-      Email the day's unmatched-PMA-email digest to Beth + Kyle from rocky@.
-
-  python rocky.py --pma-knowledge [--dry-run]            (once daily)
-      Synthesize the PMA Team corpus into per-deal negotiation briefs +
-      cross-deal general knowledge (the "brain" to train on later).
-
   python rocky.py --maple-digest [--date YYYY-MM-DD] [--yesterday] [--dry-run]  (4:30 PM)
       Read the Maple app's activity logs for the day, summarize what each
       user did (Claude narrative), and email a Maple-branded digest from
       rocky@ to the Maple team. --dry-run writes the HTML preview, no send.
-
-  python rocky.py --pma-arm  /  --pma-sleep              (manual)
-      Affirmatively arm (or sleep) HubSpot writes. Writes require BOTH the
-      arm flag AND config pma_hubspot_enabled: true. Default is asleep.
 
 On first run, you'll be prompted to authenticate via device code flow.
 Subsequent runs use the cached refresh token automatically.
@@ -4121,103 +4104,6 @@ def run_ella_digest_cli() -> None:
     log.info("Ella's Daily Case Digest complete.")
 
 
-def run_ella_test_cli() -> None:
-    """Diagnose Ella mailbox access using app-level token."""
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    config = load_config()
-
-    ella = ELLA_EMAIL
-
-    # Test app-level token.
-    print("\n=== Test 0: Acquire app-level token ===")
-    try:
-        token = acquire_app_token(config)
-        print("OK — app token acquired")
-    except SystemExit:
-        print("FAILED — check client_secret in config.json and Mail.Read")
-        print("application permission with admin consent in Azure AD.")
-        return
-
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-
-    # Test 1: Can app token reach Ella's Inbox?
-    print(f"\n=== Test 1: Read Ella's Inbox ({ella}) ===")
-    url = f"{GRAPH_API_BASE}/users/{ella}/mailFolders/Inbox"
-    resp = requests.get(url, headers=headers,
-                        params={"$select": "id,displayName,totalItemCount,childFolderCount"},
-                        timeout=30)
-    if resp.status_code != 200:
-        print(f"FAILED — HTTP {resp.status_code}: {resp.text[:300]}")
-        print("Check: Mail.Read application permission + admin consent +")
-        print("Application Access Policy includes eaiken@gallagherllp.com.")
-        return
-    inbox = resp.json()
-    print(f"OK — Inbox ID: {inbox.get('id', '?')[:20]}..., "
-          f"totalItemCount: {inbox.get('totalItemCount', '?')}, "
-          f"childFolderCount: {inbox.get('childFolderCount', '?')}")
-
-    # Test 2: Walk the folder tree: Inbox → Clients & Cases → children → children.
-    print(f"\n=== Test 2: Walk folder tree ===")
-    url = f"{GRAPH_API_BASE}/users/{ella}/mailFolders/Inbox/childFolders"
-    resp = requests.get(url, headers=headers,
-                        params={"$select": "id,displayName,childFolderCount", "$top": "50"},
-                        timeout=30)
-    if resp.status_code != 200:
-        print(f"FAILED listing Inbox children — HTTP {resp.status_code}: {resp.text[:300]}")
-    else:
-        folders = resp.json().get("value", [])
-        print(f"Inbox has {len(folders)} child folder(s):")
-        for f in folders:
-            fname = f.get("displayName", "?")
-            fchildren = f.get("childFolderCount", 0)
-            print(f"  {fname} (children: {fchildren})")
-
-            # Drill into any folder with children.
-            if fchildren and int(fchildren) > 0:
-                fid = f["id"]
-                url2 = f"{GRAPH_API_BASE}/users/{ella}/mailFolders/{fid}/childFolders"
-                resp2 = requests.get(url2, headers=headers,
-                                     params={"$select": "id,displayName,childFolderCount", "$top": "50"},
-                                     timeout=30)
-                if resp2.status_code == 200:
-                    children2 = resp2.json().get("value", [])
-                    for c2 in children2:
-                        c2name = c2.get("displayName", "?")
-                        c2children = c2.get("childFolderCount", 0)
-                        print(f"    └─ {c2name} (children: {c2children})")
-
-                        # One more level deep.
-                        if c2children and int(c2children) > 0:
-                            c2id = c2["id"]
-                            url3 = f"{GRAPH_API_BASE}/users/{ella}/mailFolders/{c2id}/childFolders"
-                            resp3 = requests.get(url3, headers=headers,
-                                                 params={"$select": "id,displayName,childFolderCount", "$top": "50"},
-                                                 timeout=30)
-                            if resp3.status_code == 200:
-                                for c3 in resp3.json().get("value", []):
-                                    print(f"        └─ {c3.get('displayName', '?')} (children: {c3.get('childFolderCount', 0)})")
-                else:
-                    print(f"    (failed to list children: HTTP {resp2.status_code})")
-
-    # Test 3: Resolve first case folder path.
-    cases = load_ella_case_info()
-    if cases:
-        import re as _re
-        first = cases[0]
-        raw_path = str(first.get("Folder Location") or "").strip()
-        clean_path = _re.sub(r"^\\\\[^\\]+\\", "", raw_path)
-        print(f"\n=== Test 3: Resolve first case folder path ===")
-        print(f"  Raw:   {raw_path}")
-        print(f"  Clean: {clean_path}")
-        result = resolve_folder_path(token, ella, clean_path)
-        if result:
-            print(f"  OK — resolved to folder ID: {result[:30]}...")
-        else:
-            print(f"  FAILED — see warnings above")
-
-    print()
-
-
 def run_pending_llt_cli() -> None:
     """CLI entry point for --pending-llt: download LLT + contacts from
     SharePoint, group by property, create draft emails in James's Drafts."""
@@ -4256,95 +4142,6 @@ def run_pending_llt_cli() -> None:
         f"{summary['drafts_skipped']} skipped, "
         f"{len(summary.get('unmatched_properties', []))} unmatched"
     )
-
-
-def run_pma_poll_cli() -> None:
-    """Entry point for `python rocky.py --pma-poll [--dry-run]` (every 15 min).
-
-    Polls pmateam@gallagherllp.com, classifies each email against the PMA ticket
-    manifest, and logs proposed HubSpot updates (writes them only when
-    pma_hubspot_enabled is true and not --dry-run)."""
-    import pma_tracker
-
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    dry_run = "--dry-run" in sys.argv
-
-    # Optional --backfill-days N: force a lookback window (e.g. the 60-day
-    # initial seed) regardless of the saved cursor.
-    backfill_days = None
-    for i, arg in enumerate(sys.argv):
-        if arg == "--backfill-days" and i + 1 < len(sys.argv):
-            try:
-                backfill_days = int(sys.argv[i + 1])
-            except ValueError:
-                print(f"Invalid --backfill-days value: {sys.argv[i + 1]}")
-                sys.exit(1)
-
-    config = load_config()
-    # App-level token for reading the shared pmateam mailbox (client credentials).
-    app_token = acquire_app_token(config)
-    anthropic_client = Anthropic(api_key=config["anthropic_api_key"])
-
-    log.info(f"[pma-poll] Starting ({'DRY RUN' if dry_run else 'LIVE'})"
-             + (f" backfill {backfill_days}d" if backfill_days is not None else ""))
-    result = pma_tracker.run_pma_poll(
-        client=anthropic_client,
-        app_token=app_token,
-        config=config,
-        program_dir=PROGRAM_DIR,
-        data_dir=DATA_DIR,
-        dry_run=dry_run,
-        backfill_days=backfill_days,
-    )
-    if result.get("error"):
-        log.error(f"[pma-poll] {result['error']}")
-        sys.exit(1)
-    log.info(f"[pma-poll] Done: {result}")
-
-
-def run_pma_digest_cli() -> None:
-    """Entry point for `python rocky.py --pma-digest [--dry-run]` (8:00 AM).
-
-    Emails the day's unmatched-email digest to Beth + Kyle from rocky@."""
-    import pma_tracker
-
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    dry_run = "--dry-run" in sys.argv
-
-    config = load_config()
-    # Rocky's delegated token for sending mail (skipped on dry-run).
-    send_token = None
-    if not dry_run:
-        app = get_msal_app(config)
-        send_token = acquire_token(app)
-        audit_token_scopes(send_token)
-
-    log.info(f"[pma-digest] Starting ({'DRY RUN' if dry_run else 'LIVE'})")
-    result = pma_tracker.run_pma_digest(
-        send_token=send_token, config=config, data_dir=DATA_DIR, dry_run=dry_run,
-    )
-    log.info(f"[pma-digest] Done: {result}")
-
-
-def run_pma_knowledge_cli() -> None:
-    """Entry point for `python rocky.py --pma-knowledge [--dry-run]` (once daily).
-
-    Reads the PMA Team corpus (built by --pma-poll) and asks Claude to update
-    each active deal's structured negotiation brief plus the cross-deal general
-    knowledge. --dry-run lists deals with new activity without calling Claude."""
-    import pma_tracker
-
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    dry_run = "--dry-run" in sys.argv
-
-    config = load_config()
-    anthropic_client = Anthropic(api_key=config["anthropic_api_key"])
-
-    log.info(f"[pma-knowledge] Starting ({'DRY RUN' if dry_run else 'LIVE'})")
-    result = pma_tracker.run_pma_knowledge(
-        client=anthropic_client, config=config, program_dir=PROGRAM_DIR, dry_run=dry_run,
-    )
-    log.info(f"[pma-knowledge] Done: {result}")
 
 
 def run_pma_activity_cli() -> None:
@@ -4513,104 +4310,6 @@ def run_email_brain_cli() -> None:
         limit=limit,
     )
     log.info(f"[email-brain] done: {json.dumps(result, indent=2)}")
-
-
-def run_pma_arm_cli() -> None:
-    """Affirmatively ARM HubSpot writes (`python rocky.py --pma-arm`).
-
-    Creates the runtime arm flag. Writes still also require config
-    pma_hubspot_enabled: true AND the two confidence gates. Default = asleep."""
-    import pma_tracker
-
-    config = load_config()
-    path = pma_tracker.hubspot_arm_path(DATA_DIR)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        f"armed_at={datetime.now(timezone.utc).isoformat()}\n", encoding="utf-8")
-    print(f"HubSpot write ARM flag created: {path}")
-    if config.get("pma_hubspot_enabled"):
-        print("Master switch pma_hubspot_enabled = TRUE  ->  HubSpot writes are now LIVE on the next poll.")
-    else:
-        print("Master switch pma_hubspot_enabled = FALSE ->  writes stay ASLEEP.")
-        print("Set \"pma_hubspot_enabled\": true in config.json to actually go live.")
-
-
-def run_pma_sleep_cli() -> None:
-    """Put HubSpot writes back to SLEEP (`python rocky.py --pma-sleep`)."""
-    import pma_tracker
-
-    path = pma_tracker.hubspot_arm_path(DATA_DIR)
-    if path.exists():
-        path.unlink()
-        print("HubSpot writes put to SLEEP (arm flag removed). Rocky will log proposals only.")
-    else:
-        print("Already asleep — no arm flag present.")
-
-
-def run_pma_test_cli() -> None:
-    """Diagnose PMA setup: app-token reach to pmateam + manifest load + matcher.
-
-    Run this before starting the observe week to confirm Rocky can read the
-    mailbox. Mirrors run_ella_test_cli."""
-    import pma_tracker
-
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    config = load_config()
-    mailbox = config.get("pma_mailbox", "pmateam@gallagherllp.com")
-
-    print("\n=== Test 0: Acquire app-level token ===")
-    try:
-        token = acquire_app_token(config)
-        print("OK — app token acquired")
-    except SystemExit:
-        print("FAILED — check client_secret in config.json and Mail.Read")
-        print("application permission with admin consent in Azure AD.")
-        return
-
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-
-    print(f"\n=== Test 1: Read pmateam Inbox ({mailbox}) ===")
-    url = f"{GRAPH_API_BASE}/users/{mailbox}/mailFolders/Inbox"
-    resp = requests.get(url, headers=headers,
-                        params={"$select": "id,displayName,totalItemCount"}, timeout=30)
-    if resp.status_code == 403:
-        print(f"FAILED — 403. The app token cannot reach {mailbox}.")
-        print("If an Exchange Application Access Policy exists, add this mailbox to it.")
-        return
-    if resp.status_code != 200:
-        print(f"FAILED — HTTP {resp.status_code}: {resp.text[:300]}")
-        return
-    inbox = resp.json()
-    print(f"OK — Inbox totalItemCount: {inbox.get('totalItemCount', '?')}")
-
-    print(f"\n=== Test 2: Fetch + recipient filter (last 30 days) ===")
-    recipient_filter = config.get("pma_recipient_filter", "pmateam@gallagherllp.com")
-    since30 = datetime.now(timezone.utc) - timedelta(days=30)
-    all_msgs = pma_tracker.fetch_pma_messages(token, mailbox, since30, recipient_filter=None)
-    pma_msgs = [m for m in all_msgs if pma_tracker._addressed_to(m, recipient_filter)]
-    print(f"{mailbox} inbox: {len(all_msgs)} message(s) in last 30 days; "
-          f"{len(pma_msgs)} addressed to {recipient_filter}.")
-    msgs = pma_msgs
-
-    print(f"\n=== Test 3: Manifest + keyword matcher ===")
-    manifest = pma_tracker.load_manifest(PROGRAM_DIR / "pma_manifest.json")
-    print(f"Manifest tickets: {len(manifest)}")
-    if msgs and manifest:
-        recent = msgs[-1]
-        cands = pma_tracker.match_candidates(recent, manifest)
-        print(f"Most-recent email {recent.get('subject', '')[:50]!r} -> "
-              f"{len(cands)} candidate ticket(s): {[c['ticket_id'] for c in cands]}")
-
-    print(f"\n=== Test 4: HubSpot write posture ===")
-    enabled = bool(config.get("pma_hubspot_enabled"))
-    armed = pma_tracker.is_hubspot_armed(DATA_DIR)
-    if enabled and armed:
-        print("LIVE — master switch ON and armed. Writes WILL happen on poll.")
-    elif enabled and not armed:
-        print("ASLEEP — master ON but not armed. Run --pma-arm to go live.")
-    else:
-        print("ASLEEP — observe mode (pma_hubspot_enabled is false). This is the default.")
-    print()
 
 
 def acquire_instance_lock(command: str):
@@ -5224,24 +4923,10 @@ def main():
         run_steve_todo_cli()
     elif "--ella-digest" in sys.argv:
         run_ella_digest_cli()
-    elif "--ella-test" in sys.argv:
-        run_ella_test_cli()
     elif "--pending-llt" in sys.argv:
         run_pending_llt_cli()
     elif "--pma-activity" in sys.argv:
         run_pma_activity_cli()
-    elif "--pma-poll" in sys.argv:
-        run_pma_poll_cli()
-    elif "--pma-digest" in sys.argv:
-        run_pma_digest_cli()
-    elif "--pma-knowledge" in sys.argv:
-        run_pma_knowledge_cli()
-    elif "--pma-arm" in sys.argv:
-        run_pma_arm_cli()
-    elif "--pma-sleep" in sys.argv:
-        run_pma_sleep_cli()
-    elif "--pma-test" in sys.argv:
-        run_pma_test_cli()
     elif "--maple-digest" in sys.argv:
         run_maple_digest_cli()
     elif "--email-brain" in sys.argv:
@@ -5257,12 +4942,6 @@ def main():
         print("  --ella-digest  [--hours N]              Ella's daily case digest from inbox")
         print("  --pending-llt  [--dry-run] [--limit N]  Draft LLT status emails by property")
         print("  --pma-activity [--dry-run] [--backfill-days N]  Export PMA emails folder to JSONL for Maple")
-        print("  --pma-poll [--dry-run] [--backfill-days N]  Poll pmateam, classify, update HubSpot")
-        print("  --pma-digest   [--dry-run]              Email PMA unmatched digest to Beth + Kyle")
-        print("  --pma-knowledge [--dry-run]             Synthesize PMA negotiation knowledge (daily)")
-        print("  --pma-arm                               Affirmatively turn ON HubSpot writes")
-        print("  --pma-sleep                             Put HubSpot writes back to sleep (default)")
-        print("  --pma-test                              Diagnose pmateam access + manifest + matcher")
         print("  --maple-digest [--date YYYY-MM-DD] [--yesterday] [--dry-run]  Email the Maple daily activity digest")
         print("  --email-brain  [--rebuild] [--backfill-days N] [--no-embed] [--limit N] [--query \"...\"] [--stats]")
         print("                                          Build the sent-mail corpus + retrieval index")

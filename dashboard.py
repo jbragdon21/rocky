@@ -87,9 +87,9 @@ def load_config() -> dict:
 #   recommended    include in the one-click "recommended daily schedule"
 #                  (True only for commands with a *documented* run time)
 # Documented times come from rocky.py's header docstring + BUILD_REFERENCE.
-# pma-activity / pma-knowledge / email-brain run "once daily" with no documented
-# time, so they carry a *suggested* time for the quick-schedule button but are
-# left out of the bulk auto-setup.
+# pma-activity / email-brain run "once daily" with no documented time, so they
+# carry a *suggested* time for the quick-schedule button but are left out of the
+# bulk auto-setup.
 ROCKY_COMMANDS = [
     {"flag": "daily-cases",   "label": "Daily Cases",     "group": "Cases", "dry_run": False, "desc": "Fetch + summarize today's case emails",       "sched_time": "16:00", "recommended": True},
     {"flag": "daily-run",     "label": "Daily Run",       "group": "Cases", "dry_run": False, "desc": "Run per-case folder skills",                  "sched_time": "16:30", "recommended": True},
@@ -98,12 +98,6 @@ ROCKY_COMMANDS = [
     {"flag": "ella-digest",   "label": "Ella Digest",     "group": "Inbox", "dry_run": False, "desc": "Ella's daily case digest from inbox",         "sched_time": "17:00", "recommended": True},
     {"flag": "pending-llt",   "label": "Pending LLT",     "group": "Inbox", "dry_run": True,  "desc": "Draft LLT status emails by property"},
     {"flag": "pma-activity",  "label": "PMA Activity",    "group": "PMA",   "dry_run": True,  "desc": "Export PMA emails to JSONL for Maple",        "sched_time": "18:00"},
-    {"flag": "pma-poll",      "label": "PMA Poll",        "group": "PMA",   "dry_run": True,  "desc": "Classify pmateam + update HubSpot",           "sched_time": "09:00", "sched_freq": "MINUTE", "sched_interval": 15, "recommended": True},
-    {"flag": "pma-digest",    "label": "PMA Digest",      "group": "PMA",   "dry_run": True,  "desc": "Email PMA unmatched digest",                  "sched_time": "08:00", "recommended": True},
-    {"flag": "pma-knowledge", "label": "PMA Knowledge",   "group": "PMA",   "dry_run": True,  "desc": "Synthesize PMA negotiation knowledge",        "sched_time": "18:30"},
-    {"flag": "pma-test",      "label": "PMA Test",        "group": "PMA",   "dry_run": False, "desc": "Diagnose pmateam access + matcher"},
-    {"flag": "pma-arm",       "label": "PMA Arm",         "group": "PMA",   "dry_run": False, "danger": True, "desc": "Turn ON HubSpot writes"},
-    {"flag": "pma-sleep",     "label": "PMA Sleep",       "group": "PMA",   "dry_run": False, "desc": "Turn OFF HubSpot writes"},
     {"flag": "maple-digest",  "label": "Maple Digest",    "group": "Other", "dry_run": True,  "desc": "Email the Maple activity digest",             "sched_time": "16:30", "recommended": True},
     {"flag": "email-brain",   "label": "Email Brain",     "group": "Other", "dry_run": False, "desc": "Build sent-mail corpus + index",              "sched_time": "02:00"},
     {"flag": "monitor-remy",  "label": "Monitor Remy",    "group": "Other", "dry_run": False, "desc": "Poll inbox for Remy requests (long-running)"},

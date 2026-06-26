@@ -24,6 +24,56 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-06-26 — Retired the PMA HubSpot poller + knowledge synthesis; PMA Activity is the only PMA job
+
+**What changed**
+
+- **Retired the entire HubSpot poller path** (`--pma-poll`, `--pma-digest`,
+  `--pma-arm`, `--pma-sleep`, `--pma-test`) — obsolete; Maple now owns ticket
+  updates. Removed from **both** layers: rocky.py (CLI handlers, `main()`
+  dispatch, `--help`, header docstring) and `dashboard.py` (`ROCKY_COMMANDS`
+  registry, so they no longer appear as dashboard buttons/schedules).
+- **Retired the corpus/knowledge path** (`--pma-knowledge`) the same way. With it
+  gone, the deal-folder corpus had no producer, so the whole classifier/matcher/
+  HubSpot/archive/synthesis tree in `pma_tracker.py` became dead.
+- **`pma_tracker.py` rewritten down to the activity exporter only** (~1,540 →
+  ~360 lines). Kept: `run_pma_activity` + `build_activity_record`,
+  `fetch_folder_messages`, `maple_activity_dir`, `_recipients`, and the helpers
+  it actually uses (`load/save_pma_state`, `_email_text`, `_append_jsonl`,
+  `_fetch_attachments`, `_extract_attachment_text`). Everything else removed.
+- **`smoke_test_pma.py` rewritten** to cover the activity exporter offline
+  (body/recipient extraction, record building, state round-trip, JSONL append,
+  path resolution). Passes.
+- **Deleted orphaned files:** `pma_bootstrap.py`, `pma_manifest.json`
+  (gitignored — held real HubSpot deal data), `pma_instructions.md`. Nothing
+  live read them after the poller/knowledge were removed.
+- **Removed `--ella-test`** (`run_ella_test_cli`, the Ella-mailbox-access
+  diagnostic) — Ella Digest is working well, so the diagnostic was no longer
+  needed. It was dispatch-only (no `--help`/docstring entry). With it gone, the
+  `main()` dispatch and the dashboard `ROCKY_COMMANDS` registry now match
+  exactly — every command Rocky accepts is also a dashboard button.
+
+**Decisions made**
+
+- Done in three scoped passes (poll+dependents → knowledge → file cleanup), each
+  confirmed with James before widening scope.
+- **PMA Activity is the sole surviving PMA job.** Rocky exports the "Inbox\PMA
+  emails" folder to a JSONL feed; Maple does all classification/ticket work
+  downstream.
+
+**Open items / watch-outs**
+
+- **Scheduled tasks on the Rocky laptop are NOT touched by code changes.** If
+  PMA Poll/Digest/Knowledge were ever installed in Task Scheduler, delete them on
+  the laptop (dashboard 🗑 or `schtasks /delete /tn "\Rocky\PMA Poll" /f`) — they
+  will now fail since the flags no longer exist.
+- Deletions are staged in the working tree (`D pma_bootstrap.py`,
+  `D pma_instructions.md`, `M pma_tracker.py`, etc.) but **not yet committed**.
+- `rocky.py` still has its own unrelated `classify_email` (Remy/case path) —
+  untouched, not the PMA classifier.
+
+---
+
 ## Session 2026-06-25 — Dashboard: run-now buttons + schedule create/edit/delete
 
 (Same-day continuation below adds: plain-English log view, per-command
