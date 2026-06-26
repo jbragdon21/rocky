@@ -18,7 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).parent
 DIST_DIR = ROOT / "dist"
 TARGET = Path(
-    r"C:\Users\jbragdon\OneDrive\OneDrive - gejlaw.com\Program Files\Rocky"
+    r"C:\Users\jbragdon\OneDrive - gejlaw.com\Program Files\Rocky"
 )
 
 
