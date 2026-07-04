@@ -1,8 +1,9 @@
 """
-PMA Activity feed — raw email export for the Maple Updater Agent.
+Maple PMA Activity feed — raw email export for the Maple Updater Agent.
 
 Single entry point, run as a scheduled one-shot command from rocky.py:
-    rocky.exe --pma-activity [--dry-run] [--backfill-days N]
+    rocky.exe --maple-pma-activity [--dry-run] [--backfill-days N]
+(legacy alias: --pma-activity — renamed 2026-07-04 to group the Maple jobs)
 
 A deliberately simple, Claude-free exporter: it pulls new emails from rocky@'s
 "Inbox\\PMA emails" folder and appends each one (full body + extracted
@@ -20,6 +21,7 @@ import base64
 import io
 import json
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -43,7 +45,7 @@ def load_pma_state(state_path: Path) -> dict:
         try:
             return json.loads(state_path.read_text(encoding="utf-8"))
         except Exception as e:
-            log.warning(f"[pma] Could not read state {state_path}: {e}")
+            log.warning(f"[maple-pma] Could not read state {state_path}: {e}")
     return {}
 
 
@@ -52,7 +54,7 @@ def save_pma_state(state_path: Path, state: dict) -> None:
         state_path.parent.mkdir(parents=True, exist_ok=True)
         state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
     except OSError as e:
-        log.warning(f"[pma] Could not write state {state_path}: {e}")
+        log.warning(f"[maple-pma] Could not write state {state_path}: {e}")
 
 
 def _email_text(email: dict) -> str:
@@ -65,7 +67,7 @@ def _append_jsonl(path: Path, obj: dict) -> None:
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(obj) + "\n")
     except OSError as e:
-        log.warning(f"[pma] Could not append to {path}: {e}")
+        log.warning(f"[maple-pma] Could not append to {path}: {e}")
 
 
 def _fetch_attachments(token: str, user_email: str, message_id: str) -> list[dict]:
@@ -77,10 +79,10 @@ def _fetch_attachments(token: str, user_email: str, message_id: str) -> list[dic
         resp = requests.get(url, headers=headers,
                             params={"$select": "id,name,contentType,size,isInline"}, timeout=30)
     except requests.RequestException as e:
-        log.warning(f"[pma] Could not list attachments for {message_id}: {e}")
+        log.warning(f"[maple-pma] Could not list attachments for {message_id}: {e}")
         return []
     if resp.status_code != 200:
-        log.warning(f"[pma] Could not list attachments for {message_id}: {resp.status_code}")
+        log.warning(f"[maple-pma] Could not list attachments for {message_id}: {resp.status_code}")
         return []
 
     out: list[dict] = []
@@ -96,7 +98,7 @@ def _fetch_attachments(token: str, user_email: str, message_id: str) -> list[dic
         try:
             ar = requests.get(att_url, headers=headers, timeout=60)
         except requests.RequestException as e:
-            log.warning(f"[pma] Network error fetching attachment {meta.get('name')!r}: {e}")
+            log.warning(f"[maple-pma] Network error fetching attachment {meta.get('name')!r}: {e}")
             out.append(rec)
             continue
         if ar.status_code == 200:
@@ -140,7 +142,7 @@ def _extract_attachment_text(name: str, content_type: str, raw: bytes | None) ->
         if nl.endswith((".txt", ".md", ".csv", ".log")) or ct.startswith("text/"):
             return raw.decode("utf-8", errors="replace").strip() or None
     except Exception as e:
-        log.debug(f"[pma] Extraction failed for {name!r}: {e}")
+        log.debug(f"[maple-pma] Extraction failed for {name!r}: {e}")
     return None
 
 
@@ -201,23 +203,23 @@ def fetch_folder_messages(app_token: str, mailbox: str, folder_id: str,
             else:
                 resp = requests.get(url, headers=headers, params=params, timeout=30)
         except requests.RequestException as e:
-            log.error(f"[pma-activity] Network error fetching folder in {mailbox}: {e}")
+            log.error(f"[maple-pma] Network error fetching folder in {mailbox}: {e}")
             return messages
         if resp.status_code == 403:
             log.error(
-                f"[pma-activity] 403 reading {mailbox}. The mailbox is likely not in "
+                f"[maple-pma] 403 reading {mailbox}. The mailbox is likely not in "
                 f"the Exchange Application Access Policy. Ask IT to add {mailbox}."
             )
             return messages
         if resp.status_code != 200:
-            log.error(f"[pma-activity] Graph API {resp.status_code} for {mailbox}: {resp.text[:300]}")
+            log.error(f"[maple-pma] Graph API {resp.status_code} for {mailbox}: {resp.text[:300]}")
             return messages
         data = resp.json()
         messages.extend(data.get("value", []))
         next_url = data.get("@odata.nextLink")
         page += 1
 
-    log.info(f"[pma-activity] Fetched {len(messages)} message(s) from folder since {since_iso}.")
+    log.info(f"[maple-pma] Fetched {len(messages)} message(s) from folder since {since_iso}.")
     return messages
 
 
@@ -227,6 +229,64 @@ def _recipients(email: dict, field: str) -> list[dict]:
         ea = r.get("emailAddress", {}) or {}
         out.append({"name": ea.get("name"), "address": ea.get("address")})
     return out
+
+
+# =============================================================================
+# Digest replies — answers typed into the client-question boxes
+# =============================================================================
+# The Maple digest (built by Maple's updater, drafted to the client by
+# --maple-digest) renders each open client question with an "Answer [q-...]:"
+# label above an empty box. Replies come back to "Inbox\PMA emails" (via the
+# pma@bozzuto.com cc) and flow through this exporter like any other message;
+# here we additionally pull out whatever was typed under each label so Maple
+# receives the answers as structured question_answers (it still gets the full
+# body either way). The label format and the "(End of client questions)"
+# sentinel must stay in sync with the questions card in Maple's
+# pma_shadow_draft.build_client_digest_html.
+
+_DIGEST_SUBJECT_MARKERS = ("pma ticket updates",)
+_ANSWER_MARKER_RE = re.compile(r"Answer\s*\[\s*(q-[A-Za-z0-9-]+)\s*\]\s*:", re.I)
+# An answer runs until the next answer label, the section-end sentinel, or the
+# next question line ("Q:" possibly behind reply-quote '>' prefixes).
+_ANSWER_STOP_RE = re.compile(
+    r"Answer\s*\[\s*q-|\(End of client questions\)|(?:^|\n)\s*(?:>+\s*)*Q\s*:",
+    re.I,
+)
+
+
+def _is_digest_reply(subject: str) -> bool:
+    s = (subject or "").lower()
+    return "maple" in s and any(m in s for m in _DIGEST_SUBJECT_MARKERS)
+
+
+def _clean_answer_text(text: str) -> str:
+    lines = [re.sub(r"^\s*(?:>+\s*)+", "", ln) for ln in text.splitlines()]
+    cleaned = "\n".join(lines)
+    cleaned = cleaned.replace(chr(160), ' ')   # the empty box's &nbsp;
+    cleaned = re.sub(r"_{3,}", " ", cleaned)   # underscore "blank" runs
+    return cleaned.strip()
+
+
+def _parse_digest_answers(body: str) -> list[dict]:
+    """Extract [{id, answer}] typed under 'Answer [q-...]:' labels.
+
+    Empty boxes (the un-answered original quoted back) parse to nothing. If
+    the same question id appears more than once (older quoted replies), the
+    first occurrence wins — in a reply chain the newest content is on top.
+    """
+    answers: list[dict] = []
+    seen: set[str] = set()
+    for m in _ANSWER_MARKER_RE.finditer(body or ""):
+        qid = m.group(1)
+        if qid in seen:
+            continue
+        stop = _ANSWER_STOP_RE.search(body, pos=m.end())
+        chunk = body[m.end():stop.start()] if stop else body[m.end():]
+        text = _clean_answer_text(chunk)
+        if text:
+            answers.append({"id": qid, "answer": text})
+            seen.add(qid)
+    return answers
 
 
 def build_activity_record(email: dict, app_token: str, mailbox: str,
@@ -250,11 +310,22 @@ def build_activity_record(email: dict, app_token: str, mailbox: str,
         "attachments": [],
     }
 
+    # Digest replies: flag them and lift out answers typed into the question
+    # boxes. Additive, optional fields — the feed schema is otherwise unchanged
+    # and Maple's parser tolerates extra keys.
+    answers = _parse_digest_answers(record["body"] or "")
+    if answers or _is_digest_reply(record["subject"] or ""):
+        record["digest_reply"] = True
+        if answers:
+            record["question_answers"] = answers
+            log.info(f"[maple-pma] Digest reply: extracted {len(answers)} "
+                     f"question answer(s) from {record['from'].get('address')!r}.")
+
     if email.get("hasAttachments"):
         try:
             atts = _fetch_attachments(app_token, mailbox, email["id"])
         except Exception as e:
-            log.warning(f"[pma-activity] Attachment fetch failed for {email.get('subject')!r}: {e}")
+            log.warning(f"[maple-pma] Attachment fetch failed for {email.get('subject')!r}: {e}")
             atts = []
         for att in atts:
             raw = att.get("contentBytes")
@@ -293,13 +364,13 @@ def run_pma_activity(
 
     if backfill_days is not None:
         since = datetime.now(timezone.utc) - timedelta(days=backfill_days)
-        log.info(f"[pma-activity] Forced backfill: last {backfill_days} day(s) (ignoring cursor).")
+        log.info(f"[maple-pma] Forced backfill: last {backfill_days} day(s) (ignoring cursor).")
     elif state.get("last_received"):
         since = datetime.fromisoformat(state["last_received"].replace("Z", "+00:00"))
     else:
         days = int(config.get("pma_activity_backfill_days", DEFAULT_ACTIVITY_BACKFILL_DAYS))
         since = datetime.now(timezone.utc) - timedelta(days=days)
-        log.info(f"[pma-activity] No state — first run, backfilling last {days} day(s).")
+        log.info(f"[maple-pma] No state — first run, backfilling last {days} day(s).")
 
     mailbox = config.get("pma_activity_mailbox") or config.get("rocky_email", "rocky@gallagherllp.com")
     extract_attachments = config.get("pma_activity_extract_attachments", True)
@@ -321,7 +392,7 @@ def run_pma_activity(
             pass
     except OSError as e:
         log.error(
-            f"[pma-activity] Cannot write feed at {feed_path}: {e}. "
+            f"[maple-pma] Cannot write feed at {feed_path}: {e}. "
             f"Cursor NOT advanced (no emails lost). Point maple_activity_dir at a "
             f"path this process can write to."
         )
@@ -357,9 +428,9 @@ def run_pma_activity(
     if not dry_run:
         save_pma_state(state_path, state)
     else:
-        log.info(f"[pma-activity] DRY RUN — cursor NOT advanced; wrote to {feed_path}.")
+        log.info(f"[maple-pma] DRY RUN — cursor NOT advanced; wrote to {feed_path}.")
 
     result = {"exported": exported, "skipped_seen": skipped, "feed": str(feed_path),
               "since": since.isoformat(), "dry_run": dry_run}
-    log.info(f"[pma-activity] Done: {result}")
+    log.info(f"[maple-pma] Done: {result}")
     return result

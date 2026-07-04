@@ -260,6 +260,42 @@ When iteration 1 is validated and James moves to Phase A, the production archite
 
 ---
 
+## Proposed: human-in-the-loop Remy via Teams (form selection + extraction review)
+
+**Status: idea, not built. Documented here for a future design pass.**
+
+**The problem this solves.** Rocky's headless Remy path (`remy_runner.py` → `remy_cli.py`) reuses the *exact same* workflow classes the Remy GUI uses, so for identical inputs the generated document is identical. But going headless drops two things a GUI user does by hand:
+
+1. **Form selection.** In the GUI the attorney explicitly picks the notice form from a dropdown (VA has 5 forms, DC 3, MD 3) — a legal-judgment call. Headless, `remy_runner` either reads a `Form type:` line from the paralegal form-email or falls back to a coarse `_DEFAULT_FORM_TYPE` table (e.g. `breach_notice + VA` → always `VA 21/30 (Breach)`; `breach_notice + DC` → `DC Rent (Breach)` even for a non-rent breach). This silently re-introduces an automated form pick that the original design deliberately deferred (see the "Deferred" note under **What Remy is** — picking the specific form is a legal judgment the classifier was meant to stop short of).
+2. **Extraction review.** The GUI flow is *extract → editable review panel → human corrects → generate*. Headless skips the review panel: whatever Claude extracted (party names, address, dates, balances) flows straight into the document with no human correction.
+
+**The idea.** Rocky uses Microsoft Teams (delegated chat, already specced under **Teams chat capability**) to pull the attorney back into the loop at the two points the GUI does — messaging James or Christina (routed by the existing `attorney` field, `bragdon`/`araviakis`) to (a) choose the form before generation, and (b) review and correct the extracted fields before generation. This restores GUI-level fidelity to the headless path and finally implements the deferred "chat with James to pick the form" design intent.
+
+**Why it's feasible with today's architecture:**
+- A long-running host loop already exists (`--monitor-remy` → `remy_poll_cycle`), a natural place to also poll for Teams replies.
+- The Remy engine already separates `extract_*` from `generate_*` on every workflow, and the CLI already has a `lease-review` subcommand that emits extracted `lease_data` as JSON — so "extract, pause for a human, then generate from corrected data" fits existing seams.
+- Form lists are bounded (`JURISDICTION_FORMS` in `modules/lease_review.py`) — a clean fit for Adaptive Card buttons.
+- Attorney routing already exists in the args.
+
+**What would have to be built (none of this exists yet):**
+1. **Teams transport** (`teams.py`): create 1:1 chat, send Adaptive Card, poll `GET /chats/{id}/messages`. Requires adding delegated scopes `Chat.Create` / `Chat.ReadWrite` / `ChatMessage.Send` to `GRAPH_SCOPES` plus an Azure app-registration change and IT consent. **This is an external dependency that gates the whole feature.**
+2. **Two-phase Remy split**: an `--extract-only` CLI mode that emits the intermediate JSON, and a `--generate-from <json>` mode that skips re-extraction. The workflow methods support this; `remy_cli.py` currently fuses the two phases in one process. This is the one piece with *no* Azure dependency and is the foundation for everything else.
+3. **Durable pending-job state machine**: a queue (e.g. `state/pending_remy/<job_id>.json`) plus resumption logic in the monitor loop. This is the genuinely new architecture — Rocky moves from fire-and-forget `subprocess.run()` to a job that pauses and resumes across poll cycles.
+4. **Reply interpretation**: button click → form choice (carry the `job_id` in the card action); field corrections → a pre-filled card form the attorney edits (preferred over free-text chat, which is fragile to parse).
+
+**Design decisions to make in the design pass:**
+- **Latency / abandonment.** A notice now blocks on a human reply that may take hours or days. Needs timeouts, reminders, and a fallback (after N hours, deliver as a flagged draft-for-review, or escalate) so requests don't silently stall.
+- **Correlation.** Multiple pending jobs in one chat means replies must carry a `job_id`. Adaptive Card actions do this cleanly; free-text replies are ambiguous. **Favor cards over chat text.**
+- **Two interaction shapes.** (a) form selection = bounded buttons; (b) review/correction = a pre-filled structured form. Don't attempt (b) as free-text.
+
+**Suggested phasing:**
+- **Phase 1 — form selection only.** Adaptive Card with the jurisdiction's valid forms as buttons; Rocky waits, then generates. Smaller, bounded, no JSON-patch complexity, and closes the biggest risk (the auto-defaulted legal-judgment call).
+- **Phase 2 — field review/correction.** Pre-filled card of the extracted values → attorney edits → generate. Restores the GUI's review panel.
+
+Both phases share the same prerequisites (Teams scopes + the extract/generate split + the pending-job state machine), so Phase 1 builds the skeleton Phase 2 reuses.
+
+---
+
 ## Case workspace structure (Phase D target)
 
 **Root location:** `C:\Users\jbragdon\OneDrive\OneDrive - gejlaw.com\Rocky Cases`

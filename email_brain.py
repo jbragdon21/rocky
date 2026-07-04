@@ -19,7 +19,7 @@ safe at call time).
 
 Invoked from rocky.py via `--email-brain`. No new Graph permission needed —
 reads jbragdon@'s mailbox with the same app-level token + Application Access
-Policy used by --pma-activity.
+Policy used by --maple-pma-activity.
 """
 
 from __future__ import annotations

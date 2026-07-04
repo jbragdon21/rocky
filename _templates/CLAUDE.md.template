@@ -15,27 +15,34 @@ Attorney: **James Bragdon**, Gallagher LLP (jbragdon@gallagherllp.com)
 
 ## Activity Logging
 
-**Every Claude session (Cowork, Claude Code, Rocky) MUST log all activity to `activitylog.md` in this case folder.** This is the single audit trail for everything that happens in this case — who did what, when, and why.
+**Every Claude session (Cowork, Claude Code, Rocky) MUST log its activity to `activity.jsonl` in this case folder.** This is the single, unified audit trail across all actors — Rocky, James, and Cowork sessions — and it is the file Rocky's daily digest reads. `activity.jsonl` is canonical; there is no separate markdown log.
 
 ### Before starting any work:
-1. Read `activitylog.md` to see what other sessions have already done
+1. Read `activity.jsonl` to see what other sessions (and Rocky) have already done
 2. Check what files exist to avoid duplicating work
+3. Review the **Rocky Suggestions** section below — check the recent `internal_suggestions` entries in `activity.jsonl` and ask James whether he wants you to act on any of them
 
-### After completing any action that creates, modifies, or deletes files:
-Append an entry to `activitylog.md` using this exact format:
+### After completing any action that creates, modifies, or deletes files (or other meaningful work):
+Append **one line** to `activity.jsonl` — a single JSON object, no pretty-printing, no trailing comma. Use this schema:
 
-```
-### [YYYY-MM-DD HH:MM] — Short action title
-
-- **User:** Name or email of the person who initiated the session
-- **Session type:** Cowork | Claude Code | Rocky (daily-run) | Rocky (daily-cases)
-- **Files affected:** List of files created, modified, or deleted (use relative paths from case folder)
-- **Status:** Completed | In Progress | Needs Review
-
-Description of what was done and why. 2–3 sentences. Note any open questions or follow-ups.
+```json
+{"timestamp": "2026-06-28T14:30:00Z", "actor": "Jane Smith (Cowork)", "event": "research", "summary": "Pulled VA unlawful-detainer case law on the late-fee defense; saved two cases to Legal Research.", "files": ["Legal Research/Smith v Jones.pdf"]}
 ```
 
-If `activitylog.md` does not exist yet, create it with the header template from the Activity Log Format section at the bottom of this file, then add your entry.
+Field rules:
+- `timestamp` — ISO-8601 in **UTC** with a `Z` or `+00:00` suffix (e.g. `2026-06-28T14:30:00Z`). The digest filters its window by this; a missing or non-UTC timestamp may land your entry in the wrong day.
+- `actor` — who did the work and how, e.g. `"James Bragdon (Claude Code)"`, `"Jane Smith (Cowork)"`, `"rocky"`.
+- `event` — a short lowercase type: `research`, `drafting`, `document_filed`, `memo_update`, `correspondence`, etc.
+- `summary` — one or two sentences, plain attorney English. **This is what surfaces in the digest.** Keep it on a single line and escape any double-quotes (`\"`) so the JSON stays valid.
+- `files` — optional list of relative paths affected.
+
+A malformed line is **silently skipped** by Rocky's reader, so make sure the JSON is valid (one line, balanced quotes and braces). When in doubt, write a simpler summary rather than risk invalid JSON.
+
+---
+
+## Rocky Suggestions
+
+Rocky parks internal case-file maintenance suggestions (updating the Case Status Memorandum, refreshing the File / Searchable Text / Pleadings indexes, re-filing or renaming documents) in this case's activity log rather than in James's daily digest. **When you open this case as a project, read the recent `internal_suggestions` entries in `activity.jsonl` and ask James whether he wants you to act on them before doing so.**
 
 ---
 
@@ -152,7 +159,7 @@ Append extracted text for each new document following the existing format. Flag 
 If any new documents are court filings, add them to the Pleadings Index with the next sequential PLD-### number and rename the file in `Pleadings/` accordingly.
 
 ### Step 8 — Log and Report
-1. Append an entry to `activitylog.md` with the full list of files affected
+1. Append a JSON-line entry to `activity.jsonl` (see Activity Logging above) with the full list of files affected in the `files` field
 2. Provide a summary of what was added: number of new documents, where each was filed, and key facts or dates discovered
 
 ---
@@ -164,21 +171,3 @@ If any new documents are court filings, add them to the Pleadings Index with the
 - **PDF text extraction**: `pdftotext -layout <file> -` for inline output.
 - **Excel files**: Use `openpyxl` (Python) for .xlsx creation and editing.
 - **Full-text search**: `grep -i "search term" "Searchable Text Index - {{SHORT_CASE_STYLE}}.md"`
-
----
-
-## Activity Log Format
-
-When creating a new `activitylog.md` in this case folder, use this header:
-
-```markdown
-# Activity Log — {{CASE_NAME}} ({{RRID}})
-
-> **Purpose:** This file tracks all actions taken by Rocky, Claude Cowork, and Claude Code sessions on this case folder. Every Claude session with access to this folder MUST (1) read this log before starting work, and (2) append an entry after completing any action that creates, modifies, or deletes files or produces work product.
->
-> **Format:** Entries must follow the template below exactly so they can be parsed by Rocky's digest system.
-
----
-
-## Log Entries
-```
