@@ -110,7 +110,7 @@ ROCKY_COMMANDS = [
     {"flag": "steve-todo",    "label": "Steve To-Do",     "group": "Inbox", "dry_run": False, "desc": "Build Steve's morning to-do list from his email",       "sched_time": "07:30", "recommended": True},
     {"flag": "ella-digest",   "label": "Ella Digest",     "group": "Inbox", "dry_run": False, "desc": "Write Ella's daily summary of her case emails",         "sched_time": "17:00", "recommended": True},
     {"flag": "pending-llt",   "label": "Pending LLT",     "group": "Inbox", "dry_run": True,  "desc": "Draft status-update emails for landlord-tenant matters"},
-    {"flag": "maple-pma-activity", "label": "Maple PMA Activity", "group": "Maple", "dry_run": True, "desc": "Step 1 — collect the day's PMA emails for Maple", "sched_time": "15:30", "recommended": True},
+    {"flag": "maple-pma-activity", "label": "Maple PMA Activity", "group": "Maple", "dry_run": False, "desc": "Step 1 — collect the day's PMA emails for Maple", "sched_time": "15:30", "recommended": True},
     {"flag": "maple-updater", "label": "Maple Updater",   "group": "Maple", "dry_run": False, "desc": "Step 2 — Maple updates HubSpot and writes the client update", "sched_time": "16:00", "external": True},
     {"flag": "maple-digest",  "label": "Maple Digest",    "group": "Maple", "dry_run": True,  "desc": "Step 3 — put the client update in James's Drafts to send", "sched_time": "19:00", "recommended": True},
     {"flag": "email-brain",   "label": "Email Brain",     "group": "Other", "dry_run": False, "desc": "Re-read sent mail so Rocky's drafts sound like James",   "sched_time": "02:00"},

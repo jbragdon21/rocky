@@ -304,7 +304,7 @@ main {
    Sidebar (right panel)
    ================================================================ */
 .sidebar {
-    width: 340px;
+    width: 400px;
     flex-shrink: 0;
     overflow-y: auto;
     background: var(--bg);
@@ -319,6 +319,9 @@ main {
     border: 1px solid var(--border);
     border-radius: 8px;
     overflow: hidden;
+    /* Don't let flex compress cards to fit the viewport — the sidebar
+       scrolls instead of the cards clipping their content. */
+    flex-shrink: 0;
 }
 
 .card-header {
