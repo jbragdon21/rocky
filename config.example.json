@@ -11,14 +11,19 @@
   "_cases_root_comment": "Path to the Rocky Cases folder on OneDrive. Omit to use the default (James's dev laptop path).",
   "cases_root": "C:\\Users\\jbragdon\\OneDrive\\OneDrive - gejlaw.com\\Rocky Cases",
 
-  "_maple_comment": "Maple daily activity digest (--maple-digest, 4:30 PM). Reads Maple's per-session JSONL logs and emails a per-user summary from rocky@. maple_logs_dir defaults IN CODE to the Rocky-laptop production path; override it here only on other machines (e.g. the dev laptop, where Maple mounts under the jbragdon profile). Set maple_digest_skip_if_empty:true to suppress the email on days with no Maple activity (e.g. weekends) — a missing logs folder still sends an alert regardless.",
-  "maple_logs_dir": "C:\\Users\\jbragdon\\OneDrive\\OneDrive - gejlaw.com\\Program Files\\Maple\\logs\\activity",
-  "maple_digest_recipients": [
+  "_maple_digest_comment": "Maple digest (--maple-digest, 7:00 PM — after the Maple Updater's ~4 PM run wrote the outbox file). Takes the updater's outbox\\client_digest_YYYY-MM-DD.html and creates a DRAFT in maple_client_digest_mailbox's Drafts folder addressed to maple_client_digest_recipients (external addresses allowed — nothing is sent; James reviews and sends). The cc list is load-bearing: pma@bozzuto.com routes Beth's reply-all back into rocky@'s watched 'Inbox\\PMA emails' folder, which is how typed answers reach the feed. Defaults IN CODE to the production outbox path, jbragdon@, and the Bozzuto+Gallagher lists set 2026-07-04. (Keys keep the maple_client_digest_ prefix: the retired internal digest used maple_digest_recipients for a firm-internal list.)",
+  "maple_outbox_dir": "C:\\Users\\jbragdon\\OneDrive - gejlaw.com\\Program Files\\Maple\\Maple updater agent\\outbox",
+  "maple_client_digest_mailbox": "jbragdon@gallagherllp.com",
+  "maple_client_digest_recipients": [
+    "bcrassweller@bozzuto.com",
+    "kwoelper@bozzuto.com",
     "jbragdon@gallagherllp.com",
-    "asantarelli@gallagherllp.com",
     "kvirtue@gallagherllp.com"
   ],
-  "maple_digest_skip_if_empty": false,
+  "maple_client_digest_cc": ["pma@bozzuto.com"],
+
+  "_maple_updater_comment": "Path to the Maple updater's run-daily-update.ps1 (lives in the Maple OneDrive folder, not in Rocky). The dashboard's 'Maple Updater' button/schedule runs this script. Defaults IN CODE to the production path on the Rocky laptop (rocky profile); set this on machines where the Maple folder mounts elsewhere.",
+  "maple_updater_script": "C:\\Users\\jbragdon\\OneDrive - gejlaw.com\\Program Files\\Maple\\Maple updater agent\\run-daily-update.ps1",
 
   "_remy_comment": "Remy invocation paths. remy_cli_path is where remy_cli.py lives on disk. remy_outputs_path is where generated drafts get written.",
   "enable_remy_invocation": false,
@@ -74,12 +79,11 @@
   "pma_activity_extract_attachments": true,
 
   "_email_brain_comment": "Email Brain (--email-brain). Pulls ALL of James's sent mail from sent_brain_folders into a local SQLite DB (brain.db, with FTS5) + a raw sent_emails.jsonl export, pairs each reply with the inbound message it answered (via conversationId), and embeds the retrieval-key text via Voyage AI for similarity search. DB/JSONL live in email_brain_dir (blank = C:\\Rocky\\email_brain — LOCAL and private, not OneDrive). Reads via the app-level token + Application Access Policy (covers jbragdon@ AND rocky@); no new Graph permission. voyage_api_key from voyageai.com; voyage_model defaults to voyage-3-large.",
-  "_sent_brain_folders_comment": "Each entry is either a bare path string (read from sent_brain_mailbox) or {mailbox, path}. Current sent mail lives in jbragdon@'s Sent Items. The Online Archive ('__Older Sent Items') is a separate In-Place Archive mailbox Graph CANNOT read, so drag those archived sends into a DEDICATED folder in rocky@ (e.g. create 'Inbox\\James Older Sent' first — do NOT use Rocky's bare Inbox or you'll ingest Rocky's operational mail) and point an entry at it. sent_brain_author is the single identity treated as 'James' for pairing, even when the host mailbox is rocky@.",
+  "_sent_brain_folders_comment": "Each entry is either a bare path string (read from sent_brain_mailbox) or {mailbox, path}. Current sent mail lives in jbragdon@'s Sent Items — that's the only source for now. LATER, once the archived sends are moved over: the Online Archive ('__Older Sent Items') is a separate In-Place Archive mailbox Graph CANNOT read, so drag those archived sends into a DEDICATED folder in rocky@ (e.g. create 'Inbox\\James Older Sent' first — do NOT use Rocky's bare Inbox or you'll ingest Rocky's operational mail) and add the entry {\"mailbox\": \"rocky@gallagherllp.com\", \"path\": \"Inbox\\\\James Older Sent\"} to the list below. Incremental cursors are per-folder, so adding it later just backfills that folder without re-pulling Sent Items. sent_brain_author is the single identity treated as 'James' for pairing, even when the host mailbox is rocky@.",
   "sent_brain_mailbox": "jbragdon@gallagherllp.com",
   "sent_brain_author": "jbragdon@gallagherllp.com",
   "sent_brain_folders": [
-    {"mailbox": "jbragdon@gallagherllp.com", "path": "Sent Items"},
-    {"mailbox": "rocky@gallagherllp.com", "path": "Inbox\\James Older Sent"}
+    {"mailbox": "jbragdon@gallagherllp.com", "path": "Sent Items"}
   ],
   "voyage_api_key": "PASTE-VOYAGE-KEY-HERE",
   "voyage_model": "voyage-3-large",

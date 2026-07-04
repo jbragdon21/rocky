@@ -24,6 +24,393 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-07-04 (3) — Email brain: drop rocky@ "James Older Sent" folder for now
+
+**What changed**
+
+- **config.example.json only:** removed the
+  `{"mailbox": "rocky@gallagherllp.com", "path": "Inbox\\James Older Sent"}`
+  entry from `sent_brain_folders` — James hasn't moved the archived sends
+  into rocky@ yet, so the brain starts from jbragdon@'s Sent Items alone.
+  The `_sent_brain_folders_comment` now carries the full "add this entry
+  later" recipe (folder to create, exact JSON to paste back).
+- No code change: rocky.py already resolves folders from config and skips
+  unresolvable ones; per-folder cursors mean the rocky@ folder can be added
+  later and will backfill on its own without re-pulling Sent Items.
+
+**Open items**
+
+- When the older sent emails are dragged into rocky@ `Inbox\James Older Sent`,
+  re-add the entry to `sent_brain_folders` (in the deployed config.json on
+  the Rocky laptop too, if it was copied there with the old two-folder list).
+
+## Session 2026-07-04 (2) — Dashboard: Maple Updater trigger, last/next-run display, plainer plain-English
+
+**What changed**
+
+- **Dashboard "Maple Updater" command (external).** New registry entry between
+  maple-pma-activity and maple-digest, so the Maple group reads as the 3-step
+  daily loop (15:30 collect → 16:00 updater → 19:00 digest). It runs the
+  Maple repo's `run-daily-update.ps1` via
+  `powershell.exe -NoProfile -ExecutionPolicy Bypass -File` — not a rocky.py
+  flag. New config key `maple_updater_script` (default IN CODE = production
+  rocky-profile path, same pattern as `_DEFAULT_MAPLE_OUTBOX_DIR`; dev
+  config.json + config.example.json set the jbragdon path). Registry entries
+  now support `external: True`: argv from `external_argv()`, running-state
+  from a tracked Popen (no rocky lock file), **left out of ⚡ Auto-setup on
+  purpose** — the Maple side may already have its own Task Scheduler entry;
+  creating a second would double-run it (updater is idempotent via its
+  processed-cursor, but still).
+- **Last ran / next run everywhere.** Each Run-a-Command row now shows
+  "Last ran: 2h ago (today 7:50 AM) · Next run: today 4:00 PM". Sources:
+  rocky commands' lock files are truncate-rewritten at every start, so lock
+  mtime = last start (covers manual AND scheduled runs); the updater uses the
+  newest `logs\scheduled_run_*.log` mtime; schtasks "Last Run Time" is the
+  fallback. Next run = earliest enabled matched task. Matching: parse
+  `--<flag>` (or run-daily-update.ps1) out of the task's "Task To Run".
+- **schtasks query rewritten:** one full `/query /fo CSV /v` (the \Rocky\
+  -folder-only fast path missed the Maple-side task) with a 20 s TTL cache
+  (it's polled every 10 s); mutations invalidate; ↻ button forces fresh.
+  Keeps tasks named rocky/maple or running run-daily-update.ps1; skips /v's
+  repeated header rows; dedupes multi-trigger tasks; each task carries
+  `flag`/`group`. Scheduled Tasks card now renders grouped in registry order
+  (Maple together) with friendly dates ("today 4:00 PM"); schtasks'
+  11/30/1999 never-ran sentinel → "never" (guarded server + client side).
+  delete_task guard now allows "maple" names too.
+- **Plainer plain-English mode:** rules rewritten against real rocky.log
+  lines (maple-digest drafting, dry-run outcomes by reason code,
+  client_secret error, stale-outbox warning); command descs de-jargoned
+  (Maple group is "Step 1/2/3 — ..."); post-cleanup strips quotes around
+  emails/filenames and turns "update(s)" into "updates".
+
+**Watch-outs**
+
+- Deploy needs a dashboard.exe rebuild (`build_exe.py`) — template + code.
+- On the laptop, check whether the Maple updater already has its own
+  scheduled task before 📅-scheduling it from the dashboard: it now SHOWS UP
+  in the Scheduled Tasks card (query matches maple/run-daily-update), so if
+  it's there, manage that one rather than adding a \Rocky\ twin.
+- "Running now" for the updater only tracks dashboard-launched runs (no lock
+  file); a Task-Scheduler-launched updater run won't light the dot.
+- Verified: py_compile; live dashboard on dev — Maple group order, last/next
+  lines, task grouping, create + delete of a \Rocky\Maple Updater task via
+  the API round-trip (created 16:00 daily, matched flag/group/next-run,
+  deleted; dev machine left with no Rocky tasks). Updater itself NOT run
+  (would write HubSpot).
+
+---
+
+## Session 2026-07-04 — Maple digest goes daily + 3-stream: code edits, HubSpot updater record, abstracts
+
+**What changed (continuation 5 — internal digest DELETED; client digest renamed "Maple Digest")**
+
+- **The internal Maple digest is gone** (per James — one digest is enough).
+  Removed from rocky.py: the whole 3-stream email subsystem built earlier
+  today (`maple_daily_digest`, `run_maple_digest_cli` (old), all
+  `_read_*`/`_build_*` digest helpers, `_read_jsonl_records`,
+  `_DEFAULT_MAPLE_LOGS_DIR` / `_UPDATER_LOGS_DIR` / `_ABSTRACTS_DIR`,
+  `_DEFAULT_MAPLE_DIGEST_RECIPIENTS`, `MAPLE_DIGESTS_DIR`,
+  `MAPLE_LOGO_PATH`). Config keys `maple_logs_dir`, `maple_updater_logs_dir`,
+  `maple_abstracts_dir`, `maple_digest_recipients`,
+  `maple_digest_skip_if_empty` retired (removed from config.example + dev
+  config). "daily activity digest" subject marker dropped from
+  `_DIGEST_SUBJECT_MARKERS` (smoke test flipped to assert non-match).
+- **`--maple-client-digest` renamed `--maple-digest`** (flag, label "Maple
+  Digest", functions `maple_digest`/`run_maple_digest_cli`, log tag
+  `[maple-digest]`). It was never deployed, so no alias. **Config keys keep
+  the `maple_client_digest_*` prefix on purpose** — the retired internal
+  digest used `maple_digest_recipients` for a firm-internal list; reusing
+  that key for the client draft could silently repoint the audience if an
+  old config.json lingers (comment in code says so).
+- Dashboard: Maple group is now maple-pma-activity (15:30) + maple-digest
+  (19:00, recommended). PROCESS_NAMES: `maple-digest` primary; `maple` /
+  `maple-client` kept as legacy mappings for old log lines.
+- **Left in place, now consumer-less (kept deliberately):** Maple's
+  `src/abstractLog.js` abstract audit log (standalone value, tiny);
+  Maple's `logs/activity` session logging (a Maple-side feature, not
+  Rocky's); `make_maple_logo.py` + Icon/maple_logo.png (unused).
+- **WATCH-OUT for deploy:** if a "\Rocky\Maple Digest" scheduled task
+  already exists on the laptop (auto-setup used to create one at 16:30), it
+  now runs the NEW --maple-digest (client drafting) at the WRONG time —
+  move it to 19:00 or delete/recreate via the dashboard before relying on it.
+- Verified: py_compile + smoke tests pass; dry-run `--maple-digest --date
+  2026-07-03` drafts-to-list correctly under the new name.
+
+**What changed (continuation 4 — client digest drafted to James's Drafts + reply sweep)**
+
+- **New command `--maple-client-digest` (7:00 PM daily, dashboard Maple
+  group).** Takes the Maple Updater's `outbox\client_digest_<today>.html` and
+  creates a **DRAFT** in jbragdon@'s Drafts folder (reuses
+  `pending_llt.create_draft_email`, delegated token) addressed to
+  bcrassweller@/kwoelper@ (Bozzuto) + jbragdon@/kvirtue@ — James reviews and
+  sends manually, since Rocky's outbound allowlist forbids external
+  addresses (Level 0 preserved: drafting ≠ sending). Subject
+  `Maple — PMA ticket updates M/D/YYYY` (matches the reply-sweep detector).
+  On success the file moves to `outbox\sent\` (idempotency per the outbox
+  contract); stale earlier-dated files are warned about, never drafted; no
+  file = quiet day. Config: `maple_outbox_dir`,
+  `maple_client_digest_recipients`, `maple_client_digest_mailbox`.
+- **Client digest always CCs pma@bozzuto.com** (`maple_client_digest_cc`,
+  revised same session per James). The cc is load-bearing: pma@bozzuto.com's
+  existing routing delivers Beth's reply-all into rocky@'s watched
+  "Inbox\PMA emails" folder, so client replies ride the NORMAL export path
+  (answer boxes parsed by build_activity_record there too). Caveat: a plain
+  Reply (not reply-all) goes only to James and skips the route — forward
+  those to the PMA folder by hand.
+- **No inbox sweep at all** (final revision, same session — supersedes the
+  two intermediate sweep designs, which were built then removed). Client
+  replies reach the feed via the pma@bozzuto.com cc → rocky@'s watched
+  "Inbox\PMA emails" folder → the NORMAL export path, where
+  `build_activity_record` already stamps `digest_reply` +
+  `question_answers` on every record. `run_pma_activity` is back to its
+  original single-source structure. Consequence: replies to the INTERNAL
+  digest (they go to rocky@'s Inbox root) reach the feed only if a rocky@
+  Outlook rule moves "Maple —" replies into the PMA folder — optional, the
+  internal loop was a bonus.
+- **Maple's judgment now consumes the structured answers** (Maple repo):
+  `normalize_record` passes `digest_reply` / `question_answers` through to
+  the agent payload (previously stripped — verified they now survive), and
+  both the API_MODE_OVERLAY (pma_shadow_draft.py) and AGENT_PROMPT.md
+  "Resolve" section instruct: each {id, answer} is the authoritative answer
+  to exactly that open-question id — resolve by id, no content-matching;
+  `digest_reply` without parsed answers = read the body against
+  open_questions as before.
+- **Maple's client digest got the answer boxes** (`pma_shadow_draft.py`
+  `build_client_digest_html`): questions card now renders `Q:` prefix +
+  `Answer [q-...]:` label + typing box per question + `(End of client
+  questions)` sentinel — same parsing contract as the internal digest. The
+  "type your answers" hint deliberately sits ABOVE the questions: anything
+  between the last box and the sentinel would parse as that box's answer.
+- **outbox/README.md rewritten** to the drafted-not-sent contract.
+- Verified: dry-run drafting against the real 7/03 outbox file (recipients +
+  subject correct), stale-file warning + quiet-day exit for 7/04, and a full
+  round trip — real `build_client_digest_html` output (live question
+  register) → crude HTML→text → answers typed into first/last boxes →
+  `_parse_digest_answers` returns exactly those two; unanswered digest
+  parses to []. Not run live (no client_secret on dev; draft creation
+  untested against Graph — first live smoke on the laptop: ▶ Maple Client
+  Digest with dry, then live).
+- **Supersedes the "Wire Rocky to email Maple client digest to Beth" task
+  chip** and implements ROCKY-UPDATE-PROMPT.md's two responsibilities in
+  draft-form (send → draft; Outlook-rule routing → inbox sweep).
+
+**What changed (continuation 3 — client questions section + reply-answer loop)**
+
+- **Digest: "Questions for the client" is its own section**, right after the
+  HubSpot updates. Sourced from the updater's `questions.jsonl` — ALL open
+  questions (they repeat until answered), not just today's — each rendered as
+  `Q: <matter> — <question>`, an `Answer [q-YYYY-MM-DD-n]:` label, and an
+  empty dashed box to type into; section ends with an
+  `(End of client questions)` sentinel. Questions *asked* today no longer
+  render in the HubSpot section (answered-today items still do). Open
+  questions count in the summary bar but NOT toward skip_if_empty (standing
+  state, not day activity).
+- **Exporter: digest replies parsed for answers** (`pma_tracker.py`). Every
+  record body is scanned for `Answer [q-...]:` labels; text typed under a
+  label (up to the next label / next `Q:` line / the sentinel) is cleaned
+  (reply-quote `>` prefixes, &nbsp;, underscore runs) and shipped on the feed
+  record as `question_answers: [{id, answer}]` + `digest_reply: true` (flag
+  also set on subject match: "maple" + "daily activity digest" or "pma ticket
+  updates" — covers the future Beth client digest too). Empty quoted-back
+  boxes parse to nothing; duplicate ids keep the first (newest) occurrence.
+  Additive optional fields — feed schema otherwise unchanged (Maple's parser
+  tolerates extra keys).
+- **The label format + sentinel are a cross-file contract** between
+  `_build_client_questions_section_rows` (rocky.py) and
+  `_parse_digest_answers` (pma_tracker.py) — comments on both sides say so.
+- smoke_test_pma.py extended: answer extraction, blank-box rejection,
+  duplicate-id handling, subject detection, and end-to-end record flow — all
+  pass. Rendered digest verified in browser against the live register
+  (3 open questions).
+- Graph fetch already requests text bodies (`Prefer: outlook.body-content-type
+  ="text"`), so replies arrive as plain text with labels/sentinel intact.
+
+**What changed (continuation 2 — HubSpot section compact table format)**
+
+- Applied HubSpot updates now render as one three-column row per change
+  (per James): **Was** (muted, with a tiny uppercase field caption, old value
+  truncated ~110 chars) | **Updated:** bold new value (~280 chars) |
+  explanation (small gray: rationale ~160 chars + confidence). Still verbatim
+  from the updater's record — truncated, never paraphrased. Ticket-name
+  headers unchanged; candidates/questions/blocked keep their one-line format.
+- Added a `digest-preview` entry to `.claude/launch.json` (untracked) —
+  `python -m http.server 5058 -d maple_digests` for eyeballing digest HTML.
+
+**What changed (continuation — Maple grouping/rename)**
+
+- **`--pma-activity` renamed `--maple-pma-activity`** to group the Maple jobs.
+  Legacy `--pma-activity` kept as a permanent alias; `main()` normalizes it to
+  the canonical name BEFORE `acquire_instance_lock`, so both spellings share
+  `state/rocky_maple-pma-activity.lock` and can't run concurrently (verified:
+  alias run creates no `rocky_pma-activity.lock`). Existing Task Scheduler
+  entries using the old flag keep working unchanged.
+- **Dashboard "Maple" group** (`dashboard.py` registry): Maple PMA Activity
+  (15:30, now `recommended` — the chain is documented) + Maple Digest (17:30),
+  listed in run order; groups now render Cases / Inbox / Maple / Other. The
+  Maple Updater's own ~16:00 task (run-daily-update.ps1) sits between them but
+  is NOT a Rocky command — noted in the registry comment.
+- **Log tags unified under Maple:** `[pma]` / `[pma-activity]` →
+  `[maple-pma]` in pma_tracker.py + rocky.py. Plain-English log: tag regex
+  fixed to accept hyphens (`\w+` never matched `[pma-activity]` at all), and
+  PROCESS_NAMES maps maple-pma + legacy pma/pma-activity → "Maple — PMA email
+  feed", maple → "Maple — daily digest", so old log lines group correctly too.
+- Internal names deliberately NOT renamed (feed/state contract):
+  `pma_activity_feed.jsonl`, `pma_activity_state.json`, `pma_activity_*`
+  config keys, `run_pma_activity*` functions.
+- Verified: py_compile, smoke_test_pma.py all pass; dashboard run live —
+  /api/commands + Run card show the Maple group; legacy `[pma]` lines render
+  as "Maple — PMA email feed"; both flags dispatch (dev machine stops at the
+  expected missing client_secret).
+
+**What changed**
+
+- **`rocky.py` — `--maple-digest` expanded from one stream to three.** The digest
+  email now covers: (1) app code-edit activity (existing, unchanged); (2) the
+  **HubSpot ticket updates the Maple Updater wrote that day**, read from
+  `Maple updater agent\logs\digest_YYYY-MM-DD.jsonl` and rendered **verbatim**
+  (grouped by ticket: field, old→new value, confidence; plus new-ticket
+  candidates, client questions asked/answered, blocked/failed/unmatched) — no
+  Claude paraphrase, so it's an accurate record of the writes; (3) **PMA
+  abstracts generated with the abstractor**, read from
+  `Maple\logs\abstracts\YYYY-MM-DD.jsonl`. New config keys
+  `maple_updater_logs_dir` / `maple_abstracts_dir` (code defaults = Rocky-laptop
+  production paths, same pattern as `maple_logs_dir`). Refactored JSONL parsing
+  into `_read_jsonl_records`; summary bar and dry-run log now lead with HubSpot
+  update + abstract counts; footer notes the three sources. Empty-day +
+  `skip_if_empty` logic now spans all three streams; a missing activity or
+  updater *folder* still warns (missing daily updater *file* = normal no-run
+  day; missing abstracts folder = none generated yet, never a warning).
+- **Maple app (`src/abstractLog.js` new, `src/server.js`)** — Maple previously
+  kept NO record of generated abstracts (the .docx went only to the browser).
+  `handleGenerate` now best-effort appends one JSONL line per successful
+  abstract (`ts`, `user`, `machine`, `fileName`, `docxFileName`, `provider`,
+  `model`, `pages`, `characters`, `warnings`) to `logs\abstracts\<date>.jsonl`.
+  A logging failure can never fail the generation response.
+- **`dashboard.py`** — maple-digest slot moved 16:30 → **17:30** and desc
+  updated: the digest must run AFTER the Maple Updater's daily HubSpot run
+  (today it ran ~16:00–16:30) or the day's ticket updates aren't in the record
+  yet. Daily order: pma-activity export → Maple updater run → maple-digest.
+- **`config.json` (dev) + `config.example.json`** — added the two new dirs; also
+  fixed the dev maple paths from the stale doubled root
+  (`OneDrive\OneDrive - gejlaw.com`, an unsynced legacy copy — same trap as the
+  60a90e6 build_exe fix) to the live `OneDrive - gejlaw.com` root.
+
+**Decisions made**
+
+- HubSpot section is rendered verbatim from the updater's own digest record
+  (the authoritative log its `apply` step writes), not summarized by Claude —
+  "accurate record" was the requirement.
+- rocky.py's old "no Maple code is touched" note is superseded: a one-file
+  additive logger in Maple was the only way to get an accurate abstract record.
+- Abstract log lives beside the activity logs (`logs\abstracts\`) so Rocky
+  reads everything from the one shared Maple folder.
+
+**Open items / watch-outs**
+
+- **NOT COMMITTED, NOT BUILT.** Rocky: needs `python build_exe.py` → OneDrive
+  `rocky.exe` (+ dashboard rebuild for the registry change). Maple: server.js
+  change takes effect next time Maple is (re)started on each machine.
+- **Rocky-laptop Task Scheduler:** if a Maple Digest task already exists at
+  16:30, move it to 17:30 (dashboard 🕑 or recreate) — code changes don't touch
+  existing tasks. If none exists, 📅/⚡ Auto-setup now creates it at 17:30 daily.
+- Abstracts are only captured when Maple runs from the shared OneDrive folder;
+  a portable copy logs to its own local `logs\abstracts\` that Rocky can't see.
+- Verified by dry-run against 2026-07-03 live data (6 applied HubSpot updates,
+  3 candidates, 1 asked/3 answered questions, 1 blocked + 1 unmatched, 1 dev
+  contributor) + a synthetic abstract record + a quiet day (2026-06-21).
+  Claude narrative call 401'd on the dev laptop (stale API key in dev
+  config.json — pre-existing; fallback summary path worked). Not sent live.
+- **Still to build (separate task):** ROCKY-UPDATE-PROMPT.md in the Maple
+  updater agent folder — Rocky emails the updater's `outbox\client_digest_*.html`
+  to Beth daily + routes `RE: Maple — PMA ticket updates` replies into
+  `Inbox\PMA emails`. Blocked on Beth's address / cc list (placeholders unfilled).
+
+---
+
+## Session 2026-06-28 — Daily case digest: quiet-case fix, internal/attorney split, file-integrity subsection, unified activity log
+
+**What changed** (all `rocky.py` unless noted)
+
+- **Quiet-case classification fix.** The digest counted *any* `activity.jsonl`
+  event as activity, so a no-op scheduled `daily_run` (0 file actions, 0 new raw
+  files) made a quiet case render a full "routine folder maintenance only"
+  section (the RRID-0007 bug). New `_is_substantive_event()` gates active-vs-quiet
+  on *real developments*: no-op `daily_run`, empty `daily_cases_email_summary`,
+  `session_start/end`, and `daily_run_error` no longer count. Such cases drop to
+  the bottom "no new activity" list. The substantive list (not raw activity) is
+  also what's fed to the section builder.
+- **Internal vs. attorney next steps.** `daily_run` now emits `internal_suggestions`
+  (case-file housekeeping) separately from `recommendations` (attorney actions);
+  both logged. The digest's **Recommended next steps** is restricted to
+  case-advancing attorney actions; internal maintenance (updating the Status
+  Memo, refreshing indexes, re-filing/renaming) is barred and never fed to the
+  digest model (`build_case_digest_section` daily_run branch omits
+  `internal_suggestions`; prompt rule as backstop).
+- **CLAUDE.md "Rocky Suggestions" pointer.** When a daily run produces
+  `internal_suggestions`, Rocky idempotently appends a `## Rocky Suggestions`
+  section to that case's CLAUDE.md (`_ensure_claude_md_suggestions_pointer`)
+  telling a project session to read `internal_suggestions` from `activity.jsonl`
+  and ask James before acting. Won't create a CLAUDE.md where none exists. Also
+  shipped in `_templates/CLAUDE.md.template`.
+- **Tighter "What happened".** Per-bullet cap (~40 words / 1–2 sentences),
+  summarize offer terms instead of enumerating line items, and a ban on
+  standalone "this establishes…/documents…/shows…" significance-recap bullets
+  (the RRID-0012 sample).
+- **New "Internal filing follow-ups" subsection** (digest sections now number
+  four). File-integrity gaps — a deadline implies a filing that isn't on file.
+  Fed by a *real folder inventory* (`_build_case_file_inventory`) that walks
+  actual case-folder filenames (names only, so OneDrive placeholders list fine;
+  deliberately NOT `master_file_index.json`, which only knows Rocky-filed docs and
+  would false-flag human/Cowork-saved filings).
+- **Unified activity log → `activity.jsonl` is the single source of truth.**
+  CLAUDE.md template rewritten: sessions append a one-line JSON object to
+  `activity.jsonl` (schema + UTC timestamp + quote-escaping rules) instead of
+  writing `activitylog.md`. Retired `activitylog.md` (template "Activity Log
+  Format" section removed, Step 8 + Rocky-Suggestions wording updated). Digest's
+  `_read_activity_since` **no longer reads `_spine_text/_activity.json`** — spine
+  work logs to `activity.jsonl` like everything else.
+
+**Decisions made**
+
+- `activity.jsonl` is canonical. This restores BUILD_REFERENCE's stated "unified
+  audit trail across all actors" design; `activitylog.md` was the later
+  divergence that created a digest blind spot (digest never parsed it).
+- Spine `_activity.json` separate read dropped deliberately. Its only unique
+  value was auto-capture for sessions that couldn't write `activity.jsonl`; under
+  the "tell Claude to log" model that's redundant. The spine writer is an external
+  Cowork tool we can't redirect from here; a revert note is left in the code.
+- File-integrity uses live folder contents, not `master_file_index.json`.
+- Internal-vs-attorney enforced at three layers (daily_run prompt split, digest
+  renderer omission, digest prompt rule) for defense in depth.
+
+**Open items / watch-outs**
+
+- **NOT YET BUILT OR COMMITTED.** Needs `python build_exe.py` → OneDrive
+  `Program Files\rocky.exe` to reach the Rocky laptop. Working tree: `M rocky.py`,
+  `M _templates/CLAUDE.md.template` (plus pre-existing `M BUILD_REFERENCE.md`).
+- **Per-case log cleanup — DONE (executed 2026-06-28).** New `cleanup_case_logs.py`
+  migrated 225 legacy entries (183 spine + 42 activitylog) into each case's
+  `activity.jsonl` (deduped via `spine_id`/`alog_key`, `.bak` saved), then archived
+  23 legacy files (`activitylog.md`, `_spine_text/_activity.json`) to each case's
+  `_archive/`. Idempotent + reversible.
+- **CLAUDE.md unification — DONE (executed 2026-06-28).** `unify_claude_md.py`
+  rewrote all 22 case CLAUDE.mds in-place (`.preunify.bak` backed up then moved to
+  each case's `_archive/`). Family A (Workflow, 13 cases) and Family B (Case Spine,
+  7 cases) handled by the script; Eden (RRID-0003, hybrid) handled by a custom
+  `fix_eden.py`; Whalen (RRID-0015, numbered-folder outlier) handled with
+  `--include-outliers`. All bespoke content preserved. All cases now point to
+  `activity.jsonl`; `activitylog.md` and `_spine_text/_activity.json` references
+  purged. Rocky Suggestions section added to all 22.
+- Fully-quiet days still write *no* digest (existing early-return); more cases now
+  demote to no-activity, so this fires more often. The no-activity list only
+  renders when ≥1 case has substantive activity.
+- JSON-line logging depends on the session emitting valid one-line JSON; malformed
+  lines are silently skipped by `_read_jsonl`. If flaky, add a `--log-activity` helper.
+- File-integrity + upcoming-dates quality tracks each case's Status Memo hygiene
+  (deadlines must actually be in the memo).
+
+---
+
 ## Session 2026-06-26 — Retired the PMA HubSpot poller + knowledge synthesis; PMA Activity is the only PMA job
 
 **What changed**

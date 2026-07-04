@@ -525,6 +525,16 @@ main {
     text-overflow: ellipsis;
 }
 
+.run-item .run-when {
+    font-size: 10.5px;
+    color: var(--text-dim);
+    opacity: 0.85;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.run-item .run-when b { color: var(--blue); font-weight: 600; }
+
 .danger-tag {
     font-size: 9px;
     font-weight: 700;
@@ -824,7 +834,7 @@ main {
                 <span style="display:flex; gap:6px;">
                     <button class="btn-add" onclick="setupRecommended()" title="Create the standard daily schedule in one click">⚡ Auto-setup</button>
                     <button class="btn-add" onclick="toggleSchedForm()" title="New scheduled task">+ New</button>
-                    <button class="btn-icon" onclick="refreshStatus()" title="Refresh" style="font-size: 11px; padding: 2px 8px;">↻</button>
+                    <button class="btn-icon" onclick="refreshStatus(true)" title="Refresh" style="font-size: 11px; padding: 2px 8px;">↻</button>
                 </span>
             </div>
             <div class="card-body">
@@ -881,6 +891,7 @@ main {
     let statusInterval = null;
     let commands = [];          // Rocky command registry from /api/commands
     let runningSet = [];        // flags currently running (from /api/status)
+    let runInfo = {};           // per-command last-ran / next-run (from /api/status)
 
     const viewer   = document.getElementById("log-viewer");
     const lineCount = document.getElementById("log-line-count");
@@ -934,12 +945,17 @@ main {
 
     // Subsystem tag -> friendly process name (looked up case-insensitively).
     const PROCESS_NAMES = {
-        maple: "Daily activity digest",
-        pma:   "Property-management mail",
-        ella:  "Ella's case digest",
-        steve: "Steve's to-do list",
-        remy:  "Remy notice requests",
-        llt:   "Landlord-tenant drafts",
+        "maple-digest": "Maple — client update",
+        "maple-pma":    "Maple — email collection",
+        "maple":        "Maple — client update",    // legacy tag (retired internal digest)
+        "maple-client": "Maple — client update",    // legacy tag (pre-rename)
+        "pma":          "Maple — email collection", // legacy tag on old log lines
+        "pma-activity": "Maple — email collection", // legacy tag on old log lines
+        "ella":  "Ella's case digest",
+        "steve": "Steve's to-do list",
+        "remy":  "Remy notice requests",
+        "llt":   "Landlord-tenant drafts",
+        "email-brain": "Writing-style library",
     };
 
     // Lines that are pure noise in Plain mode.
@@ -951,32 +967,66 @@ main {
     ];
 
     // [pattern, replacement] applied to the message text. $1.. capture groups.
+    // First match wins, so specific rules go above general ones.
     const PLAIN_RULES = [
-        [/^Rocky\s*[—–-]\s*(.+)$/i,                    "▸ $1"],
-        [/Wrote digest archive:?\s*(.+)$/i,            "Saved the digest file ($1)."],
-        [/DRY RUN\s*[—–-]\s*not sending\.?\s*(.*?)\.?\s*(?:Preview:.*)?$/i, "Test run — prepared but did not send ($1)."],
-        [/^.*\bnot sent\.\s*Reason:\s*dry_run\b.*$/i,  "Nothing was emailed (this was a test run)."],
-        [/^.*?(\w[\w ]*?) not sent\.\s*Reason:\s*(.+)$/i,  "$1 was not sent (reason: $2)."],
-        [/Recipients:\s*\[(.*?)\]\s*\|\s*Dry run:\s*True/i,  "Would email to: $1 (test run — not actually sent)."],
-        [/Recipients:\s*\[(.*?)\]\s*\|\s*Dry run:\s*False/i, "Emailing to: $1."],
-        [/Date:\s*(\S+)\s*\|\s*Logs:.*$/i,             "Reviewing activity for $1."],
-        [/Claude summary failed.*authentication_error.*$/i, "Couldn't reach the AI service (login/key problem) — used a basic summary instead."],
-        [/Claude summary failed.*$/i,                  "The AI summary step failed — used a basic summary instead."],
+        // --- Job banners ---
+        [/^Rocky\s*[—–-]\s*(.+?)\s*(?:\(.*\))?$/i,     "▸ Starting: $1"],
+        [/Rocky starting up\b.*$/i,                     "Rocky is starting up."],
+
+        // --- Maple client update (drafting into James's Drafts) ---
+        [/DRY RUN\s*[—–-]\s*would draft\s+\S+\s+to\s+\[(.*?)\].*?subject:\s*'(.*?)'.*$/i,
+            "Test run — the email “$2” would go to $1. Nothing was actually created."],
+        [/^No client digest for\s*(\S+).*$/i,           "Maple had no client updates for $1 — no email needed today."],
+        [/Stale outbox file\(s\) never drafted:\s*\[(.*?)\]\..*$/i,
+            "An older Maple update ($1) never went out — worth a look."],
+        [/OUTBOX NOT FOUND:?\s*(\S+).*$/i,              "Couldn't find Maple's outgoing-mail folder — probably a OneDrive sync problem, not a quiet day."],
+        [/Drafted\s+(\S+)\s+to\s+\[(.*?)\].*$/i,        "Put the client update in James's Drafts, addressed to $2 — ready to review and send."],
+        [/^Draft in:\s*(\S+)\s*\|\s*To:\s*\[(.*?)\].*Dry run:\s*True.*$/i,
+            "Would create a draft email for $2 in $1's Drafts (test run)."],
+        [/^Draft in:\s*(\S+)\s*\|\s*To:\s*\[(.*?)\].*$/i,
+            "Creating a draft email for $2 in $1's Drafts."],
+
+        // --- "Not sent / not drafted" outcomes, by reason ---
+        [/^.*not (?:sent|drafted)\.\s*Reason:\s*dry_run\b.*$/i,  "Nothing was actually sent or saved — this was just a test."],
+        [/^.*not (?:sent|drafted)\.\s*Reason:\s*no_digest_today\b.*$/i, "Nothing to send — a quiet day."],
+        [/^.*not (?:sent|drafted)\.\s*Reason:\s*outbox_missing\b.*$/i,  "Skipped — Maple's outgoing-mail folder couldn't be found."],
+        [/^.*?(\w[\w ]*?) not (?:sent|drafted)\.\s*Reason:\s*(.+?)\.?$/i,  "The $1 didn't go out (why: $2)."],
+
+        // --- Digest / email jobs ---
+        [/Wrote digest archive:?\s*(.+)$/i,            "Saved a copy of the summary ($1)."],
+        [/DRY RUN\s*[—–-]\s*not sending\.?\s*(.*?)\.?\s*(?:Preview:.*)?$/i, "Test run — nothing was sent. Today's tally: $1."],
+        [/Recipients:\s*\[(.*?)\]\s*\|\s*Dry run:\s*True/i,  "Would email: $1 (test run — nothing actually sent)."],
+        [/Recipients:\s*\[(.*?)\]\s*\|\s*Dry run:\s*False/i, "Will email: $1."],
+        [/Date:\s*([\d-]+)\s*\|.*$/i,                  "Looking at activity from $1."],
+        [/^(?:Updater logs|Activity logs|Abstracts|Outbox):.*$/i, ""],  // path-only detail lines
+
+        // --- Problems, in plain terms ---
+        [/'client_secret' not found.*$/i,              "Rocky's mailbox sign-in key is missing from its settings — it can't read email until that's fixed."],
+        [/Claude summary failed.*authentication_error.*$/i, "Couldn't sign in to the AI service (bad or missing key) — used a simple summary instead."],
+        [/Claude summary failed.*$/i,                  "The AI summary didn't work — used a simple summary instead."],
         [/LOGS FOLDER NOT FOUND:?\s*(.*?)\s*[—–-].*$/i, "Couldn't find the activity-logs folder ($1) — sent an alert instead."],
-        [/Invalid\s+--?\w+\s*'?(.*?)'?;?\s*expected.*$/i, "The value provided wasn't valid ($1)."],
-        [/Another rocky (\S+) is already running.*$/i, "'$1' is already running — skipped this start."],
-        [/Launched '(.*?)'.*$/i,                       "Started '$1'."],
+        [/Cannot read case index.*$/i,                 "Couldn't open the case list — the file may not be downloaded from OneDrive yet."],
+        [/Invalid\s+--?\w+\s*'?(.*?)'?;?\s*expected.*$/i, "One of the settings wasn't valid ($1)."],
+
+        // --- Runs starting / already running ---
+        [/Another rocky (\S+) is already running.*$/i, "$1 is already running — didn't start a second copy."],
+        [/Launched '(.*?)'.*$/i,                       "Started $1 from the dashboard."],
+
+        // --- Counts and housekeeping ---
         [/(\d+)\s+contributor\(s\),\s*(\d+)\s+file\(s\),\s*(\d+)\s+command\(s\),\s*(\d+)\s+failure\(s\)/i,
             "$1 people, $2 files, $3 actions, $4 problems"],
-        [/Knowledge synthesis complete:.*?'updated':\s*(\d+).*$/i, "Knowledge synthesis finished — $1 deal(s) updated."],
-        [/Synthesized\s+\d+\s*[—–-]\s*(.+?)\s*[—–-]\s*PMA\s*\((\d+)\s*new event\(s\)\)\.?$/i, "Updated the brief for $1 ($2 new event(s))."],
-        [/Updated general knowledge\s*\((\d+)\s*chars?\)\.?$/i, "Updated the general knowledge notes."],
-        [/Converted image\s+\S+\s*[→>—–-]+\s*(\S+).*$/i, "Converted an image to PDF ($1)."],
-        [/Polling every\s+(\d+)s\b.*$/i,               "Checks for new mail every $1 seconds."],
-        [/Rocky starting up\b.*$/i,                     "Rocky is starting up."],
-        [/Loaded\s+\d+\s+chars?\s+of\s+instructions.*$/i, "Loaded its instructions."],
+        [/Knowledge synthesis complete:.*?'updated':\s*(\d+).*$/i, "Finished updating the background notes — $1 deal(s) refreshed."],
+        [/Synthesized\s+\d+\s*[—–-]\s*(.+?)\s*[—–-]\s*PMA\s*\((\d+)\s*new event\(s\)\)\.?$/i, "Updated the notes for $1 ($2 new item(s))."],
+        [/Updated general knowledge\s*\((\d+)\s*chars?\)\.?$/i, "Updated the general notes."],
+        [/Converted image\s+\S+\s*[→>—–-]+\s*(\S+).*$/i, "Turned an image into a PDF ($1)."],
+        [/^done:\s*\{[\s\S]*$/i,                        "Finished."],
+        [/Exported\s+(\d+)\s+record\(s\).*$/i,          "Collected $1 email(s) for Maple."],
+
+        // --- Startup chatter ---
+        [/Polling every\s+(\d+)s\b.*$/i,               "Checking for new mail every $1 seconds."],
+        [/Loaded\s+\d+\s+chars?\s+of\s+instructions.*$/i, "Read its instructions."],
         [/Classifications will be written to:.*$/i,     "Ready to record what it finds."],
-        [/Mailboxes:\s*(.+)$/i,                         "Watching mailboxes: $1"],
+        [/Mailboxes:\s*(.+)$/i,                         "Watching these mailboxes: $1"],
         [/(Program|Data) dir:.*$/i,                     ""],   // drop path-only setup lines
     ];
 
@@ -1004,7 +1054,7 @@ main {
 
         // Pull off a subsystem tag like "[Maple]" for a friendly label.
         let proc = "";
-        const pm = msg.match(/^\[(\w+)\]\s*(.*)$/);
+        const pm = msg.match(/^\[([\w-]+)\]\s*(.*)$/);
         if (pm) { proc = PROCESS_NAMES[pm[1].toLowerCase()] || pm[1]; msg = pm[2]; }
 
         if (PLAIN_HIDE.some(re => re.test(msg)) || msg.trim() === "")
@@ -1013,7 +1063,10 @@ main {
         for (const [re, repl] of PLAIN_RULES) {
             if (re.test(msg)) { msg = msg.replace(re, repl); break; }
         }
-        msg = shortenPaths(msg).trim();
+        msg = shortenPaths(msg)
+            .replace(/'([\w.@\\/-]+)'/g, "$1")   // unquote emails/filenames from lists
+            .replace(/\(s\)/g, "s")              // "update(s)" -> "updates"
+            .trim();
         if (msg === "") return { hide: true, html: "" };
 
         const time = prettyTime(raw);
@@ -1227,9 +1280,48 @@ main {
         return fullName.replace(/^\\+[^\\]+\\+/, "").replace(/^\\+/, "");
     }
 
-    window.refreshStatus = async function() {
+    // Turn a Task Scheduler date string ("7/5/2026 4:00:00 PM") into
+    // friendly wording ("today 4:00 PM", "tomorrow 7:30 AM", "Jul 9, 2:00 PM").
+    // Unparseable strings pass through untouched.
+    function friendlyWhen(s) {
+        if (!s) return null;
+        let d;
+        if (s instanceof Date) {
+            d = s;
+        } else {
+            s = String(s).trim();
+            if (!s || /^(n\/a|never|disabled)$/i.test(s)) return null;
+            d = new Date(s);
+            if (isNaN(d)) return s;
+        }
+        if (d.getFullYear() < 2000) return null;  // schtasks "never ran" sentinel
+        const t = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+        const now = new Date();
+        const day = x => x.toDateString();
+        const tomorrow = new Date(now); tomorrow.setDate(now.getDate() + 1);
+        const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
+        if (day(d) === day(now)) return "today " + t;
+        if (day(d) === day(tomorrow)) return "tomorrow " + t;
+        if (day(d) === day(yesterday)) return "yesterday " + t;
+        return d.toLocaleDateString([], { month: "short", day: "numeric" }) + ", " + t;
+    }
+
+    // "Last ran ... · Next run ..." line under each command in Run a Command.
+    function updateRunWhen() {
+        document.querySelectorAll("[data-when]").forEach(el => {
+            const ri = runInfo[el.dataset.when];
+            if (!ri) { el.textContent = ""; return; }
+            const last = ri.last_epoch
+                ? `${timeAgo(ri.last_epoch)} (${friendlyWhen(new Date(ri.last_epoch * 1000))})`
+                : "never";
+            const next = ri.next_run ? friendlyWhen(ri.next_run) : null;
+            el.innerHTML = `Last ran: <b>${escapeHtml(last)}</b> · Next run: <b>${escapeHtml(next || "not scheduled")}</b>`;
+        });
+    }
+
+    window.refreshStatus = async function(fresh) {
         try {
-            const res = await fetch("/api/status");
+            const res = await fetch("/api/status" + (fresh === true ? "?fresh=1" : ""));
             const data = await res.json();
 
             // --- Dormant status ---
@@ -1262,7 +1354,9 @@ main {
 
             // --- Running processes ---
             runningSet = data.running || [];
+            runInfo = data.run_info || {};
             updateRunButtons();
+            updateRunWhen();
             const procList = document.getElementById("process-list");
             const runCount = document.getElementById("running-count");
             if (data.running && data.running.length > 0) {
@@ -1278,22 +1372,46 @@ main {
                 procList.innerHTML = '<li class="empty-state">No commands running</li>';
             }
 
-            // --- Scheduled tasks ---
+            // --- Scheduled tasks (grouped like the run list, Maple together) ---
             const taskList = document.getElementById("task-list");
             if (data.tasks && data.tasks.length > 0) {
-                taskList.innerHTML = data.tasks.map(task => {
+                // Sort: registry group order, then registry command order;
+                // tasks we can't match to a command sort last.
+                const groupOrder = [];
+                for (const c of commands)
+                    if (!groupOrder.includes(c.group)) groupOrder.push(c.group);
+                const flagOrder = commands.map(c => c.flag);
+                const sortKey = t => {
+                    const gi = t.group ? groupOrder.indexOf(t.group) : -1;
+                    const fi = t.flag ? flagOrder.indexOf(t.flag) : 999;
+                    return (gi === -1 ? 900 : gi) * 1000 + (fi === -1 ? 999 : fi);
+                };
+                const sorted = data.tasks.slice().sort((a, b) => sortKey(a) - sortKey(b));
+
+                let lastGroup = null;
+                taskList.innerHTML = sorted.map(task => {
                     const displayName = cleanTaskName(task.name);
                     const isRunning = data.running && data.running.some(r =>
+                        (task.flag && task.flag === r) ||
                         displayName.toLowerCase().replace(/[\s-]/g, "_").includes(r.toLowerCase()) ||
                         r.toLowerCase().includes(displayName.toLowerCase().replace(/[\s-]/g, "_"))
                     );
                     let statusClass = task.enabled ? "ready" : "disabled";
-                    let statusText = task.enabled ? "Enabled" : "Disabled";
-                    if (isRunning) { statusClass = "running"; statusText = "Running"; }
+                    let statusText = task.enabled ? "On" : "Off";
+                    if (isRunning) { statusClass = "running"; statusText = "Running now"; }
 
+                    const group = task.group || "Other";
+                    let header = "";
+                    if (group !== lastGroup) {
+                        header = `<div class="run-group-label">${escapeHtml(group)}</div>`;
+                        lastGroup = group;
+                    }
+
+                    const next = friendlyWhen(task.next_run);
+                    const last = friendlyWhen(task.last_run);
                     const nameJs = escapeHtml(task.name).replace(/'/g, "\\'");
                     const safe = btoa(task.name).replace(/=/g, "");
-                    return `<div class="task-item">
+                    return `${header}<div class="task-item">
                         <div class="task-top">
                             <span class="task-name">${escapeHtml(displayName)}</span>
                             <div class="task-actions">
@@ -1310,8 +1428,8 @@ main {
                         </div>
                         <div class="task-meta">
                             <span><span class="task-status-badge ${statusClass}">${statusText}</span></span>
-                            <span>Next: ${escapeHtml(task.next_run || "N/A")}</span>
-                            <span>Last: ${escapeHtml(task.last_run || "N/A")}</span>
+                            <span>Next run: ${escapeHtml(next || "not scheduled")}</span>
+                            <span>Last ran: ${escapeHtml(last || "never")}</span>
                         </div>
                         <div class="task-edit-time" id="edit-${safe}">
                             <input type="time" value="16:00">
@@ -1409,6 +1527,7 @@ main {
                     <div class="run-info">
                         <div class="run-name">${escapeHtml(c.label)} ${danger}</div>
                         <div class="run-desc" title="${escapeHtml(c.desc)}">${escapeHtml(c.desc)}</div>
+                        <div class="run-when" data-when="${c.flag}"></div>
                     </div>
                     ${dry}
                     ${sched}

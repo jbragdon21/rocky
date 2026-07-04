@@ -87,23 +87,53 @@ def load_config() -> dict:
 #   recommended    include in the one-click "recommended daily schedule"
 #                  (True only for commands with a *documented* run time)
 # Documented times come from rocky.py's header docstring + BUILD_REFERENCE.
-# pma-activity / email-brain run "once daily" with no documented time, so they
-# carry a *suggested* time for the quick-schedule button but are left out of the
+# email-brain runs "once daily" with no documented time, so it carries a
+# *suggested* time for the quick-schedule button but is left out of the
 # bulk auto-setup.
+#
+# The "Maple" group is the daily Maple loop, in run order:
+#   maple-pma-activity (15:30, feed export) -> maple-updater (~16:00,
+#   run-daily-update.ps1 — the Maple repo's own script, launched here as an
+#   *external* command; writes HubSpot + the outbox digest) -> maple-digest
+#   (19:00, drafts the outbox digest into James's Drafts for him to send).
+#
+# External commands (external=True) are not rocky.py flags: they run their
+# own program (argv from external_argv()), have no rocky lock file, and are
+# left out of the recommended auto-setup because the Maple side may already
+# have its own Task Scheduler entry — creating a second one would double-run
+# it. The dashboard still finds that existing task (the schtasks query also
+# matches "maple" names and run-daily-update.ps1 actions).
 ROCKY_COMMANDS = [
-    {"flag": "daily-cases",   "label": "Daily Cases",     "group": "Cases", "dry_run": False, "desc": "Fetch + summarize today's case emails",       "sched_time": "16:00", "recommended": True},
-    {"flag": "daily-run",     "label": "Daily Run",       "group": "Cases", "dry_run": False, "desc": "Run per-case folder skills",                  "sched_time": "16:30", "recommended": True},
-    {"flag": "daily-digest",  "label": "Daily Digest",    "group": "Cases", "dry_run": False, "desc": "Generate the daily case digest",              "sched_time": "17:00", "recommended": True},
-    {"flag": "steve-todo",    "label": "Steve To-Do",     "group": "Inbox", "dry_run": False, "desc": "Steve's daily to-do list from inbox",         "sched_time": "07:30", "recommended": True},
-    {"flag": "ella-digest",   "label": "Ella Digest",     "group": "Inbox", "dry_run": False, "desc": "Ella's daily case digest from inbox",         "sched_time": "17:00", "recommended": True},
-    {"flag": "pending-llt",   "label": "Pending LLT",     "group": "Inbox", "dry_run": True,  "desc": "Draft LLT status emails by property"},
-    {"flag": "pma-activity",  "label": "PMA Activity",    "group": "PMA",   "dry_run": True,  "desc": "Export PMA emails to JSONL for Maple",        "sched_time": "18:00"},
-    {"flag": "maple-digest",  "label": "Maple Digest",    "group": "Other", "dry_run": True,  "desc": "Email the Maple activity digest",             "sched_time": "16:30", "recommended": True},
-    {"flag": "email-brain",   "label": "Email Brain",     "group": "Other", "dry_run": False, "desc": "Build sent-mail corpus + index",              "sched_time": "02:00"},
-    {"flag": "monitor-remy",  "label": "Monitor Remy",    "group": "Other", "dry_run": False, "desc": "Poll inbox for Remy requests (long-running)"},
+    {"flag": "daily-cases",   "label": "Daily Cases",     "group": "Cases", "dry_run": False, "desc": "Collect and summarize today's emails for each case",    "sched_time": "16:00", "recommended": True},
+    {"flag": "daily-run",     "label": "Daily Run",       "group": "Cases", "dry_run": False, "desc": "File new documents into each case folder",              "sched_time": "16:30", "recommended": True},
+    {"flag": "daily-digest",  "label": "Daily Digest",    "group": "Cases", "dry_run": False, "desc": "Write the end-of-day summary of case activity",         "sched_time": "17:00", "recommended": True},
+    {"flag": "steve-todo",    "label": "Steve To-Do",     "group": "Inbox", "dry_run": False, "desc": "Build Steve's morning to-do list from his email",       "sched_time": "07:30", "recommended": True},
+    {"flag": "ella-digest",   "label": "Ella Digest",     "group": "Inbox", "dry_run": False, "desc": "Write Ella's daily summary of her case emails",         "sched_time": "17:00", "recommended": True},
+    {"flag": "pending-llt",   "label": "Pending LLT",     "group": "Inbox", "dry_run": True,  "desc": "Draft status-update emails for landlord-tenant matters"},
+    {"flag": "maple-pma-activity", "label": "Maple PMA Activity", "group": "Maple", "dry_run": True, "desc": "Step 1 — collect the day's PMA emails for Maple", "sched_time": "15:30", "recommended": True},
+    {"flag": "maple-updater", "label": "Maple Updater",   "group": "Maple", "dry_run": False, "desc": "Step 2 — Maple updates HubSpot and writes the client update", "sched_time": "16:00", "external": True},
+    {"flag": "maple-digest",  "label": "Maple Digest",    "group": "Maple", "dry_run": True,  "desc": "Step 3 — put the client update in James's Drafts to send", "sched_time": "19:00", "recommended": True},
+    {"flag": "email-brain",   "label": "Email Brain",     "group": "Other", "dry_run": False, "desc": "Re-read sent mail so Rocky's drafts sound like James",   "sched_time": "02:00"},
+    {"flag": "monitor-remy",  "label": "Monitor Remy",    "group": "Other", "dry_run": False, "desc": "Watch the inbox for notice requests (stays running)"},
 ]
 
 _COMMANDS_BY_FLAG = {c["flag"]: c for c in ROCKY_COMMANDS}
+
+# Maple updater script — lives in the Maple OneDrive folder, not this repo.
+# Default is the production path on the Rocky laptop (rocky profile); other
+# machines (e.g. the dev laptop, where the same folder mounts under the
+# jbragdon profile) override with "maple_updater_script" in config.json.
+_DEFAULT_MAPLE_UPDATER_SCRIPT = (
+    r"C:\Users\rocky\OneDrive - gejlaw.com"
+    r"\James D. Bragdon's files - Program Files\Maple\Maple updater agent"
+    r"\run-daily-update.ps1"
+)
+
+
+def maple_updater_script() -> Path:
+    return Path(
+        load_config().get("maple_updater_script", _DEFAULT_MAPLE_UPDATER_SCRIPT)
+    )
 
 
 def rocky_target() -> list[str]:
@@ -117,25 +147,49 @@ def rocky_target() -> list[str]:
     return [sys.executable, str(PROGRAM_DIR / "rocky.py")]
 
 
+def external_argv(flag: str) -> list[str]:
+    """Argv for an external (non-rocky.py) command in the registry."""
+    if flag == "maple-updater":
+        return [
+            "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-File", str(maple_updater_script()),
+        ]
+    raise ValueError(f"No external argv defined for: {flag}")
+
+
+def command_argv(flag: str, dry_run: bool = False) -> list[str]:
+    """Full argv for any registry command (rocky flag or external)."""
+    cmd = _COMMANDS_BY_FLAG[flag]
+    if cmd.get("external"):
+        return external_argv(flag)
+    argv = rocky_target() + [f"--{flag}"]
+    if dry_run and cmd.get("dry_run"):
+        argv.append("--dry-run")
+    return argv
+
+
 def rocky_command_string(flag: str, dry_run: bool = False) -> str:
     """
     Build the quoted command line for Task Scheduler's ``/tr`` argument.
     """
-    parts = rocky_target()
-    quoted = " ".join(f'"{p}"' if " " in p else p for p in parts)
-    line = f"{quoted} --{flag}"
-    if dry_run:
-        line += " --dry-run"
-    return line
+    parts = command_argv(flag, dry_run)
+    return " ".join(f'"{p}"' if " " in p else p for p in parts)
+
+
+# External commands have no rocky lock file, so track the Popen handles we
+# spawned ourselves. (A run started by Task Scheduler won't show here — the
+# dashboard only knows about launches it made. Good enough for a button.)
+_EXTERNAL_PROCS: dict[str, subprocess.Popen] = {}
 
 
 def launch_command(flag: str, dry_run: bool = False) -> dict:
     """
-    Launch a Rocky command as a detached background process.
+    Launch a registry command as a detached background process.
 
     Rocky writes its own progress to rocky.log, so the live log viewer is the
     feedback channel — we don't capture stdout here. Rocky's own per-command
-    lock prevents a duplicate run if one is already in flight.
+    lock prevents a duplicate run if one is already in flight; external
+    commands rely on the _EXTERNAL_PROCS tracking above.
     """
     if flag not in _COMMANDS_BY_FLAG:
         return {"success": False, "error": f"Unknown command: {flag}"}
@@ -143,13 +197,20 @@ def launch_command(flag: str, dry_run: bool = False) -> dict:
     if flag in get_running_commands():
         return {"success": False, "error": f"{flag} is already running."}
 
-    argv = rocky_target() + [f"--{flag}"]
-    if dry_run and _COMMANDS_BY_FLAG[flag].get("dry_run"):
-        argv.append("--dry-run")
+    cmd = _COMMANDS_BY_FLAG[flag]
+    if cmd.get("external"):
+        script = maple_updater_script()
+        if not script.exists():
+            return {
+                "success": False,
+                "error": f"Updater script not found: {script}. Check "
+                         f"'maple_updater_script' in config.json / OneDrive sync.",
+            }
+    argv = command_argv(flag, dry_run)
 
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
-        subprocess.Popen(
+        proc = subprocess.Popen(
             argv,
             cwd=str(PROGRAM_DIR),
             stdout=subprocess.DEVNULL,
@@ -161,6 +222,9 @@ def launch_command(flag: str, dry_run: bool = False) -> dict:
     except Exception as exc:
         log.error("Failed to launch %s: %s", flag, exc)
         return {"success": False, "error": str(exc)}
+
+    if cmd.get("external"):
+        _EXTERNAL_PROCS[flag] = proc
 
     log.info("Launched '%s' (dry_run=%s) via dashboard.", flag, bool(dry_run))
     return {"success": True, "flag": flag}
@@ -241,6 +305,14 @@ def get_running_commands() -> list[str]:
     A held lock means a rocky.exe process owns that command right now.
     """
     running = []
+
+    # External commands: alive if a Popen we spawned hasn't exited yet.
+    for flag, proc in list(_EXTERNAL_PROCS.items()):
+        if proc.poll() is None:
+            running.append(flag)
+        else:
+            del _EXTERNAL_PROCS[flag]
+
     if not STATE_DIR.exists():
         return running
 
@@ -268,52 +340,100 @@ def get_running_commands() -> list[str]:
 # Task Scheduler integration
 # ===================================================================
 
-def _query_schtasks() -> list[dict]:
-    """
-    Query Windows Task Scheduler for Rocky-related tasks.
+# Extracts "--daily-cases" etc. from a task's command line so a scheduled
+# task can be tied back to the registry command it runs.
+_FLAG_IN_ACTION = re.compile(r"--([a-z][a-z0-9-]*)")
 
-    Tries a ``\\Rocky\\`` folder first; falls back to a full query filtered
-    by name.
+# schtasks "Last/Next Run Time" on an en-US system, e.g. "7/5/2026 4:00:00 PM".
+_SCHTASKS_DT_FORMATS = ("%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %H:%M:%S")
+
+# The full verbose schtasks dump is slow (a second or two), and /api/status
+# is polled every 10 s — cache it briefly. Mutations invalidate the cache so
+# edits show up on the next poll.
+_TASKS_CACHE: dict = {"at": 0.0, "tasks": []}
+_TASKS_CACHE_TTL = 20  # seconds
+
+
+def _invalidate_task_cache():
+    _TASKS_CACHE["at"] = 0.0
+
+
+def _parse_schtasks_dt(s: str) -> float | None:
+    """Parse a schtasks date string to an epoch, or None."""
+    s = (s or "").strip()
+    for fmt in _SCHTASKS_DT_FORMATS:
+        try:
+            dt = datetime.strptime(s, fmt)
+            if dt.year < 2000:      # schtasks "never ran" sentinel (11/30/1999)
+                return None
+            return dt.timestamp()
+        except ValueError:
+            continue
+    return None
+
+
+def _match_task_flag(name: str, action: str) -> str | None:
+    """Map a scheduled task to a registry command flag (or None)."""
+    if "run-daily-update.ps1" in action.lower():
+        return "maple-updater"
+    m = _FLAG_IN_ACTION.search(action)
+    if m and m.group(1) in _COMMANDS_BY_FLAG:
+        return m.group(1)
+    # Fallback: display name starts with a command's label (dashboard-created
+    # tasks are named after the label).
+    display = re.sub(r"^\\+.*\\+", "", name).lower()
+    for cmd in ROCKY_COMMANDS:
+        if display.startswith(cmd["label"].lower()):
+            return cmd["flag"]
+    return None
+
+
+def _query_schtasks(force: bool = False) -> list[dict]:
     """
-    tasks: list[dict] = []
+    Query Windows Task Scheduler for Rocky- and Maple-related tasks.
+
+    One full verbose query (cached): the Maple updater's own task may live
+    outside the ``\\Rocky\\`` folder, so a folder-scoped query would miss it.
+    Kept: any task with rocky/maple in the name, or whose action runs
+    run-daily-update.ps1.
+    """
+    if not force and time.time() - _TASKS_CACHE["at"] < _TASKS_CACHE_TTL:
+        return _TASKS_CACHE["tasks"]
+
     csv_text = ""
-
     try:
-        # Attempt 1: tasks inside a \\Rocky\\ folder.
         r = subprocess.run(
-            ["schtasks", "/query", "/fo", "CSV", "/v", "/tn", "\\Rocky\\"],
+            ["schtasks", "/query", "/fo", "CSV", "/v"],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=20,
         )
-        if r.returncode == 0 and r.stdout.strip():
+        if r.returncode == 0:
             csv_text = r.stdout
     except Exception:
         pass
 
     if not csv_text:
-        try:
-            # Attempt 2: all tasks, filter by name.
-            r = subprocess.run(
-                ["schtasks", "/query", "/fo", "CSV", "/v"],
-                capture_output=True,
-                text=True,
-                timeout=20,
-            )
-            if r.returncode == 0:
-                csv_text = r.stdout
-        except Exception:
-            pass
+        return _TASKS_CACHE["tasks"]  # keep last good result on failure
 
-    if not csv_text:
-        return tasks
-
+    tasks: list[dict] = []
+    seen: set[str] = set()
     try:
         reader = csv.DictReader(io.StringIO(csv_text))
         for row in reader:
             name = row.get("TaskName", "")
-            if "rocky" not in name.lower():
+            action = row.get("Task To Run", "") or ""
+            lower = name.lower()
+            if lower == "taskname":            # /v repeats the header row
                 continue
+            if ("rocky" not in lower and "maple" not in lower
+                    and "run-daily-update" not in action.lower()):
+                continue
+            if lower in seen:                  # one row per trigger — dedupe
+                continue
+            seen.add(lower)
+            flag = _match_task_flag(name, action)
+            cmd = _COMMANDS_BY_FLAG.get(flag) if flag else None
             tasks.append({
                 "name": name,
                 "status": row.get("Status", "Unknown"),
@@ -322,11 +442,74 @@ def _query_schtasks() -> list[dict]:
                 "last_result": row.get("Last Result", "N/A"),
                 "enabled": row.get("Scheduled Task State", "").strip().lower()
                     == "enabled",
+                "flag": flag,
+                "group": cmd["group"] if cmd else None,
             })
     except Exception as exc:
         log.warning("Failed to parse schtasks output: %s", exc)
 
+    _TASKS_CACHE["tasks"] = tasks
+    _TASKS_CACHE["at"] = time.time()
     return tasks
+
+
+def command_run_info(tasks: list[dict]) -> dict:
+    """
+    Per-command "last ran" / "next scheduled run" for the dashboard.
+
+    Last ran: rocky commands truncate-and-rewrite their lock file at every
+    start (scheduled or manual), so its mtime is the last start time. The
+    Maple updater has no lock; its script writes logs\\scheduled_run_*.log on
+    every run, so the newest of those stands in. schtasks "Last Run Time" is
+    the fallback when neither artifact exists.
+    Next run: earliest enabled scheduled task matched to the command.
+    """
+    info: dict[str, dict] = {}
+    for cmd in ROCKY_COMMANDS:
+        flag = cmd["flag"]
+        last_epoch = None
+
+        if cmd.get("external"):
+            logs_dir = maple_updater_script().parent / "logs"
+            try:
+                mtimes = [p.stat().st_mtime
+                          for p in logs_dir.glob("scheduled_run_*.log")]
+                if mtimes:
+                    last_epoch = max(mtimes)
+            except OSError:
+                pass
+        else:
+            lock = STATE_DIR / f"rocky_{flag}.lock"
+            if lock.exists():
+                try:
+                    last_epoch = lock.stat().st_mtime
+                except OSError:
+                    pass
+
+        matched = [t for t in tasks if t.get("flag") == flag]
+        next_run, next_epoch = None, None
+        for t in matched:
+            if not t.get("enabled"):
+                continue
+            s = t.get("next_run") or ""
+            if s.strip() in ("", "N/A", "Never", "Disabled"):
+                continue
+            e = _parse_schtasks_dt(s)
+            if next_run is None or (e is not None
+                                    and (next_epoch is None or e < next_epoch)):
+                next_run, next_epoch = s.strip(), e
+        if last_epoch is None:
+            for t in matched:
+                e = _parse_schtasks_dt(t.get("last_run") or "")
+                if e is not None and (last_epoch is None or e > last_epoch):
+                    last_epoch = e
+
+        info[flag] = {
+            "last_epoch": last_epoch,
+            "next_run": next_run,
+            "scheduled": bool(matched),
+        }
+    return info
 
 
 def toggle_task(task_name: str, enable: bool) -> bool:
@@ -339,6 +522,7 @@ def toggle_task(task_name: str, enable: bool) -> bool:
             text=True,
             timeout=10,
         )
+        _invalidate_task_cache()
         return r.returncode == 0
     except Exception:
         return False
@@ -366,6 +550,7 @@ def _run_schtasks(args: list[str]) -> tuple[bool, str]:
             stdin=subprocess.DEVNULL,
         )
         out = (r.stdout or "") + (r.stderr or "")
+        _invalidate_task_cache()
         return r.returncode == 0, out.strip()
     except Exception as exc:
         return False, str(exc)
@@ -431,8 +616,9 @@ def update_task_time(task_name: str, time_str: str) -> tuple[bool, str]:
 
 
 def delete_task(task_name: str) -> tuple[bool, str]:
-    """Delete a scheduled task. Only Rocky tasks are deletable."""
-    if "rocky" not in task_name.lower():
+    """Delete a scheduled task. Only Rocky/Maple tasks are deletable."""
+    lower = task_name.lower()
+    if "rocky" not in lower and "maple" not in lower:
         return False, "Refusing to delete a non-Rocky task."
     return _run_schtasks(["/delete", "/tn", task_name, "/f"])
 
@@ -500,10 +686,13 @@ def api_log_history():
 def api_status():
     """Snapshot of Rocky's current state — polled every few seconds by the UI."""
     log_stat = LOG_PATH.stat() if LOG_PATH.exists() else None
+    force = request.args.get("fresh") == "1"
+    tasks = _query_schtasks(force=force)
     return jsonify({
         "dormant": get_dormant_status(),
         "running": get_running_commands(),
-        "tasks": _query_schtasks(),
+        "tasks": tasks,
+        "run_info": command_run_info(tasks),
         "log_size": log_stat.st_size if log_stat else 0,
         "log_modified": log_stat.st_mtime if log_stat else None,
         "timestamp": datetime.now(timezone.utc).isoformat(),

@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "rocky-dashboard",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["dashboard.py", "--port", "5057", "--host", "127.0.0.1"],
+      "port": 5057
+    },
+    {
+      "name": "digest-preview",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "5058", "--bind", "127.0.0.1", "-d", "maple_digests"],
+      "port": 5058
+    }
+  ]
+}

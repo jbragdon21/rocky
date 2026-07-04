@@ -56,8 +56,9 @@ Thumbs.db
 .idea/
 *.swp
 
-# Claude Code per-machine settings
-.claude/settings.local.json
+# Claude Code per-machine state — track only launch.json (dev-server config)
+.claude/*
+!.claude/launch.json
 
 # Screenshots and one-off scratch files (keep the repo clean)
 *.png
