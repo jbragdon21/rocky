@@ -723,6 +723,70 @@ main {
 .toast.err { background: var(--red-dim); color: white; }
 
 /* ================================================================
+   Certified Mail card (LetterStream)
+   ================================================================ */
+.ls-item {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    padding: 2px 0;
+    font-size: 12.5px;
+    min-width: 0;
+}
+.ls-tag {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--purple);
+    flex-shrink: 0;
+}
+.ls-who {
+    font-weight: 600;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.ls-detail {
+    font-size: 11px;
+    color: var(--text-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.ls-api-note {
+    font-size: 10px;
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--yellow);
+}
+.ls-fetch {
+    display: flex;
+    gap: 6px;
+    margin-top: 10px;
+}
+.ls-fetch input {
+    flex: 1;
+    min-width: 0;
+    padding: 5px 8px;
+    border-radius: 5px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 12px;
+    font-family: var(--font-mono);
+    outline: none;
+}
+.ls-fetch input:focus { border-color: var(--blue); }
+.ls-fetch input::placeholder { color: var(--text-dim); font-family: var(--font-sans); }
+.ls-hint {
+    font-size: 10.5px;
+    color: var(--text-dim);
+    margin-top: 5px;
+    line-height: 1.4;
+}
+
+/* ================================================================
    Responsive — collapse sidebar below
    ================================================================ */
 @media (max-width: 900px) {
@@ -817,6 +881,30 @@ main {
             </div>
             <div class="card-body">
                 <div class="dormant-info" id="dormant-info"></div>
+            </div>
+        </div>
+
+        <!-- Certified mail (LetterStream) -->
+        <div class="card">
+            <div class="card-header">
+                Certified Mail
+                <span class="ls-api-note" id="ls-api-note"></span>
+            </div>
+            <div class="card-body">
+                <div id="ls-lists">
+                    <div class="empty-state">Nothing waiting.</div>
+                </div>
+                <div class="ls-fetch">
+                    <input type="text" id="ls-ref"
+                           placeholder="USPS tracking # or doc id…"
+                           onkeydown="if(event.key==='Enter')fetchProof()">
+                    <button class="btn-run" id="btn-ls-fetch" onclick="fetchProof()">Fetch proof</button>
+                </div>
+                <div class="ls-hint">
+                    Pulls one mailing's proof from LetterStream and starts the
+                    affidavit-for-approval flow. Grab the tracking number from
+                    the LetterStream dashboard or the mailing confirmation.
+                </div>
             </div>
         </div>
 
@@ -948,6 +1036,7 @@ main {
 
     // Subsystem tag -> friendly process name (looked up case-insensitively).
     const PROCESS_NAMES = {
+        "maple-updater": "Maple — HubSpot update",
         "maple-digest": "Maple — client update",
         "maple-pma":    "Maple — email collection",
         "maple":        "Maple — client update",    // legacy tag (retired internal digest)
@@ -959,6 +1048,8 @@ main {
         "remy":  "Remy notice requests",
         "llt":   "Landlord-tenant drafts",
         "email-brain": "Writing-style library",
+        "affidavits": "Certified mail",
+        "monitor": "Monitor",
     };
 
     // Lines that are pure noise in Plain mode.
@@ -967,6 +1058,7 @@ main {
         /HTTP Request:/i,                         // raw API calls
         /\bHTTP\/1\.1\b/i,
         /token|tokens used|usage:/i,
+        /^\s*["{}\[\]]/,                          // bare JSON lines (run summaries)
     ];
 
     // [pattern, replacement] applied to the message text. $1.. capture groups.
@@ -975,6 +1067,20 @@ main {
         // --- Job banners ---
         [/^Rocky\s*[—–-]\s*(.+?)\s*(?:\(.*\))?$/i,     "▸ Starting: $1"],
         [/Rocky starting up\b.*$/i,                     "Rocky is starting up."],
+
+        // --- Maple updater run (run-daily-update.ps1 mirrored into rocky.log) ---
+        [/^=== Maple daily update starting.*$/i,        "▸ Starting: Maple daily HubSpot update"],
+        [/^Feed:\s*\d+ total,\s*\d+ processed,\s*(\d+) new\.?$/i, "Found $1 new email(s) to process."],
+        [/^No new activity\s*[—–-]\s*skipping the run.*$/i, "No new emails since the last run — nothing to do today."],
+        [/^Running auto-run.*$/i,                       "Reviewing the new emails and updating HubSpot — this can take several minutes..."],
+        [/^auto-run finished with exit code 0\..*$/i,   "Finished the HubSpot update step."],
+        [/^auto-run finished with exit code (\d+)\..*$/i, "The HubSpot update step stopped with an error (code $1)."],
+        [/^FATAL: auto-run exceeded.*$/i,               "The update ran too long and was stopped — check the Maple run log."],
+        [/^Client digest queued for Rocky to email:.*$/i, "The client update email is written and queued — Rocky will draft it for sending."],
+        [/^NOTE: no outbox digest was produced today.*$/i, "No client update email today (the run found nothing worth reporting)."],
+        [/^Open questions after run:.*$/i,              "Checking for open questions from this run..."],
+        [/^Summary:.*$/i,                               "Wrote the run summary to the Maple log."],
+        [/^=== Maple daily update complete ===$/i,      "✓ Maple daily update complete."],
 
         // --- Maple client update (drafting into James's Drafts) ---
         [/DRY RUN\s*[—–-]\s*would draft\s+\S+\s+to\s+\[(.*?)\].*?subject:\s*'(.*?)'.*$/i,
@@ -994,6 +1100,36 @@ main {
         [/^.*not (?:sent|drafted)\.\s*Reason:\s*no_digest_today\b.*$/i, "Nothing to send — a quiet day."],
         [/^.*not (?:sent|drafted)\.\s*Reason:\s*outbox_missing\b.*$/i,  "Skipped — Maple's outgoing-mail folder couldn't be found."],
         [/^.*?(\w[\w ]*?) not (?:sent|drafted)\.\s*Reason:\s*(.+?)\.?$/i,  "The $1 didn't go out (why: $2)."],
+
+        // --- Certified mail (LetterStream) ---
+        [/^(AM-\d+): affidavit for (.+?) \((.+?)\) sent for approval$/i,
+            "Sent the affidavit for $2 ($3) out for approval [$1]."],
+        [/^(AM-\d+): approved by (\S+) — filed.*$/i,
+            "$2 approved affidavit $1 — filed in The Vault with the proof of mailing."],
+        [/^(AM-\d+): declined by (\S+)$/i,
+            "$2 declined affidavit $1 — set aside, and James was emailed the note."],
+        [/^(CM-\d+): preauth'd '(.+?)' to (.+?) \(\$([\d.]+)\) — awaiting YES from (.+)$/i,
+            "Certified mailing “$2” to $3 will cost $$$4 — waiting for $5 to reply YES [$1]."],
+        [/^(CM-\d+): released to LetterStream production by (\S+) \(with affidavit\)$/i,
+            "$2 released mailing $1 — LetterStream will print and mail it; the affidavit follows automatically."],
+        [/^(CM-\d+): released to LetterStream production by (\S+) \(WITHOUT affidavit\)$/i,
+            "$2 released mailing $1 — LetterStream will print and mail it (no affidavit requested)."],
+        [/^(CM-\d+): mailing cancelled by (\S+)$/i,
+            "$2 cancelled mailing $1 — nothing will be printed or billed."],
+        [/^(CM-\d+): not mailed yet \(status '?(.+?)'?\)$/i,
+            "Mailing $1 hasn't gone out yet (LetterStream says: $2)."],
+        [/^(CM-\d+): mailed \(no affidavit requested\) — done$/i,
+            "Mailing $1 is in the mail — all done (no affidavit was requested)."],
+        [/^(CM-\d+): mailed but proof not available yet.*$/i,
+            "Mailing $1 went out, but the proof isn't ready yet — Rocky will check again next run."],
+        [/^(CM-\d+): tracking failed.*$/i,
+            "Couldn't check on mailing $1 — will try again next run."],
+        [/^LetterStream API not configured — skipping the pull.*$/i,
+            "The LetterStream connection isn't set up — only emailed proofs are being processed."],
+        [/^DRY-RUN run complete — inbox (\d+), in-flight (\d+), letterstream (\d+), reminders sent: (\d+)$/i,
+            "✓ Certified-mail test sweep done (nothing changed) — $1 email(s), $2 mailing(s), $3 proof(s), $4 reminder(s)."],
+        [/^run complete — inbox (\d+), in-flight (\d+), letterstream (\d+), reminders sent: (\d+)$/i,
+            "✓ Certified-mail sweep done — $1 email(s) handled, $2 mailing(s) checked, $3 proof(s) pulled, $4 reminder(s) sent."],
 
         // --- Digest / email jobs ---
         [/Wrote digest archive:?\s*(.+)$/i,            "Saved a copy of the summary ($1)."],
@@ -1375,6 +1511,9 @@ main {
                 procList.innerHTML = '<li class="empty-state">No commands running</li>';
             }
 
+            // --- Certified mail (LetterStream) ---
+            renderLetterstream(data.letterstream);
+
             // --- Scheduled tasks (grouped like the run list, Maple together) ---
             const taskList = document.getElementById("task-list");
             if (data.tasks && data.tasks.length > 0) {
@@ -1454,6 +1593,59 @@ main {
         } catch (e) {
             console.warn("Status fetch failed:", e);
         }
+    };
+
+    // --- Certified mail (LetterStream) card ---
+
+    function renderLetterstream(ls) {
+        const host = document.getElementById("ls-lists");
+        const note = document.getElementById("ls-api-note");
+        if (!host || !ls) return;
+        note.textContent = ls.configured ? "" : "API not set up — email fetch only";
+
+        const section = (label, items) => {
+            if (!items || !items.length) return "";
+            return `<div class="run-group-label">${escapeHtml(label)} (${items.length})</div>`
+                + items.map(i =>
+                    `<div class="ls-item">
+                        <span class="ls-tag">[${escapeHtml(i.tag)}]</span>
+                        <span class="ls-who">${escapeHtml(i.who)}</span>
+                        <span class="ls-detail">${escapeHtml(i.detail || "")}</span>
+                    </div>`).join("");
+        };
+        const html = section("Affidavits awaiting approval", ls.affidavits)
+                   + section("Mailings awaiting release", ls.releases)
+                   + section("In the mail", ls.in_flight);
+        host.innerHTML = html || '<div class="empty-state">Nothing waiting.</div>';
+    }
+
+    window.fetchProof = async function() {
+        const input = document.getElementById("ls-ref");
+        const btn = document.getElementById("btn-ls-fetch");
+        const ref = (input.value || "").replace(/\s+/g, "");
+        if (!ref) { toast("Enter a tracking number or doc id first", false); return; }
+
+        btn.disabled = true;
+        btn.textContent = "starting…";
+        try {
+            const res = await fetch("/api/letterstream/fetch", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ ref }),
+            });
+            const data = await res.json();
+            if (data.success) {
+                toast(`Fetching proof for ${ref} — watch the log`, true);
+                input.value = "";
+                setTimeout(refreshStatus, 1500);
+            } else {
+                toast(data.error || "Failed to start", false);
+            }
+        } catch (e) {
+            toast("Request failed", false);
+        }
+        btn.disabled = false;
+        btn.textContent = "Fetch proof";
     };
 
     // --- Dormant toggle ---

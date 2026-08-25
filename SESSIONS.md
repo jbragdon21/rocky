@@ -24,6 +24,2103 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-08-21 — Maple digest: add three Bozzuto CCs
+
+**What changed**
+
+- **`rocky.py` (`_DEFAULT_MAPLE_CLIENT_DIGEST_CC`) + `config.example.json`:**
+  added rprice@bozzuto.com, ccooley@bozzuto.com, mbarry@bozzuto.com to the
+  Maple client digest CC list (per James). pma@bozzuto.com stays first and
+  remains load-bearing (reply-all routing into rocky@'s watched folder); the
+  three individuals are courtesy copies.
+
+**Watch-outs**
+
+- Takes effect on the Rocky laptop only after the exe is rebuilt/deployed.
+  If that machine's config.json sets `maple_client_digest_cc`, it overrides
+  the new default — update it there too.
+
+---
+
+## Session 2026-08-08 — Case CLAUDE.md audit + new case scaffolds + index skeleton-row bug
+
+**What changed**
+
+- **Audited every case CLAUDE.md in Rocky Cases for daily-run compatibility.**
+  All litigation cases share the standard sections (Activity Logging, Folder
+  Structure, Classification Rules, upload workflow, Rocky Digest); fixed the
+  outliers:
+  - Willingham (0023): file was TRUNCATED mid-word ("## Tec") — completed
+    Technical Notes + added the missing Rocky Digest section.
+  - Whalen (0015): instructions pointed at legacy `Raw Data` as staging, but
+    the daily run reads `Raw Documents` only — made Raw Documents the staging
+    area (Raw Data = legacy archive) and added rules for folders 09–11.
+  - Ogunnupe (0008), Phillips-Moore (0002), DC AG Fees (0014): folder tables/
+    classification rules referenced folders that don't exist on disk —
+    rewrote to the actual folder sets (numbered spine convention for 0008;
+    custom folders for 0002; pre-litigation folders for 0014).
+  - Eden (0003): created missing top-level folders (Email Correspondence,
+    Legal Research, Trial and Hearing Documents) and updated the Pleadings
+    sub-case table to the reorganized two-level layout (active 2025-CAB-005811
+    + "Pleadings (Prior cases)"). NOTE: overview/digest still call
+    2026-LTB-002283 "active" but its folder says "settled" — James to confirm.
+  - Palma (0020): created the 4 missing standard subfolders; Novel Vouchers
+    (0013): created Hot Documents + Related Cases.
+- **New case scaffolds** (standard six-folder template + mirror CLAUDE.md +
+  master_file_index.json + activity.jsonl; seeds moved to Raw Documents with
+  organized copies filed): Dannucci (0026, slip-and-fall, Bridge Mgmt, empty),
+  Fields (0027, Fields v. Humphrey Mgmt late-fee class action, Howard County),
+  Ismael (0028, Ismael v. DC First & M Owner + Bozzuto, 2026-SCB-000434,
+  motion hearing 9/11/2026). Seeds pre-indexed so tonight's run won't re-file.
+- **BUG FOUND + FIXED: case-index skeleton rows shadowed real cases.**
+  Pre-numbered rows (RRID with all other cells blank) on the "Closed" sheet
+  load as Closed and, because callers key by RRID last-row-wins, shadowed the
+  Sheet1 rows — RRID-0024+ (incl. all new cases) were treated CLOSED and
+  skipped by daily-run/digest/daily-cases. Fixed both ends: `load_case_index`
+  now skips skeleton rows (rocky.py), and the empty skeletons were removed
+  from the Closed sheet of Rocky Case Index.xlsx. **Needs `python
+  build_exe.py` to deploy the code fix**; the spreadsheet fix works today.
+- Mt. St. Joseph (0029) appeared mid-session; scaffold was built then fully
+  reverted — James is writing a different CLAUDE.md for it separately.
+
+**Open items**
+
+- Rebuild + deploy rocky.exe (index-loader fix).
+- James: confirm Eden 2026-LTB-002283 settled → refresh Eden's overview/digest
+  sections (stale May/June 2026 deadlines).
+- James: Mt. St. Joseph CLAUDE.md (his own version).
+- Fields (0027): case number/filed date TBD from docket; Ismael (0028):
+  obtain the original 3/13/2026 Statement of Claim (becomes PLD-001; PLD
+  numbering deferred until docket reconciled).
+
+**Watch-outs**
+
+- James edits Rocky Case Index.xlsx live in Excel (file was locked during the
+  session; his edits landed mid-session). Any script touching it should
+  copy-edit-copy-back and re-read immediately before writing.
+- Rocky's daily run only offers TOP-LEVEL subfolders as filing targets —
+  nested targets (Eden's pleadings sub-cases) rely on the CLAUDE.md prose and
+  a project session, not the daily run.
+
+## Session 2026-08-24 — The Monitor: fast loop for letterstream + vault mail
+
+- **NEW: `--monitor [--once]`** (24/7 at boot, like --monitor-remy but
+  SEPARATE from it — James weighed folding it in; keeping the Remy
+  loop untouched preserves its isolation). Every
+  `monitor_interval_minutes` (default 10) it runs `monitor_commands`
+  (default --letterstream, --vault-mail, --vault-inbox) as
+  SUBPROCESSES of itself — each keeps its own instance lock, cursors,
+  and failure policy; a held lock exits 0 quietly so overlap with
+  scheduled runs is safe; 15-min timeout per subprocess; ROCKY STOP
+  (kill_switch.is_dormant) pauses cycles. Frozen mode spawns
+  sys.executable (the exe re-extracts per spawn, seconds — fine at
+  this cadence). --once = single cycle for testing.
+- Config-extensible: adding e.g. "--litigation" to monitor_commands
+  folds another sweep in with no rebuild. Heavier jobs stay scheduled
+  (vault-dropbox hourly, digests, litigation --poll 10:00 unless
+  folded in).
+- Rocky-laptop setup: Task Scheduler at-boot entry `rocky.exe
+  --monitor`; DISABLE the 8:00 AM letterstream entry and the hourly
+  vault-mail/vault-inbox schedules (redundant under the monitor).
+- Tested (mocked subprocesses): spawn order/timeout, dormant skip,
+  failing subprocess doesn't kill the cycle.
+
+## Session 2026-08-23 (3) — Rename: --affidavits → --letterstream
+
+- **James: rename the process "letterstream"** (it also sends mailings
+  without affidavits). CLI is now `--letterstream`; `--affidavits`
+  stays as a working legacy alias (pma-activity pattern: both normalize
+  to one "letterstream" instance lock, existing Task Scheduler entries
+  keep working). Docs: MAILING_AFFIDAVITS.md renamed **LETTERSTREAM.md**
+  (all references updated), BUILD_REFERENCE paragraph retitled, config
+  comments updated. UNCHANGED on purpose: module filenames
+  (mailing_affidavits.py — like pma_tracker.py after its rename),
+  affidavit_* config keys, the "Mailing Affidavits" share folder name,
+  and the [AM]/[CM] tags.
+- **Unified-monitor question:** recommended (not yet built) a thin
+  `--monitor` orchestrator that runs the existing sweeps in sequence
+  (letterstream sweep + litigation --poll + vault inbox sources) every
+  15-30 min for latency — keeping per-process cursors/locks/failure
+  isolation (load-bearing per BUILD_REFERENCE error-handling
+  principle). Remy's 5-min loop and the daily Dropbox/index vault run
+  stay separate. Awaiting James's go-ahead.
+
+## Session 2026-08-23 (2) — Multifamily Digest subsumes the Vault Digest
+
+- **NEW: `multifamily_digest.py` + `--multifamily-digest [--hours N]
+  [--dry-run]`** (5:30 PM daily — takes the Vault Digest's dashboard
+  slot). ONE email from rocky@ with four sections (empty ones omitted):
+  Certified mail (preauth'd/released with cost+approver/mailed with
+  tracking/declined/failures), Affidavits (proposed/filed with vault
+  paths/declined/proof-of-mailing submissions), The Vault (the day's
+  additions — same content as the standalone digest, via the new
+  shared `vault.digest_body_html` fragment), and Still Pending
+  (mailings awaiting release, in flight, affidavits awaiting
+  approval). Quiet window across the first three sections = no email.
+  Recipients: `multifamily_digest_recipients` → falls back to
+  `vault_digest_recipients` → James.
+- **Vault Digest superseded:** `--vault-digest` still works for manual
+  use but left the dashboard (its 17:30 slot now runs
+  `--multifamily-digest`); help/config marked. vault.py refactor:
+  `_build_digest_html` split so `digest_body_html(filed, review)` is
+  reusable.
+- Tested: all sections render from seeded activity/state (labels
+  resolved from CM state queues), quiet window returns None.
+
+## Session 2026-08-23 — Affidavit ask in the release reply + mailing-date policy
+
+- **Multi-user confirmed (no code change):** any firm sender can email
+  a certified-mail request, and the REQUESTER is the [CM] release
+  approver (requester or James only) — already how it was built.
+- **Affidavit ask:** the [CM-####] release email now asks whether to
+  prepare the Certified Mailing Affidavit in the same reply — plain YES
+  / "Yes, with affidavit" queues it; "Yes, no affidavit" (negation
+  within two words of affidavit/certificate) releases without one;
+  ambiguous → WITH (safe: Hailey still gates the affidavit itself).
+  `want_affidavit` stored at release; no-affidavit jobs are tracked to
+  done with no proof pull ([mail_mailed with affidavit_tag null]).
+- **Mailing-date policy (James):** the affidavit swears to the date AND
+  time the mailing was communicated to LetterStream = the [CM] release
+  moment (`communicated_date`/`communicated_time`, laptop-local),
+  NOT USPS acceptance. The release confirmation email states the exact
+  date/time that will appear. Website-submitted mailings via the
+  proof-of-mailing channel keep using the notice's own date (Rocky
+  can't see their submission time; Hailey reviews).
+- Tests: opt-out parsing (10 cases), release records policy fields,
+  no-affidavit completion path, affidavit uses communicated date/time.
+
+## Session 2026-08-17 (2) — Job naming convention + expedite hook
+
+- **Naming convention (James):** uploads + LetterStream job names now
+  read "LastName Matter#" (`Brathwaite 1234.001.pdf`; job gets a
+  6-char unique suffix since job names must be unique account-wide).
+  `extract_mail_request` gains last_name + matter_number (stated in
+  the request email body; never invented); missing matter -> approval
+  email says "NOT GIVEN — reply NO and resend with it". Outbound copy:
+  `CM-#### LastName Matter#.pdf`.
+- **Expedite (James wants it default):** no expedite field in the Feb
+  2023 API doc — support question OPEN ("what's the API argument for
+  the website's expedite option?"). Plumbing ready:
+  `letterstream_extra_fields` (config dict) merges into every
+  submission POST; when support answers, e.g. `{"expedite": "1"}` in
+  config makes it the default with no rebuild.
+- Mocked tests: filename/job actually sent to LetterStream, extra
+  fields passthrough, no-matter fallback (`Donadio.pdf`), approval
+  email renders. Rebuilt/redeployed.
+
+## Session 2026-08-17 — Outbound validated LIVE end to end (through release)
+
+- Prepay funded ($100). Live test with real API calls, all clean:
+  Hailey emailed rocky@ ("certified mail" + PDF) → [CM-0001] "Parking
+  License Revocation - Mondragon" preauth'd at $11.01 (live response
+  parsed fine) → her YES released it (doauth OK, confirmation sent) →
+  in-flight poll correctly holds it ("not mailed yet", status unknown
+  right after release). AM decline path also validated live (James NO'd
+  the old [AM-0001] Donadio ingest test → Declined\ + flag email). The
+  unclear-reply nudge fired once and worked.
+- Remaining to observe (no action needed): USPS acceptance in ~1-2 days
+  → run flips to mailed:1 → proof pulled by doc_id → [AM-0002] to
+  Hailey → YES → Vault. If tracking still shows 'unknown' after
+  production (~2 days), check letterstream_raw.jsonl — by-doc_id trackx
+  shape may need a tweak.
+- Next: daily 8:00 AM Task Scheduler entry for `rocky.exe --affidavits`
+  (James; copy the Vault task). affidavit_root on the Rocky laptop still
+  derives to rocky@'s own OneDrive — set explicitly if the team should
+  see Pending/Approved/Outbound (see 2026-08-16 (2) watch-out).
+
+## Session 2026-08-16 (4) — Outbound: Rocky submits the certified mail (preauth → CM YES → track → affidavit)
+
+**What changed**
+
+- **James's call: build the fully-automatic path** — Rocky submits
+  certified mailings through the LetterStream API (API-submitted jobs
+  DO have queryable proofs/tracking, unlike website ones).
+- `letterstream.py`: `submit_single` (method-2 POST, always
+  `preauth=1` — LetterStream returns cost + authcode, nothing bills),
+  `authorize` (doauth — THE billing step), `_parse_submission`
+  (-100/-200 info vs error messages, docs list), `format_recipient` /
+  `format_sender` (colon-delimited address strings, delimiter chars
+  scrubbed).
+- `mailing_affidavits.py` outbound half: request channel = firm sender
+  emails rocky@ with "certified mail" (`mail_request_keyword`) +
+  exactly ONE PDF (the packet, in mailing order; body overrides the
+  document's addressee); `extract_mail_request` (Claude) → validate →
+  preauth → `[CM-####]` release email to the REQUESTER quoting exact
+  recipient/pages/cost. Only requester or James can YES (releases via
+  doauth); NO cancels (unreleased job = $0). `poll_in_flight` tracks
+  released jobs each run; status containing mailed/delivered → proof
+  via `getinfo=proof` by doc_id → the normal affidavit pipeline
+  (tracking number + mail date wired from trackx). CLI `--mail <pdf>`.
+- **Safety rails:** preauth-always (human YES is the only billing
+  trigger); `mail_max_cost` cap (default $50) refuses runaway quotes;
+  same-doc-same-recipient dedup (email channel; deliberate re-mail via
+  --mail); firm senders only; doauth failure keeps the job pending and
+  notifies James; reminders cover CM queue too.
+- Offline-tested with mocked LetterStream: preauth, duplicate refusal
+  (no API call), cost cap, release, doauth failure held, mailed→
+  affidavit handoff (tracking + mail date), unmailed held. Docs:
+  MAILING_AFFIDAVITS.md "Outbound" section, config keys
+  (mail_request_keyword, mail_max_cost, mail_from,
+  letterstream_mailtype, letterstream_coversheet), rocky.py help.
+
+**Open items — live validation (costs one real stamp)**
+
+- Fund check: LetterStream prepay balance (`--probe` shows it).
+- End-to-end test: email rocky@ ("certified mail" + a 1-2 page PDF)
+  addressed TO THE FIRM's own office → YES the [CM] → wait for USPS
+  acceptance (1-2 days) → confirm proof pull + affidavit + vault.
+- Response-shape risk: submission/doauth JSON shapes were built from
+  the API doc's XML examples — first live preauth may need a parse
+  tweak (raw responses land in letterstream_raw.jsonl as always).
+
+## Session 2026-08-16 (3) — Email is the discovery channel; LetterStream confirms API limits
+
+**What changed**
+
+- **LetterStream support confirmed:** the API cannot retrieve proofs for
+  website-submitted jobs (-999 explained) and has no list call for them
+  — "must be located through My Jobs." So automatic API discovery is
+  off the table while the firm mails via the website.
+- **NEW: proof-of-mailing email channel** (the Vault-submission
+  pattern): any FIRM sender emails rocky@ with "proof of mailing" in
+  the subject (`affidavit_subject_keyword`) + the proof PDF(s) from the
+  LetterStream job page attached. The same inbox sweep that reads
+  approval replies turns each PDF into an affidavit sent for approval
+  (SHA-256 dedup; non-PDF/non-firm ignored) and replies to the
+  submitter with the [AM-####] tags. `process_mailing` now returns the
+  tag; `poll_approvals` takes the Anthropic client and counts
+  `submitted`. This is Hailey's whole workflow: mail → download proof →
+  email rocky@ → reply YES.
+- Docs updated (module docstring, MAILING_AFFIDAVITS.md "Discover"
+  step, config comment + `affidavit_subject_keyword`).
+
+**Decisions made**
+
+- Full automation (no human discovery step) would mean the firm
+  SUBMITTING certified mail through the API (API-submitted jobs do get
+  ids + proofs). Workflow/billing decision for James + Hailey — parked,
+  not built.
+
+## Session 2026-08-16 (2) — Affidavit rendered from James's .docx template
+
+**What changed**
+
+- James reformatted the generated Donadio affidavit (signature blocks in
+  a borderless 4-col table with bottom-border signature lines, single
+  spacing with blank-line separators, 1.25" side margins) and asked that
+  his layout govern. Instead of re-hand-coding it, **his document IS now
+  the template**: tokenized to `_templates/affidavit_template.docx`
+  ({{TENANT}}, {{ADDRESS_LINE1}}/{{ADDRESS_LINE2}} (split city/ST/zip),
+  {{ADDRESS_FULL}}, {{WHEN_MAILED}}, {{DOCUMENTS_MAILED}}, {{AFFIANT}},
+  {{AFFIANT_TITLE}}, {{SIGN_DATE}}; the /s/ run keeps Edwardian Script).
+- `build_affidavit_docx` rewritten to render from the template. Live
+  copy on the share: `<affidavit_root>\_affidavits\template.docx`,
+  auto-seeded from the bundled default — James edits formatting there
+  with NO rebuild. Token split across runs by Word edits handled
+  (paragraph-level fallback). Bundled via build_exe --add-data.
+- Verified: template render of the Donadio fields matches James's
+  document EXACTLY (text + table + script font + margins); Brathwaite
+  render exercises the time clause + address split. Rebuilt/redeployed.
+
+**Watch-out**
+
+- On the Rocky laptop `--status` showed the derived affidavit root
+  `C:\Users\rocky\OneDrive - gejlaw.com\Mailing Affidavits` — that's
+  rocky@'s OWN OneDrive, not James's shared folders. If the team should
+  see Pending/Approved/template, set `affidavit_root` explicitly to a
+  location under the James-share (like vault_root/litigation_root are).
+
+## Session 2026-08-16 — LetterStream live testing: auth + trackx work; proof call can't serve web-submitted jobs
+
+**What changed**
+
+- Live tests from the Rocky laptop with real credentials: **auth passes**
+  and `trackx` returns full USPS tracking data by certified number
+  (shape confirmed: message.item.detail = list of "EVENT YYYY-MM-DD
+  HH:MM:SS CITY,ST, ZIP" strings; times are facility-local).
+- **`mail_date_from_trackx`** (letterstream.py) + fetch wiring: the
+  affidavit's mailing date now comes from the earliest USPS event date
+  (verified 2026-05-29 for Brathwaite) instead of the notice date.
+  Rebuilt/redeployed.
+- **FINDING: `getinfo=proof` returns -999 "could not locate proof
+  (job-piece)" for the firm's mailings** — tested against a 5/29 mailing
+  AND a fresh 8/14 mailing (so not retention). The firm submits via the
+  LetterStream website; the API's stored "proof" apparently exists only
+  for API-submitted jobs, and the dashboard's "Proof of Mailing" PDF is
+  not exposed by this call. Doc-id lookups (-924 invalid) confirmed
+  internal piece ids aren't queryable; the USPS certified tracking
+  number is the only working handle.
+
+**Open items**
+
+- James emailing LetterStream support (API ID y4s3vk19): how to retrieve
+  the Proof of Mailing PDF for website-submitted jobs via API, and
+  whether a job-list call exists. Depending on the answer, the long-term
+  fully-automatic path may be submitting certified mail THROUGH the API
+  (API-submitted jobs get doc ids + proofs + the -100 response data).
+- Interim workflow is unaffected: `--affidavits --ingest <proof.pdf>`
+  (hand-downloaded from the dashboard) runs the identical pipeline —
+  finish the end-to-end approval/vault test with it.
+
+## Session 2026-08-06 (2) — LetterStream client calibrated from the real API docs
+
+**What changed**
+
+- James obtained API credentials and the real API documentation ("Mail
+  Fulfillment by LetterStream — Integration API", Feb 3 2023 PDF).
+  First --probe returned IDOK (id recognized, hash wrong), as expected.
+- **`letterstream.py` rewritten to the documented API:** auth is
+  `h = md5(base64(last6(t) + API_KEY + first6(t)))` with `t` a unique
+  numeric id accepted ONLY ONCE ever (ms timestamp + monotonic bump);
+  base URL www.letterstream.com/apis/index.php; calls implemented:
+  accountstatus (probe), jobstatus/docstatus/batchstatus (known ids),
+  trackx (JSON tracking), and getinfo=proof by cert=<tracking#> or
+  doc_id (handles raw-%PDF and base64 streams per their sample code).
+- **KEY FINDING: the documented API has NO job-enumeration call** — it
+  only answers about ids you already know. So: NEW
+  `--affidavits --fetch <tracking#>` pulls one proof via the API by the
+  USPS certified tracking number (from the LetterStream dashboard) and
+  runs the pipeline — the day-to-day discovery path. The 8 AM pull
+  stays a no-op unless LetterStream support supplies a list call, whose
+  POST params drop into config `letterstream_list_params` with no code
+  change. Docs/help updated (MAILING_AFFIDAVITS.md "API reality",
+  config comment, rocky.py help).
+
+**Open items**
+
+- Ask LetterStream support whether a job-list API call exists (the
+  dashboard has the data). If yes → letterstream_list_params.
+- Re-run `--affidavits --probe` (expect AUTHOK + prepay balance), then
+  test `--affidavits --fetch 9214890142980480892752 --dry-run` (the
+  Brathwaite mailing's tracking number).
+- trackx response shape unknown until first real call (logged to
+  letterstream_raw.jsonl); wire its mail date into the affidavit later —
+  until then the affidavit uses the notice's own date.
+
+## Session 2026-08-06 — Mailing Affidavits: LetterStream → affidavit → Hailey's YES → Vault
+
+**What changed**
+
+- **NEW: `mailing_affidavits.py` + `letterstream.py` + `--affidavits`**
+  (suggested 8:00 AM daily) — automates the certified-mailing affidavit
+  loop: pull newly mailed jobs from the LetterStream API, download each
+  proof-of-mailing PDF, Claude-extract tenant/address/property and the
+  documents-mailed clause, generate the Certified Mailing Affidavit
+  .docx (conformed /s/ + prep date, matching the Brathwaite NTPR
+  exemplar James provided), email affidavit + proof from rocky@ to
+  Hailey tagged `[AM-####]`. YES reply → both files vaulted via
+  vault.py's normal filing (doc_type "other" with labels "Certified
+  Mailing Affidavit" / "Proof of Mailing", confidence 1.0, catalog
+  records approver + tag); NO → `Declined\` + James emailed the note;
+  unclear → "reply YES or NO" nudge; reminders every 3 days. Approvals
+  poll BEFORE the pull so an API outage never blocks filing. PDF
+  conversion of the approved affidavit via Word COM when available,
+  .docx fallback.
+- Wiring: rocky.py dispatch/help/docstring, config.example.json
+  (`_affidavit_comment` block: letterstream keys + affidavit_* keys),
+  build_exe.py bundles the two new modules. New guide
+  `MAILING_AFFIDAVITS.md`; BUILD_REFERENCE.md capability paragraph.
+
+**Decisions made**
+
+- **LetterStream API is account-gated** (docs + credentials unlock only
+  after emailing support@letterstream.com for activation, "Automation"
+  mode). Every vendor-specific detail (auth hash recipe, request
+  params, response key names) is isolated in `letterstream.py` with
+  `--probe` + `letterstream_raw.jsonl` for a one-session calibration
+  once credentials arrive; list/proof params are also config-overridable
+  without a rebuild. The client is read-only against LetterStream.
+- `--affidavits --ingest <proof.pdf>` runs the identical pipeline on a
+  manually downloaded proof — the bridge until API activation and the
+  test harness.
+- The /s/ signature + date go on BEFORE Hailey sees it, so her YES
+  approves the exact bytes that get filed (nothing altered
+  post-approval); the email says her reply is the authorization record.
+- Approval decisions parse first-word-with-boundary only ("Now that I
+  look..." never reads as "no"); only `affidavit_approver` or James can
+  decide; unmatched replies get a nudge, not a guess.
+- Affidavit signature date = preparation date (exemplar shows prep date
+  7/30 vs mail date 5/29, so a later-than-mailing date is the norm).
+
+**Open items**
+
+- James: email support@letterstream.com to request API access; paste
+  `letterstream_api_id`/`letterstream_api_key` into config; run
+  `--affidavits --probe` and calibrate letterstream.py against the
+  in-account docs (30-min session).
+- Config on the Rocky laptop: `affidavit_approver` = Hailey's address.
+- Task Scheduler: daily 8:00 AM `rocky.exe --affidavits`.
+- Not added to the dashboard (James: "will not necessarily need to be
+  on the dashboard") — add a registry entry later if wanted.
+
+**Watch-outs**
+
+- Extraction validated live against the real Brathwaite proof PDF
+  (claude-sonnet-4-5, confidence 0.98 — output matched Hailey's
+  hand-drafted affidavit essentially verbatim, including the certified
+  article number). Generation validated against the exemplar text.
+- Word must be installed on the Rocky laptop for the vaulted affidavit
+  to be a PDF; otherwise the .docx is filed (both fine for the Vault).
+
+## Session 2026-08-05 (2) — Litigation voices: seeds, summary voice, voice-aware cleanup
+
+**What changed**
+
+- **Voice seeds** (`litigation_updater.py`) — new
+  `_litigation\voices\seeds\<updates|summary|closure|disclosure>\`
+  folders on the share (auto-created by `ensure_dirs`). Documents
+  dropped there (.docx/.pdf/.txt/.md/.html, first 5 per voice) are
+  extracted and folded into that voice's `--voice-rebuild` as
+  gold-standard references, weighted above the sheet samples — so
+  hand-picked exemplars survive every rebuild.
+- **NEW summary voice** — `voice_summary.md`, learned from the internal
+  claim-summary column (`litigation_summary_column`, default "Summary
+  of Claim") across open + closed sheets plus its seeds. `draft_entry`
+  now passes it as the voice guide for that column; `--status` lists all
+  four voices with seed counts.
+- **Voice-aware cleanup** — `run_cleanup`'s compliance pass now also
+  reviews the summary + disclosure columns against their voice guides
+  and may propose rewording-only rewrites (prompt forbids changing any
+  fact/date/figure). Suggestions arrive as the usual one-at-a-time
+  `[L####]` Teams asks; the existing dedup still blocks re-proposing
+  declined fixes.
+- **Seeded from James's two exemplar docs** (copied to the share):
+  "BMC Litigation Report - 7-1-21.docx" → `seeds\summary\` (internal
+  report voice) and "BMC Litigation Disclosure - 6-19-26.docx" →
+  `seeds\disclosure\`. Hand-built `voice_summary.md` and appended a
+  seeded-exemplar section to `voice_disclosure.md` on the share so
+  drafting improves immediately, before the next rebuild.
+- Docs/config: `LITIGATION_UPDATER.md` (voices section, command table),
+  `config.example.json` (`litigation_summary_column` + comment).
+
+- **Mail filing after YES** — when an approved ask actually writes
+  (`ask["applied"]` set by the new_entry/update/closure paths), the
+  source mail is moved from rocky@'s inbox to the "Litigation Updater"
+  subfolder (`litigation_processed_folder`, `""` disables;
+  `litigation_mail_move_via` "delegated" default = Mail.ReadWrite.Shared
+  from rocky@'s cached sign-in, consented 2026-07-05 — no new
+  permissions). Best-effort: failures log `mail_filed`-less warnings and
+  never affect the ask. Runs post-execution because a Graph move changes
+  the message id used for attachment re-fetch. Folder id cached in
+  state (`mail_folders`), stale-id 404 retried once.
+- **Cleanup truncation fix** — voice review made chunk responses long;
+  chunk size 8 (was 20) when voice guides are loaded, review max_tokens
+  8000 (was 4000), `_claude_text` now logs when a response hits the cap.
+
+**Decisions made**
+
+- Key voice distinction the two docs teach: the internal summary voice
+  is candid, first-person-plural ("We believe the claim meritless",
+  retention/settlement figures included); the disclosure voice is
+  third-person-only "BMC", set merit phrases, no dollar figures, no
+  strategy.
+- Voice-alignment suggestions flow through the Teams chat (cleanup
+  asks), not a new mechanism — dev laptop has no Smartsheet token, and
+  one-at-a-time YES/NO is the designed approval path.
+
+**Open items**
+
+- On the Rocky laptop, after pulling: `--litigation --voice-rebuild`
+  (rebuilds all four voices with seeds), then `--litigation --cleanup`
+  (queues voice-alignment proposals into the Teams chat; consider
+  `--limit` for the first run).
+
+## Session 2026-08-05 — Remy digest becomes a Rocky command
+
+**What changed**
+
+- **NEW: `remy_digest.py` + `--remy-digest`** — the whole Remy daily-digest
+  job now lives in Rocky. Previously it was split: a Claude Code scheduled
+  task on James's *dev laptop* generated and pushed `digest/YYYY-MM-DD.md`
+  at 5:00 PM, and Rocky (via pasted plain-English instructions, not code)
+  fetched it at 5:30 PM and emailed it. Rocky now does both halves.
+- Flow: list `digest/*.md` on GitHub → newest date is the low-water mark
+  (none = 7-day cold start) → list commits since → drop commits touching
+  only `digest/` → collect the `digest/sessions/*.md` notes those commits
+  carried → Claude writes the digest → PUT it back via the contents API →
+  email from rocky@ through `send_mail_guarded`.
+- **All GitHub REST, no clone and no git binary.** The Rocky laptop has
+  neither a REMY clone nor git credentials, and James's REMY working tree
+  usually holds uncommitted work — nothing here goes near it.
+- `rocky.py` — docstring, dispatch, help text. `dashboard.py` — registry
+  entry (Other group, 17:30, recommended, dry-run capable).
+  `build_exe.py` — bundles `remy_digest.py`. `config.example.json` —
+  `remy_github_token` / `_repo` / `_branch`, `remy_digest_recipients`,
+  `remy_digest_mailbox`.
+- Offline suite (GitHub + Claude stubbed, 7 scenarios): already-exists
+  short-circuit, dry run, full generate/commit/email, no-duplicate-email,
+  quiet day, read-only-token degradation, HTML escaping. 7/7 PASS.
+
+**Decisions made**
+
+- **Rocky still commits the digest back to the repo** rather than only
+  emailing it. The archive under `digest/` is how James and Shane read
+  past digests without email, and a file already present is the natural
+  "did today already run?" check — cheaper and more honest than local
+  state. Local state (`state/remy_digest.json`) only guards the *email*,
+  for the case where the push failed.
+- **A read-only token degrades instead of failing.** If the PAT can't
+  write, Rocky logs a loud warning, skips the commit, and still sends the
+  email — a missing archive entry shouldn't cost James the day's digest.
+  Local copy always lands in `<data_dir>\remy_digests\` first.
+- **Privacy is enforced in the system prompt, not by filtering.** Session
+  notes are supposed to be scrubbed already (the rule is in REMY's
+  CLAUDE.md), but they're written by a different agent, so the digest
+  prompt independently forbids client/tenant names, addresses, ledger
+  amounts, and document contents. Belt and suspenders.
+- Session notes are collected from *every* in-range commit including
+  digest-only ones — a note can be amended after the code commit lands —
+  then re-fetched at branch HEAD so the latest text wins.
+
+**Open items**
+
+- **Not activated.** Needs, on the Rocky laptop's `config.json`:
+  (1) `remy_github_token` — fine-grained PAT, repo `jbragdon21/remy`,
+  **Contents: Read and write** (the old ROCKY.md said read-only; write is
+  what lets Rocky commit), (2) Shane's address in
+  `remy_digest_recipients` — it has never been recorded anywhere, and
+  Rocky warns when fewer than two recipients are configured.
+- Rebuild + deploy `rocky.exe`, add the 5:30 PM weekday Task Scheduler
+  entry (or click Setup on the dashboard).
+- **Then retire the old path:** delete the `remy-daily-digest` Claude Code
+  scheduled task on the dev laptop, and update `digest/README.md` +
+  `digest/ROCKY.md` in the REMY repo, which still describe the two-piece
+  arrangement. Left in place deliberately until Rocky's version runs
+  clean — otherwise there'd be a window with no digest at all.
+
+**Watch-outs**
+
+- Both jobs will double-run if the old scheduled task isn't removed after
+  activation. The damage is limited (whoever writes first wins; the second
+  sees the file and exits `already_exists`, and the email guard is
+  per-day), but the digest could be written by whichever fires first.
+- `--dry-run` implies no email and skips the Claude call entirely, so it
+  costs nothing and needs no Graph token — but it *does* need the GitHub
+  token, since it reads real repo history.
+- The REMY repo's `CLAUDE.md` requires a session note per code-changing
+  commit. That rule is what makes this digest readable — if notes stop
+  appearing, digests silently degrade to commit-subject paraphrase.
+
+---
+
+## Session 2026-08-02 (2) — inbox-matt: internal sweep split into subgroups
+
+**What changed**
+
+- **C0003 (51,655 internal → Office Misc.) WITHDRAWN per Matt's concern**
+  (a deal email with a colleague could hide in it — e.g. Mike Henigan
+  mail about a deal never named in the subject). Removed from
+  cohorts.json; Rocky posted a withdrawal explanation to the Teams chat
+  (sent from dev via Graph; appended to communications.jsonl manually).
+  Matt had NOT replied to the proposal.
+- **Internal sweep now drafts SUBGROUPS instead of one blob** (all →
+  Office Misc. Archive, all still per-batch approval): `internal_ops`
+  (functional mailboxes — billing/AP/admin/switchboard/no-reply...),
+  `internal_broadcast` (8+ visible To/Cc recipients), `internal_person`
+  (one batch per colleague ≥150 msgs, localpart merges gejlaw/gallagher
+  domains, sample subjects included in proposal + report),
+  `internal_misc` (small-volume senders). Tunables:
+  internal_person_min, broadcast_min_recipients. Match rules carry
+  min/max_recipients, honored in _cohort_message_ids.
+- **Chat proposal ORDER is now curated** (_PROPOSE_PRIORITY): ops →
+  broadcasts → newsletters → court → routes → matters → per-person →
+  misc. Most-obviously-non-work first, per James; per-person internal
+  mail (the mislabel risk) proposes last.
+- **NEW: --inbox-<user> --internal-report** — emails the owner +
+  observers a detailed plain-English breakdown of the internal subgroups
+  (counts, top senders, sample subjects) BEFORE anything is proposed;
+  deterministic, saved to share as internal_report.md. James runs it on
+  the laptop after --analyze.
+- Synthetic suite recreated + extended: 14/14 PASS (subgroups, order,
+  recipient-bound claims, no overlap).
+- **Laptop sequence:** disable chat task → new exe → --analyze
+  (regenerates internal subgroups; C0003 gone) → --internal-report →
+  re-enable chat task.
+
+## Session 2026-08-02 — Litigation Updater (Bozzuto claims Smartsheet)
+
+**What changed**
+
+- **Litigation Updater built** — `litigation_updater.py` + `rocky.py
+  --litigation --poll|--chat|--digest|--report <entity>|--cleanup|
+  --learn|--voice-rebuild|--status`. Bozzuto claims tracking
+  (BMC/B&A/BHI/BCC) on Smartsheet: watches rocky@'s inbox for
+  legalnotices@bozzuto.com mail and add/update/move-to-closed forwards,
+  Claude-classifies the documents, and proposes every sheet change
+  one-at-a-time ([L####]) over a persistent "Litigation Updates" Teams
+  group chat — YES executes exactly the stored effects. Closure = row
+  snapshot logged, add to closed sheet with a voice-drafted closure
+  note, delete from open. Voices (updates/closure/disclosure — the
+  disclosure voice learns from past audit reports), brain.md (weekly
+  --learn over the chat log, additions surfaced in the next digest),
+  daily digest drafted into James's Drafts, strict-Jinja entity audit
+  reports (placeholder template auto-created), one-time --cleanup
+  compliance review (conventions.md, one-by-one fixes, missing_info.md),
+  and the Litigation Update Vault (per-claim key documents; chat "do you
+  have the X in the Y case" -> Rocky emails it to James).
+- **Master sheet reviewed** (same session, "BMC Litigation Report -
+  MASTER (9).xlsx", 100 rows x 20 cols) and the real schema baked into
+  config.example.json: claim identity = "Combined Claimant (Project)"
+  (new litigation_claim_column key, used for correlation/vault/chat;
+  falls back to the sheet's primary column), disclosure column is
+  "Third Party Disclosure Summary" (98/100 filled — draft_entry now
+  passes the disclosure voice for it), update columns are
+  "Status/Action Items" + "Overall Status", new
+  litigation_correlate_columns key (Entity / Property Name (State) /
+  Type of Case / Case No.), entity match lists handle the sheet's
+  variants ("B&A d/b/a The Bozzuto Group", "Bozzuto Group"), and the
+  classifier prompt teaches the "Claimant (Property)" naming
+  convention.
+- **Closed sheet reviewed too** ("Closed Claims - MASTER (2).xlsx",
+  321 rows): closure column is "Closure Notes" (new default; many
+  legacy notes are just "Closed"/"Settled" — the voice builder samples
+  only the longer narrative ones), plus a "Date Closed" column Rocky
+  now auto-sets to the move date (litigation_date_closed_column).
+  Three column titles DRIFTED between the sheets (Date of Loss/Filing
+  vs 'Date of Loss / Filing'; Property Name (State) vs Property;
+  Combined Claimant (Project) vs Combined Claimant/Project) — new
+  litigation_column_map config translates titles on the move so those
+  values aren't dropped; unmapped/unmatched titles fall back to the
+  logged snapshot. Closed-sheet Entity values are messier still (BDC,
+  BCC/BAA, multi-entity rows) — reports match on substring lists, and
+  the odd ones are cleanup-pass material. Smoke test extended to 53
+  checks (column map + Date Closed covered).
+- **Third sheet reviewed -> MULTI-SHEET refactor** ("BCC_BDC Litigation
+  Report - MASTER.xlsx", 11 rows — the open sheet for the other
+  Bozzuto entities; BCC + one "BBC" typo row). Replaced the single
+  litigation_open_sheet_id with a litigation_open_sheets LIST (legacy
+  key still works): each spec = {key, sheet_id, entities, claim_column,
+  column_map}. New entries route by classified entity to their home
+  sheet (BMC/B&A -> BMC master; BCC/BDC/BHI -> BCC_BDC master;
+  first sheet = fallback); correlation lists ALL open sheets and
+  locates the matched row's sheet; asks carry sheet_key so closures/
+  updates/cleanup fixes execute against the right sheet; reports filter
+  across every open sheet (mis-filed rows still surface) with a
+  first-seen column-title union; cleanup and voices iterate all sheets
+  (per-sheet conventions memos). BCC/BDC sheet quirks: "Project"
+  (not "Property Name (State)") -> per-sheet column_map {"Project":
+  "Property"} for closures; claim column "Combined Claimant/Project"
+  (only 3/11 filled — cleanup material); "Claimant" and "Project"
+  added to litigation_correlate_columns so sparse claim cells don't
+  starve correlation. BDC added to litigation_entities. Smoke test now
+  64 checks (spec helpers, entity routing, BCC report isolation,
+  BCC-sheet closure with mapped columns) — all pass.
+- Wiring: rocky.py dispatch + docstring/help (all --litigation* flags
+  share one instance lock), dashboard registry group "Litigation"
+  (poll 10:00 / digest 18:30 / learn button; --litigation-digest and
+  --litigation-learn are dashboard aliases), litigation_* keys in
+  config.example.json, module bundled in build_exe.py. New
+  LITIGATION_UPDATER.md; BUILD_REFERENCE.md section added.
+
+- **Go-live afternoon (same session):** exes built + deployed (rocky
+  48MB / dashboard 16MB; dashboard was running from dist\ and had to be
+  stopped for the rebuild). First live run hit a Smartsheet 401 (bad
+  token paste) which ALSO exposed an unhandled-traceback path — run_cli
+  now catches SmartsheetError and exits with a clean config-hint
+  message (rebuilt/redeployed). Fresh token worked; voices built from
+  the live sheets. **--chat --follow [--minutes N] added** (James asked
+  for immediate next-proposal after a YES): a live session polling the
+  chat every 15s, exiting at the minute cap (default 30) or once the
+  ask queue drains and the chat goes ~2 min quiet; idle cycles cost no
+  Claude calls. Smoke test now 66 checks.
+- **Revision loop added** (James: "can I give it directions on what to
+  change, then have it come back with a final confirmation"): a
+  non-yes/no reply to a pending ask routes through a Claude classifier
+  (approve/decline/revise/unrelated); "revise" redrafts the STORED
+  content (closure note / update cells / cleanup value; new-entry asks
+  store the instruction and honor it at draft time), re-proposes, and
+  only a clean YES executes. Guard fixed in the same pass: "yes but
+  shorten it" previously matched the YES regex and would have applied
+  the proposal UNCHANGED — a conditional yes/no (_COND_RE) now always
+  routes to the revision path. Approve/decline extracted to shared
+  helpers. Smoke test 74 checks; rebuilt + redeployed.
+- **Today's-date bug caught live** (cleanup proposed "fixing" a
+  2026-04-16 Date of Loss to 2024 because "2026 is in the future" —
+  the model had no current date): _preamble now states today's date,
+  which flows into EVERY classification/drafting/cleanup call. Also
+  added cleanup re-run dedup on (row_id, column, proposed value) so
+  declined fixes are never re-proposed and pending ones never
+  double-queue — James should re-run --cleanup after the exe syncs to
+  re-review with date awareness (dedup absorbs the overlap). 76 checks.
+- **--strip-formatting [--apply] added** (James: remove all bolding/
+  highlighting and keep it out of future additions): clears row, cell,
+  AND column-default formats on all three sheets — dry-run by default.
+  Values kept; formula cells re-sent as formulas (never flattened to
+  values); cells with inbound cell-links skipped (a value write severs
+  the link). Column defaults are the piece that stops Smartsheet
+  auto-filling formats onto future rows; Rocky's own writes never
+  carried formatting. 82 checks; rebuilt + redeployed.
+
+**Decisions made**
+
+- Everything that writes to the Smartsheet goes through the Teams
+  YES/NO loop — including cleanup fixes. New-entry asks draft the full
+  row AFTER the YES (per James's spec; the ack lists every cell
+  written); closure/update asks carry the drafted text IN the proposal
+  so James approves the exact words.
+- "Move to closed" is snapshot -> add -> delete (Smartsheet's move-row
+  API not used: the closed sheet's columns differ, and the logged
+  snapshot makes every move reconstructible).
+- Columns matched by TITLE via config (litigation_entity_column,
+  litigation_closure_column, litigation_update_columns...) — no
+  hardcoded column ids; Claude-invented column names are skipped with
+  a warning.
+- Correlation below 0.7 confidence never guesses — an "identify" ask
+  asks which claim; the reply re-correlates and queues the real ask.
+- Claude/API failure during intake HOLDS the mail cursor (vault
+  pattern); Smartsheet failure during execution re-queues the ask and
+  says so in chat (YES again retries).
+- Teams chat is a GROUP chat (topic "Litigation Updates" — 1:1 chats
+  can't carry a topic); id persisted forever (Graph creates a new group
+  chat per create call). Only James's replies decide.
+- Reports are pure data-through-Jinja (no Claude call) so the "strictly
+  followed" format is deterministic; James replaces the placeholder
+  template with the real format.
+- No new Graph permissions: app-token mail reads, consented Teams
+  scopes, guarded internal-only outbound, digest as a Drafts draft.
+
+**Open items**
+
+- James: create the Smartsheet API token + paste sheet ids/column
+  titles into config; set up the legalnotices@bozzuto.com auto-forward
+  to rocky@; supply the strict audit-report format (replace
+  _litigation\report_template.j2); point litigation_audit_reports_dir
+  at past reports; pin the "Litigation Updates" share folder.
+- First live runs: --status, --voice-rebuild, --cleanup, then schedule
+  poll 10:00 / digest 18:30 / learn weekly. Consider a second daily
+  poll or hourly polls once trusted.
+- Rebuild + deploy (`python build_exe.py`).
+- v2 candidates: Adaptive Cards for asks, reminders for unanswered
+  asks, richer report variables (per-claim disclosure narratives in the
+  disclosure voice) once the real template arrives.
+
+**Watch-outs**
+
+- Offline smoke test (scratchpad test_litigation.py, 51 checks) covers
+  intent detection, intake->propose->YES->row-add + vault filing,
+  closure move with snapshot, identify fallback, update flow, doc
+  requests, entity reports, cleanup, learn, digest, voices — all pass
+  with stubbed Smartsheet/Graph/Teams/Claude. No live Smartsheet or
+  Teams run yet.
+- Entity matching checks the abbreviation AND the full name in both
+  directions ("BMC" cell matches "Bozzuto Management Company" config
+  and vice versa).
+- The closed sheet needs a closure-note column (config
+  litigation_closure_column, default "Closure Note") — without it the
+  note survives only in the activity log (warned in chat ack).
+
+---
+
+## Session 2026-08-06 — Vault: Dropbox shared-link source (RAD notices)
+
+**What changed**
+
+- **Shared-folder links as a Vault Dropbox source** (vault.py). James's
+  first concrete Dropbox need is a client-shared link (DC RAD-stamped
+  notices — key inputs for Remy DC complaint drafting), not an account
+  Rocky owns. Each `vault_dropbox_accounts` entry now takes
+  `shared_links: [{name, url, description}]` alongside (or instead of)
+  `folders`: `files/list_folder` with the `shared_link` param (manual
+  subfolder walk — recursive listing isn't supported for links) +
+  `sharing/get_shared_link_file` for downloads. `description` feeds the
+  classifier context. `--status` shows per-link processed counts.
+- Classifier hint: "notice" explicitly includes DC RAD-stamped notices.
+- Refactor: folder pass and link pass share `_classify_and_file_batch`.
+- config.example.json example is now a link-first account
+  ("james-dropbox" + "rad-notices"); VAULT.md setup rewritten (app under
+  James's own Dropbox; scopes now include `sharing.read`).
+- rocky.exe rebuilt + deployed (dashboard.exe unchanged).
+
+**Decisions made**
+
+- Shared-link listing has no delta cursors → re-list each run and keep
+  per-file processed marks (`server_modified|size`) in state under
+  `dropbox_links["<account>:<link-name>"]`; marks are written only after
+  a CLEAN classification batch (failure = unmarked = retry next run),
+  and duplicates re-mark immediately. Marks are keyed by link *name* so
+  a rotated URL doesn't re-process.
+- A link-only account (no `folders` key) does NOT scan the account's own
+  root — `folders` defaults to `[]` when `shared_links` present.
+- The auth account for client links is James's own Dropbox: any
+  authorized token can read any shared link, so one app + one
+  `--dropbox-auth` covers all client links. App scopes:
+  files.metadata.read, files.content.read, **sharing.read**.
+
+**Open items**
+
+- James: create the Dropbox app on his own account, add the RAD-notices
+  link entry to config.json on the Rocky laptop, run
+  `--vault --dropbox-auth james-dropbox`, then
+  `--vault --source dropbox --dry-run` before going live.
+- RAD notices are often scans — no-text-layer PDFs land in _Needs Review
+  until the vision-extraction idea (prior entry) is built.
+
+**Watch-outs**
+
+- Offline suite (scratchpad test_vault.py, now 38 checks) covers the
+  link pass: mark save/skip/re-mark, dedup on changed-but-identical
+  files, failure holds marks, link-only account skips own-root scan.
+
+**Live shakeout (same day, on the Rocky laptop):**
+
+- **Stale-exe gotcha:** James runs `C:\Rocky\rocky.exe` manually — that
+  local copy is NOT auto-updated (only OneDrive Program Files is). Two
+  confusing runs happened on the pre-shared-link build, which scanned
+  his own Dropbox root (old `folders or [""]` default). After any
+  deploy, refresh the local copy (or run the OneDrive exe / check what
+  Task Scheduler points at).
+- **The RAD-notices link tree is BIG:** ~1,900+ files, hundreds of
+  subfolders, ~900+ API calls ≈ 13+ min per walk at ~1 call/sec — every
+  run (links have no delta). Added: "listing..." announcement, progress
+  line every 25 calls, 429 Retry-After handling, call budget (2500).
+- **409-skip fix:** one subfolder returning `409 path/not_found` at
+  ~800 calls aborted the whole 12-minute listing (0 files processed).
+  Non-root 409s now warn + skip that subfolder; root/other errors stay
+  fatal.
+- **If the daily walk proves too slow:** "Add to my Dropbox" (mount the
+  client folder into James's account) + a `folders` entry = delta
+  cursors, one cheap call/day. Caveat: an App-folder app can't see the
+  mount unless it's moved under Apps\<app>\; may need a Full-Dropbox
+  app + re-auth.
+- **Full dry-run succeeded** (~28-min walk, 5,258 files listed, 2,955
+  eligible, 200 classified: 157 filed / 38 needs-review — review items
+  are mostly scanned returns of service with no text layer). James then
+  asked for a 6-month age floor: added `max_age_days` (per link /
+  account-wide) + `--max-age-days` CLI override, filtering on Dropbox
+  `server_modified` before download (undated files kept). James chose
+  to pull the ENTIRE database on first pass (no floor; the floor stays
+  available for later).
+- **(2026-08-16) 5xx resilience:** the first live full-pull walk died
+  at page ~1900 on a transient Dropbox `500` (one subfolder) — any
+  non-409 error was fatal to the listing. Now: 3 attempts with backoff
+  per page (network errors + 5xx; 429 waits Retry-After), and a
+  subfolder that still fails is skipped with a warning while the walk
+  continues; only root-listing failure aborts the link. Verified with a
+  mocked-HTTP test (transient root 500 recovers; permanent subfolder
+  500 gets exactly 3 attempts then skip; permanent root 500 aborts).
+- **Incremental state saves:** link marks / folder cursors now persist
+  per completed batch (not just end-of-run), so an interrupted
+  multi-hour ingest resumes without re-downloading processed files
+  (hash dedup always prevented re-FILING; this saves the bandwidth).
+- **(2026-08-21) Hourly-runs question — decided AGAINST archive-move.**
+  James asked whether Rocky should create "Archive" subfolders in the
+  client Dropboxes and move ingested docs there to speed the walk.
+  Declined: the API can't write via shared links anyway (needs edit
+  membership + mount + write scopes), and Rocky should not reorganize a
+  client's live working folder — read-only posture on client data
+  holds. The hourly path is instead: mount the link ("Add to my
+  Dropbox", works read-only, invisible to the client) + a `folders`
+  entry = delta cursors (idle run ≈ 2 API calls). Needs one
+  Full-Dropbox app + re-auth. Supporting change shipped: the FOLDER
+  pass now has the same skip-before-download marks as links
+  (`dropbox_folder_marks` state), so cursor resets / catch-ups / first
+  pass over a mounted folder never re-download processed files
+  (verified: scratchpad test_folder_marks.py, 9 checks). A second
+  shared link was also queued for config ("second-link" example given
+  to James; contents TBD).
+- **(2026-08-22) Vault split into per-source tasks** (James's request,
+  aiming at hourly cadence): new top-level flags `--vault-dropbox`,
+  `--vault-mail` (rocky@ submissions), `--vault-inbox` (James's inbox
+  sweep) — each dispatches vault.run_cli with a forced source, gets its
+  OWN instance lock (state/rocky_vault-<x>.lock), and its OWN state
+  file (`C:\Rocky\vault\state_inbox.json` / `state_vault_mail.json` /
+  `state_dropbox.json`; legacy state.json auto-migrates + renames to
+  .migrated). Concurrency hardening: Vault Index.xlsx now writes
+  temp-then-swap (catches OSError, not just PermissionError); the
+  append-only catalog tolerates the (tiny) concurrent-append risk.
+  Dashboard: new "Vault" group — the three split commands default to
+  HOURLY/1 schedules; the all-sources `--vault` stays for manual runs
+  (do NOT schedule it beside the split tasks — same state files).
+  Verified: test_folder_marks.py now 14 checks incl. migration split /
+  rename / idempotency; live `--vault --status` still works. James's
+  plan: mount the big RAD folder (delta cursors) and keep smaller links
+  walked hourly via --vault-dropbox.
+- **(2026-08-22, same session) Vault Digest** (`--vault-digest
+  [--hours N] [--dry-run]`, dashboard "Vault Digest" @ 17:30): emails
+  the window's Vault additions from rocky@ to
+  `vault_digest_recipients` (default James) — Filed table (Property /
+  Tenant / Document / Date / From, where From names the Dropbox link,
+  rocky@ submitter, or inbox sender) + Needs Review list. Built from
+  catalog.jsonl (dry-run entries excluded); quiet day = no email;
+  guarded outbound (body_type HTML). Verified: scratchpad
+  test_vault_digest.py, 8 checks (labels, escaping, window filter,
+  quiet-day skip, dry-run no-send).
+- **(2026-08-22, same session) Classification truncation fix.** First
+  live `--vault-inbox` run failed on a Burton email carrying a stack of
+  ledgers: one Claude call covered ALL of an email's attachments, and
+  the response overran CLASSIFY_MAX_TOKENS (3000) → JSON truncated
+  mid-array → "no JSON array in response" ×2 → email skipped (cursor
+  correctly held). Fix: classify_documents now transparently chunks
+  inputs at CLASSIFY_BATCH_MAX (10 docs/call), max_tokens raised to
+  8000, and parse failures log the response tail for diagnosis.
+  Verified: scratchpad test_classify_chunk.py (27 docs → calls of
+  10/10/7, alignment preserved; truncated response → failure sentinel).
+- **(2026-08-23) Cursor-rewind + rejection logging.** A Wednesday email
+  (Sarah Wenger) sat before the inbox cursor (2026-08-20 19:39) and was
+  unreachable: --backfill-days only applied on cursorless first runs.
+  Now an EXPLICIT CLI --backfill-days rewinds both mail windows past
+  their cursors (config vault_backfill_days still seeds first runs
+  only); dedup makes re-covered ground harmless. Also fixed silent
+  drops: inbox attachments the classifier rejects as non-vault material
+  now log filename + reasoning (previously no trace, making "where's my
+  email" undiagnosable). Verified: scratchpad test_rewind.py. Interim
+  workaround told to James: forward any specific email to rocky@ with
+  "Vault" in the subject.
+- **(2026-08-23) Remy digest folded into the Multifamily Digest**
+  (James: "squarely in the multifamily world"). New REMY section in
+  multifamily_digest.py reads the local copy --remy-digest keeps under
+  C:\Rocky\remy_digests\ and embeds it via the new
+  remy_digest.digest_fragment_html() (digest_to_html refactored to wrap
+  that fragment — same email output for manual runs). Date gate
+  compares LOCAL dates (a UTC compare wrongly dropped today's digest on
+  evening runs — caught by test) and is strictly newer-than-window-
+  start, so a digest never repeats the next day. A Remy-only day still
+  sends. Choreography: remy-digest 17:15 with --no-email (now in the
+  registry args — the GitHub digest/ commit + local copy still happen;
+  the standalone email retires), multifamily-digest 17:45 (now
+  recommended). James must add Shane to multifamily_digest_recipients
+  and recreate both scheduled tasks. Verified: scratchpad
+  test_mf_remy.py, 7 checks.
+- **(2026-08-24) Property grounding from Remy's table.** Five Kelvin
+  lease/ledger PDFs (forwarded by Sarah Wenger, subject "FW: The Kelvin
+  | July Suit List") landed in _Needs Review because the classifier
+  didn't recognize "The Kelvin" as a property. Fix: the Vault now loads
+  Remy's `data\property_table.csv` (240 canonical property names,
+  resolved beside remy_cli_path; `vault_property_table` overrides;
+  missing = grounding off) once per run. The full name list rides in
+  every classification prompt (with an explicit subject-names-the-
+  property example), and `_ground_property` snaps returned names to
+  canonical spellings (exact / SequenceMatcher ≥0.85 / containment for
+  short-vs-long variants, Remy-asset style) and floors confidence at
+  0.8 when a strong match coincides with a present tenant and original
+  confidence ≥0.5. Also normalizes property-folder naming variants.
+  Verified: scratchpad test_grounding.py, 11 checks (loads the real
+  240-row table). The five stranded Kelvin files: team drags them from
+  _Needs Review into place (re-forwarding would dedup-skip).
+- **(2026-08-23) Multifamily Digest banner.** James supplied a
+  "Gallagher's Daily Multifamily Group Digest" banner image, saved to
+  Icon\multifamily_banner.png (bundled into rocky.exe like the Rocky
+  icon). multifamily_digest embeds it as the email masthead via an
+  inline cid attachment (`_banner()`; build_digest now returns
+  (html, attachments)); the plain-text title is suppressed when the
+  banner renders and returns if the image is missing. Config
+  `multifamily_digest_banner`: omit = bundled default, path = override,
+  "" = disable.
+- **(2026-08-23) Processed mail leaves the inbox.** James's ask, all
+  three processes: shared helpers added to rocky.py
+  (`acquire_mail_move_token` — delegated Mail.ReadWrite.Shared,
+  best-effort; `ensure_inbox_subfolder`;
+  `file_message_to_inbox_subfolder` — 404-tolerant, stale-cache retry,
+  modeled on litigation_updater._file_source_mail, which already did
+  this and stays as-is → Inbox\Litigation Updater after a YES sheet
+  write). New: Vault vault-mail submissions → Inbox\The Vault (rocky@);
+  James-inbox mail the Vault TOOK documents from (incl. duplicates) →
+  Inbox\The Vault (his mailbox; examined-but-nothing-taken stays put);
+  Mailing Affidavits request/proof emails → Inbox\Letterstream once
+  handled. Config: vault_processed_folder / vault_inbox_processed_folder
+  / letterstream_processed_folder ("" disables each). Moves always run
+  LAST (a Graph move changes the message id); folder ids cached in each
+  process's state. Also confirmed for James: NO pipeline filters to
+  unread — all fetches are date-window only. Verified: scratchpad
+  test_mail_move.py, 9 checks.
+- **(2026-08-23) Vault-mail detection widened to the forwarding note.**
+  People forward to rocky@ without changing the subject and just type
+  "please add to vault" — subject-only keyword matching missed 2 of 2
+  real submissions in the first live vault-mail run. Now a submission =
+  keyword in the subject OR anywhere in the note ABOVE the quoted
+  `From:`/`-----Original Message-----` header (max 10 note lines; plain
+  non-forward mail checks only its first 3 lines so a deep quoted
+  mention never triggers filing). Ignored mail is now logged with
+  subject + sender (capped 10/run) so "I forwarded it, where is it?" is
+  answerable from rocky.log. The Vault's README.md now self-refreshes
+  from the template whenever it drifts (it had frozen at first write)
+  and tells the team the body-note option. Verified: scratchpad
+  test_submission.py, 9 checks.
+- **(2026-08-23) Wide-lookback support** (James wants e.g. a two-week
+  pull: `--multifamily-digest --hours 336`): the Remy section now
+  embeds ALL digests in the window chronologically (was newest-only —
+  right daily, wrong for lookbacks), and vault.digest_body_html caps
+  rendering at 300 filed / 150 review rows with "…and N more" overflow
+  notes (headers show true totals) so a window covering a bulk ingest
+  can't produce a several-thousand-row email. test_mf_remy.py now 11
+  checks.
+
+---
+
+## Session 2026-07-29 (2) — The Vault (shared Remy-filing document library)
+
+**What changed**
+
+- **The Vault built** — `vault.py` + `rocky.py --vault`: a shared OneDrive
+  folder ("The Vault", beside Rocky Cases) of documents supporting Remy
+  drafting and other filings (leases, ledgers, affidavits of service,
+  notices), organized `<Property>\<Tenant>\` with a regenerated
+  `Vault Index.xlsx`, `_Needs Review\` for low-confidence items, and
+  catalog/activity JSONL on the share under `_vault\`. Three sources per
+  run: James's inbox (lease/ledger/affidavit attachments only), rocky@'s
+  inbox (any subject containing "vault" = team submission — everything
+  ingested, confirmation reply sent from rocky@), and Dropbox accounts
+  (incremental via persisted cursors; per-account OAuth app +
+  `--vault --dropbox-auth <name>` one-time helper).
+- Wiring: `--vault` dispatch + docstring/help in rocky.py, dashboard
+  registry entry ("The Vault", Other group, suggested 15:00, dry-run
+  button), vault keys in config.example.json, vault.py bundled in
+  build_exe.py. New `VAULT.md` operational guide; BUILD_REFERENCE.md
+  section added.
+
+**Decisions made**
+
+- Filing gate: property + tenant + confidence >= 0.75 (raw values, not
+  sanitized — the "unnamed" sanitizer fallback must never become a
+  folder); everything else -> `_Needs Review` with original filename.
+- Inbox pass takes ONLY lease/ledger/affidavit (opportunistic source);
+  vault-mail takes everything (explicit submission, never dropped —
+  even on Claude API failure it files to _Needs Review); Dropbox takes
+  all vault types (curated source).
+- SHA-256 dedup across all sources (catalog is the dedup index), so
+  cursor re-reads are harmless; classification failures HOLD cursors
+  (inbox pass stops; Dropbox folder cursor not advanced).
+- Mail reads use the app token (Application Access Policy already covers
+  jbragdon@ + rocky@) — zero new Graph permissions. Confirmation replies
+  use rocky@'s guarded outbound (Level 0 holds).
+- Graph fetch: no `$orderby` with the compound filter (InefficientFilter
+  risk) — sort client-side, cursor = last processed receivedDateTime.
+
+**Open items**
+
+- Dropbox accounts: James to identify which client accounts, create the
+  per-account Dropbox apps, run `--dropbox-auth`, and fill
+  `vault_dropbox_accounts` (until then the pass skips cleanly).
+- First live runs: `--vault --dry-run` on the Rocky laptop, then pin
+  "The Vault" folder, share it with the team, schedule 15:00 daily.
+- Scanned (no-text-layer) leases land in _Needs Review — consider wiring
+  `extract_image_text_via_vision` for PDFs with no extractable text.
+- Rebuild + deploy rocky.exe (`python build_exe.py`).
+
+**Watch-outs**
+
+- Offline test (scratchpad `test_vault.py`, 32 checks) covers filing,
+  dedup, cursor-hold on failure, index rebuild, vault-mail end-to-end
+  with stubbed Graph/Claude — all pass. No live-mailbox run yet.
+- `Vault Index.xlsx` open in Excel during a run = index rebuild skipped
+  that run (logged, harmless).
+
+---
+
+## Session 2026-08-02 — Email brain moved to Minotaur; Rocky side RETIRED
+
+**What changed**
+
+- **`email_brain.py` copied to Minotaur** (`Program Files\Minotaur\`) with
+  its one rocky import swapped to Minotaur's `graph_mail`; Minotaur gained
+  `brain stats|query|ingest|migrate` subcommands and validated the moved
+  pipeline live (small no-embed ingest + FTS retrieval).
+- **Migration executed and verified on the Rocky laptop** (same day, via
+  Minotaur's `setup` → `login` → `brain migrate`): 29,699 pairs, all
+  embedded (dim 1024), at `C:\Minotaur\email_brain\brain.db`.
+- **Rocky retirement completed:** removed `--email-brain` dispatch, help
+  text, and `run_email_brain_cli` from rocky.py (pointer comment left at
+  the old site); deleted this repo's email_brain.py; dropped the
+  email_brain add-data + numpy hidden-import from build_exe.py; removed
+  the dashboard's Email Brain registry entry; pruned the email-brain
+  config block from config.example.json; updated BUILD_REFERENCE.md and
+  DATA_SECURITY.md (live corpus now under C:\Minotaur; stale copy remains
+  at C:\Rocky\email_brain until deliberately deleted).
+
+**Open items**
+
+- Rebuild + deploy rocky.exe/dashboard.exe (`python build_exe.py`) — also
+  ships the 2026-07-18 closed-cases change that was already awaiting
+  rebuild.
+- On the Rocky laptop: disable any `--email-brain` Task Scheduler entry if
+  one was ever created; schedule Minotaur's `brain ingest` (~02:00) and
+  `learn` (~21:00) instead. Delete `C:\Rocky\email_brain\` once Minotaur's
+  copy has run for a while.
+- Online-Archive sends → rocky@ `Inbox\James Older Sent` remains open,
+  now tracked in MINOTAUR.md (add the folder to sent_brain_folders in
+  C:\Minotaur\config.json when done).
+
+---
+
+## Session 2026-07-29 — Minotaur created (sibling program, interactive email management)
+
+**What changed**
+
+- **Minotaur v1 built** — a sibling program at
+  `OneDrive - gejlaw.com\Program Files\Minotaur\` (source; data/secrets at
+  `C:\Minotaur`). It houses *interactive* email-management processes driven
+  by a live Claude Code session (usually from James's phone), vs. Rocky's
+  scheduled batch commands. v1 = inbox review & summarize + draft replies:
+  `minotaur.py check|login|inbox|read|thread|draft|folders` over an extracted
+  `graph_mail.py` (Rocky's auth/fetch/attachment plumbing, exceptions instead
+  of sys.exit). No Rocky code was modified. See `MINOTAUR.md` there.
+
+**Decisions made**
+
+- **Email brain moves ENTIRELY to Minotaur** (its stage 2): ingestion,
+  retrieval, and brain.db. A MIGRATION, not a fresh start — phase 1 has been
+  live since 2026-07-13 (~29,700 pairs in `C:\Rocky\email_brain\brain.db`);
+  stage 2 copies brain.db + `state\email_brain_state.json` to `C:\Minotaur`
+  and moves any daily-incremental schedule. Rocky's `--email-brain` and
+  email_brain.py stay untouched until that move actually lands, then retire.
+  (Also fixed BUILD_REFERENCE.md, which still called the brain "not yet run
+  live" — stale since the 2026-07-12 (3) session.)
+- Minotaur reuses Rocky's Azure app registration and both validated auth
+  paths (app-token reads of jbragdon@; delegated rocky@ Mail.ReadWrite.Shared
+  for createReply drafts). Level 0 holds: no send function in Minotaur.
+- The name "Minotaur" is knowingly recycled from Rocky's old naming history;
+  Minotaur's docs carry a disclaimer distinguishing it from pre-"Rocky" docs.
+
+**Open items**
+
+- Live verification of Minotaur's commands against the real mailbox; Rocky
+  laptop setup (Python + requirements, Claude Code, `minotaur.py login`).
+- When Minotaur stage 2 lands: remove `--email-brain` from rocky.py, drop
+  email_brain.py from build_exe.py bundling, and update BUILD_REFERENCE.md.
+
+---
+
+## Session 2026-07-18 — Closed cases: second worksheet + Closed Cases folder
+
+**What changed**
+
+- **`load_case_index()` (rocky.py) reads all worksheets**, not `wb.active`
+  (which pointed at whatever sheet was selected on last save — a landmine
+  once James added the closed-cases worksheet). Rows from any sheet whose
+  name contains "closed" load with `Open/Closed` forced to `"Closed"`, so
+  moving a row between sheets is the whole close/reopen workflow.
+- **Closed cases skipped everywhere**: `--daily-digest` (no section at all,
+  even with folder activity — previously only the no-activity list checked),
+  `--daily-run`, and `--daily-cases` (no email fetch, result reason
+  `closed`). Each skip logs at INFO.
+- **`Closed Cases/` disk subfolder** (new, James-created under Rocky Cases):
+  top-level scans are non-recursive so it was already invisible; added
+  `CLOSED_CASES_DIRNAME` + `_find_in_closed_cases()` so `--daily-cases`
+  logs a quiet "in Closed Cases — skipping" instead of a spurious
+  "folder not found" warning when a folder has moved there.
+
+**Decisions made**
+
+- An explicitly targeted RRID (`--daily-digest RRID-XXXX` etc.) overrides
+  the closed skip — a manual run on a closed case is presumed intentional.
+- Sheet placement is authoritative: a row on the closed sheet is Closed even
+  if its Open/Closed cell is blank or says Open.
+
+**Open items**
+
+- Auto-reply/OOF filtering in the email fetchers discussed and designed
+  (message class `IPM.Note.Rules.OofTemplate.Microsoft` via extended
+  property + `Auto-Submitted` header) but not implemented — awaiting go-ahead.
+
+**Watch-outs**
+
+- Offline test (scratchpad `test_closed_cases.py`) covers the two-sheet
+  index saved with the closed sheet active, and the folder helpers — all pass.
+- Rebuild + deploy `rocky.exe` (`python build_exe.py`) for the change to
+  reach the Rocky laptop.
+
+---
+
+## Session 2026-07-13 — Open chat action proposals (propose→confirm loop)
+
+**What changed**
+
+- **Action proposals (inbox_cleaner.py, open chat mode).** Open-ended
+  requests from James no longer apply directly: the open-chat Claude call
+  now returns them as a `proposal` — description + exact structured
+  effects (standing_rules / route_ops / code_changes) — which the code
+  stores in the user's state file (`pending_action`, ids A####, one at a
+  time), renders deterministically on Teams (`_render_action` — he
+  approves what the code will do, not a paraphrase), and holds for
+  YES/NO. On YES, `_apply_action_effects` applies the STORED effects
+  exactly as proposed (`[A#### approved date]` provenance in rules.md);
+  on NO it's dropped; "adjust it" returns a revised proposal that
+  replaces the old one under a new id. Direct application remains for
+  crisp single-interpretation instructions ("skip newsletters@x.com").
+- **Ambiguity guards.** While an action proposal is pending, chat_cycle
+  proposes no new cohorts (one ask at a time); the prompt instructs that
+  a bare yes/no resolves whichever pending ask (cohort vs action) was
+  proposed most recently, and the Claude-down fallback implements the
+  same rule deterministically — a stored proposal can be approved with
+  no API available.
+- rules_update substantive events extended with action_proposed /
+  action_confirmed / action_declined.
+- New offline test suite (test_action_proposals, scratchpad): propose,
+  confirm, revise, decline, deterministic-fallback confirm, suppression
+  state — all passing; prior suites re-run clean.
+
+**Decisions made**
+
+- Approved effects apply from the STORE, never re-generated at approval
+  time — what James saw is what runs.
+- Proposal rendering is code-side, not Claude's prose, so the approval
+  target is always the literal operational effects.
+
+**Open items**
+
+- Live-test the loop once deployed: give an open-ended instruction,
+  confirm the [PROPOSAL A0001] message shows exact effects, reply YES,
+  verify rules.md/sender_routes.json and that the next analyze honors it.
+
+## Session 2026-07-12 (4) — Inbox Cleaner for James + "sort with friends" pass
+
+**What changed (part 2 — open chat, code backlog, Engineer)**
+
+- **Open chat mode (`chat_mode: "open"`, James only; Matt stays strict).**
+  Every Teams message from the owner goes through one guarded Claude call
+  (`_open_chat_handle`) returning structured effects: pending-proposal
+  decision (free text still can't command an unproposed move); standing
+  rules → rules.md immediately (`[chat YYYY-MM-DD]` tags); additive
+  sender_routes.json ops — exclude_sender / exclude_domain / add_route
+  ("skip emails from x because y" → durable exclusion honored by EVERY
+  pass and at execute time via `load_chat_exclusions`/`_drop_excluded`);
+  and a conversational reply. Routes file backed up to rules_history
+  before each edit. Claude failure → strict YES/NO fallback still
+  resolves the pending proposal; messages stay in communications.jsonl
+  for the nightly rules update (substantive-events list extended).
+- **Code-change backlog.** Chat requests the code can't satisfy are
+  appended to `inbox-james\code_changes.md` (title + dev-ready detail +
+  chat quote) — the dev to-do list James asked for.
+- **Engineer.** Teams message starting with "engineer" (deterministic
+  regex, runs before the Claude call) or `--inbox-james --engineer
+  [--query "..."]`. Pulls newest/best-matching inbox email, full text
+  body + attachments + mailbox-wide thread history (folder locations,
+  last 5 prior bodies); one deep Claude call (8192 tokens) → fixed
+  headings (Summary/Timeline/Analysis/Recommended response). Delivers:
+  report.md + raw attachments to `inbox-james\engineer\<stamp>_<slug>\`,
+  report emailed from rocky@, DRAFT reply in James's Drafts (createReply
+  — first shipped use of the iteration-3 draft capability; never sends),
+  Teams ack with the summary. All failure paths degrade gracefully.
+- Offline tests (mocked Graph/Claude/Teams): route ops, exclusions
+  end-to-end, code-change log, engineer regex, open-chat handler +
+  fallback, full engineer run — all passing; prior tests re-run clean.
+
+**What changed (part 1 — the process + sort-with-friends)**
+
+- **`--inbox-james` — James's own Inbox Cleaner process** (small-inbox
+  maintenance mode, not a deep clean). Config blocks added to
+  config.example.json AND this machine's config.json:
+  `conversation_sort: true`, `cycle_execute: true`,
+  `write_via: "delegated"`, `observers: []` (true 1:1 Teams chat).
+- **"Sort with friends" pass (inbox_cleaner.py)** — the SortByConversation
+  Outlook VBA macro ported to Graph. Per inbox message, mailbox-wide
+  sibling lookup: `$filter=conversationId eq` first (survives [EXTERNAL]
+  gateway rewrites), normalized-subject `$search` fallback (post-filtered
+  to exact normalized equality); Sent/Deleted/Drafts/Junk/Outbox + Inbox
+  root excluded; most-siblings folder wins. Drafts one cohort per target
+  folder → normal Teams YES/NO loop. Reads the CURRENT inbox live (hand-
+  filed mail never proposed); skipped above `conversation_sort_max`
+  (default 200) so it can't run on a Matt-scale mailbox.
+- **`--cycle` subcommand** — snapshot → analyze → chat → execute-approved
+  in one shot; live execution only when the user's `cycle_execute` is set,
+  and only for cohorts already approved over Teams.
+- **Cohort model additions:** kind `conversation_sort` (claim priority -1,
+  outranks matters — filing history beats keyword match);
+  `match.message_ids` (explicit ids, resolved live at analyze); cohort
+  `target_folder_id` (existing folder anywhere in the mailbox — execute
+  uses it directly, skipping `_ensure_folder`'s under-Inbox creation).
+  Analyze prunes stale conversation-sort drafts only when the pass ran
+  (skip/failure can't wipe pending drafts).
+- **Dashboard:** "James Inbox" button (`--inbox-james --cycle`, suggested
+  08:00, Inbox group); registry gained a generic `args` key for commands
+  needing fixed extra argv.
+- Docs: INBOX_CLEANER.md new "James's own process" section;
+  BUILD_REFERENCE.md Inbox Cleaner section + open items updated.
+
+**Decisions made**
+
+- Conversation-sort proposals go through the SAME approval loop as
+  everything else (no auto-move without a Teams YES), but James's cycle
+  executes approved cohorts live immediately — rocky@ already has Full
+  Access on his mailbox, so no IT gate applies.
+- Pass reads the live inbox, not the snapshot: correctness (never propose
+  hand-filed mail) over reusing Stage-1 plumbing.
+- No new well-known-folder exclusions beyond macro parity (Archive is a
+  legitimate filing target).
+
+**Open items**
+
+- **Rocky laptop:** add the `james` block to `C:\Rocky\config.json`
+  (copy from config.example.json), rebuild/deploy (`python build_exe.py`
+  — tree also carries the 7/11 + 7/12 uncommitted work), then first live
+  run: `rocky.exe --inbox-james --cycle`. Verify the `$filter=
+  conversationId eq` mailbox-wide query works against Graph (only piece
+  not verifiable offline — dev config.json has no client_secret, so app-
+  token commands can't run here; the fallback $search path covers a
+  rejection, but confirm in rocky.log). Then schedule daily 08:00 from
+  the dashboard.
+- First Teams cycle will send James the intro message (open-mode wording)
+  and the first proposal — expect it.
+- Live-test Engineer once deployed: send "engineer" in the Teams chat (or
+  `rocky.exe --inbox-james --engineer`) and confirm all four deliverables:
+  report folder, rocky@ email, draft in Drafts, Teams ack.
+- Open-chat live checks: give one piece of free-form feedback ("skip
+  emails from X because Y") and confirm rules.md + sender_routes.json
+  exclusions + next-cycle behavior; ask for something the code can't do
+  and confirm it lands in code_changes.md.
+
+**Watch-outs**
+
+- Offline smoke test (mocked Graph) passed: strategy order, exclusions,
+  best-folder pick, cap gate, explicit-id resolution, dashboard argv,
+  rules wording.
+- A conversation-sort cohort proposed on Teams, then hand-filed before
+  approval, will 404 at move time — logged as `move_failed`, harmless.
+- Cohort ids in `match.message_ids` are Exchange ids, which CHANGE when a
+  message moves folders — fine here because ids are resolved live each
+  analyze and executed shortly after.
+
+## Session 2026-07-12 (3) — Email brain first live runs + streaming ingest patch
+
+**What changed**
+
+- **First live email-brain runs (Rocky laptop, this afternoon)** — continuing
+  the morning session's Voyage work: config email-brain block added to the
+  laptop's config.json (one missing-comma JSON error found/fixed); `--stats`
+  smoke OK (proves exe bundling); `--backfill-days 7 --limit 25 --no-embed`
+  processed 25 of 420 (7 days of sent mail): **14 Graph-paired / 2 quoted /
+  9 style-only** — healthy split, pipeline works end to end.
+- **email_brain.py — streaming ingest rewrite.** The live run exposed that
+  `fetch_all_folder_messages` paged the ENTIRE folder (bodies included) into
+  one in-memory list before the `--limit` check ever ran, and the
+  cursor/seen-ids persisted only once per folder at the very end. James's
+  Sent Items = 30k messages; at the measured ~1.6 s/msg that's a ~13-hour
+  backfill holding ~GBs in RAM that would lose ALL progress (cursor reset →
+  full refetch) on any interruption. Rewrote to `iter_folder_message_pages()`
+  (generator, one Graph page at a time) + a checkpoint every 100 processed
+  messages (commit + cursor + seen-ids; safe because pages arrive
+  oldest-first, so everything before max_sent is stored). Bonus: `--limit N`
+  now stops fetching early — the original "--limit 25 fetches ALL" surprise
+  is gone.
+- **email_brain.py — Graph token auto-refresh (second patch, same day).**
+  The first long live run (8,450 processed in ~65 min) died on Graph 401
+  "token is expired": the app token (~60-75 min lifetime) was acquired once
+  at startup. Streaming checkpoints meant zero data loss (all 8,450 banked).
+  New `TokenKeeper` (proactive refresh after 45 min via a `token_provider`
+  callable = `acquire_app_token(config)` passed from rocky.py); page iterator
+  re-stamps the Authorization header per page; per-message calls pull
+  `keeper.get()`. Short runs behave exactly as before (provider never fires).
+- **email_brain.py — Voyage token-budget batching (third patch, same day).**
+  First embed attempt (20,648 pending pairs) failed immediately: Voyage 400
+  TOO_MANY_TOKENS_IN_BATCH — the API caps a request at **120k tokens** and
+  `embed_texts` batched by COUNT only (EMBED_BATCH=64 texts × up to 24k chars
+  = way over; seen live: 64 texts = 145,874 tokens). Rewrote `embed_texts`
+  to pack requests by estimated tokens (`len//3+1`, conservative) under
+  `EMBED_TOKEN_BUDGET = 90_000`, max 64 texts; if the estimate ever runs low,
+  a TOO_MANY_TOKENS 400 bisects the chunk recursively instead of failing the
+  run. Embedding remains resumable by nature (only NULL-embedding pairs are
+  selected; commits per outer batch).
+- **Rebuilt + deployed THREE times** (`python build_exe.py --rocky` →
+  OneDrive `Program Files\Rocky\`): ~15:15 streaming patch, ~17:00
+  TokenKeeper, ~22:30 Voyage batching. **The laptop's C:\Rocky copy lagged
+  the deploys** — the 22:18 run still 401'd at the hour mark (old exe), so
+  confirm the C:\Rocky copy updates before the final passes.
+- **Backfill progress at session time:** 11,949 pairs stored (~12k of 30k
+  sent), 5,025 with Graph inbounds; oldest-1,000 slice was 88% paired
+  (18% Graph + 70% quoted) — the quoted-history parser is doing exactly what
+  it was designed for on archive-era mail. Observed pace: ~0.4 s/msg on old
+  mail, ~1.6 s/msg on recent attachment-heavy mail.
+- **Log noise, harmless:** pypdf "Ignoring wrong pointing object" /
+  "invalid pdf header" walls = malformed PDF attachments, extraction is
+  best-effort; openpyxl "Slicer List extension" similar.
+
+**Decisions made**
+
+- **Full backfill plan (30k sent messages): overnight
+  `--email-brain --rebuild --no-embed`.** `--rebuild` is REQUIRED for the
+  full pass: the smoke runs left the cursor at ~2026-07-05, which would
+  otherwise permanently hide all older mail from incremental runs. If the
+  overnight run is interrupted, resume with plain `--email-brain --no-embed`
+  — **never repeat --rebuild on a resume** (it wipes db + cursor). Embed
+  everything afterward in one `--email-brain` pass, then schedule the daily
+  incremental.
+
+**BACKFILL COMPLETE (2026-07-13 00:43).** Final run: 9,052 fetched with zero
+401s (TokenKeeper refresh worked) and **all 29,699 pairs embedded** in one
+pass (token-budget batching worked; no TOO_MANY_TOKENS splits needed at the
+64-text/90k-est packing). Final corpus: **41,207 messages, 29,699 pairs,
+14,990 (50%) with true Graph inbounds**, all embedded with voyage-3-large.
+Phase 1 of the email brain is live.
+
+**Retrieval acceptance test PASSED (2026-07-13 ~00:50).**
+`--query "VAWA lease termination"` returned 5/5 on-topic results spanning
+years and senders: a protective-order termination with James's substantive
+VA-statute answer (30-day release; temporary vs final order distinction), the
+HUD-forms-still-required-despite-duplication answer citing the DC litigation
+loss, VAWA extension-request approvals, and a coverage question. Both
+`inbound` and `inbound_quoted` sources contributed. Scores 0.54–0.61.
+Cosmetic only: CLI snippets show minor text artifacts from quoted-history
+extraction ("Jamesmes replied", URL-encoded junk) — stored text feeding
+phase-2 Claude calls is unaffected in substance; not worth chasing now.
+
+**Open items**
+
+- `--stats` for the full source split (inbound / inbound_quoted / reply-only)
+  — informational now that retrieval quality is confirmed.
+- Schedule the daily incremental (dashboard 📅 on email-brain; suggested
+  02:00). ~60 sends/day → seconds of runtime, pennies of embedding.
+- Optional, whenever: rocky@ `Inbox\James Older Sent` archive ingest
+  (create folder, drag Online Archive sends, re-add config entry) — cursors
+  make it additive, and the new streaming/token/batching code handles the
+  multi-hour run.
+- Phase 2 design (retrieval → drafting) is now unblocked.
+
+**Watch-outs**
+
+- ~36% of recent sends are style-only (thread-starters/forwards with no
+  inbound) — expected, not a pairing failure.
+- Sent volume is ~420/week, so the daily incremental is trivially cheap.
+
+## Session 2026-07-12 (2) — Fix Behroozi daily-run loop (NBSP filename mismatch) + seen-but-unfiled parking
+
+**What changed**
+
+- **Seen-but-unfiled parking (rocky.py).** Closes the general class of the
+  Behroozi loop: any raw file analyzed by a daily run but not successfully
+  filed or discarded (no usable file_action, refused DISCARD, copy failures)
+  now increments `unfiled_attempts` in `master_file_index.json`. After
+  `UNFILED_PARK_THRESHOLD` (3) missed runs the file is **parked**: indexed
+  with `"disposition": "parked_unfiled"` so it stops surfacing as "new",
+  a `document_parked_unfiled` activity event is logged, and a standing
+  "## Rocky Unfiled Documents" section is added to the case CLAUDE.md
+  telling the next Cowork session to ask James what to do with each parked
+  file. Refactored the CLAUDE.md pointer logic into shared
+  `_ensure_claude_md_section()` (used by both the suggestions and unfiled
+  pointers). `_read_filed_since` excludes `parked_unfiled` (digest doesn't
+  report parked files as "filed"); parking itself surfaces once in the
+  digest via the unknown-event bias. BUILD_REFERENCE Stage 2 section
+  updated. Verified end-to-end with a stubbed Claude client: 4 simulated
+  runs → misses counted, parked on run 3, pointer added, run 4 sees zero
+  new files.
+- **Queued the Behroozi question for Cowork.** Appended an
+  `internal_suggestions` activity event to RRID-0012 asking what to do with
+  the manually filed `Misc/Email - Behroozi-McKenna Rent Credit Settlement
+  Thread (2026-01-06).pdf` (keep in Misc / move / delete as duplicative of
+  the 6/7 filing), and added the "## Rocky Suggestions" pointer to the case
+  CLAUDE.md (it wasn't there yet) so the next project session asks.
+
+- **Whitespace-tolerant file_action matching (rocky.py).** RRID-0012's daily
+  run had reported the same "new pre-litigation correspondence" (the 1/6/26
+  Behroozi↔McKenna rent-credit thread) every day since 6/10. Root cause: the
+  raw file `Re_ Heming #316 - Rent Credit.pdf` contains a **non-breaking
+  space (U+00A0)** after `Re_` (Outlook subject artifact). Claude echoed the
+  name back with a plain space, the exact-match check in
+  `process_case_folder`'s file-actions loop failed, the action was skipped
+  every run, and the file never entered `master_file_index.json` — so it was
+  "new" forever (~13 wasted Claude calls). New module-level
+  `_normalize_name_for_match()` (collapse Unicode whitespace, casefold) +
+  a normalized-name fallback lookup in the matching loop; exact match still
+  wins, and unmatched names still warn and skip.
+- **Manually filed the stuck PDF** to
+  `Misc/Email - Behroozi-McKenna Rent Credit Settlement Thread (2026-01-06).pdf`
+  with matching `master_file_index.json` entry and `document_filed` activity
+  event, so the loop stops immediately — before the code fix is even
+  deployed. (The similarly named single-space PDF filed 6/7 is a different
+  capture — 181 KB vs 130 KB — both kept.)
+
+**Decisions made**
+
+- Filed rather than deleted the NBSP file: not byte-identical to its
+  single-space sibling.
+- Normalized lookup uses `setdefault` (first name wins) on collision — two
+  *new* raws differing only in whitespace is rare, and raws are copied not
+  moved, so a wrong pick can't lose data.
+
+**Open items**
+
+- ~~Code fix takes effect on the Rocky laptop only after the next
+  build/deploy.~~ Shipped: rebuilt + deployed rocky.exe ~15:19 (the
+  session-(3) 15:04 build had the NBSP fix but missed the parking edits by
+  a minute; this build is the same source plus parking — email-brain
+  streaming code unchanged, so the overnight backfill plan is unaffected).
+
+**Watch-outs**
+
+- A file in `Raw Documents/` that gets analyzed but never successfully
+  filed re-analyzes daily with no cap — there's still no "seen but unfiled"
+  state. If another skip path recurs (e.g. model returns no file_action),
+  the same loop happens for a different reason.
+
+---
+
+## Session 2026-07-12 — Email brain roadmap, Voyage data-policy review, DATA_SECURITY.md
+
+**What changed**
+
+- **`BUILD_REFERENCE.md` — new "Email Brain" entry** under Future skills and
+  capabilities (the brain previously existed only in session-log entries).
+  Three-phase roadmap: *Phase 1* corpus + retrieval (built 6/22, never run
+  live; gated on Voyage key + Voyage opt-out + archived-sends drag into
+  rocky@); *Phase 2* retrieval → live drafting ("respond like James"), not
+  designed; *Phase 3* (NEW, stated by James this session) **timesheet
+  correlation** — cross-reference the email corpus with billing time entries
+  so the brain learns email-task↔time-entry mapping, eventual goal assisted
+  drafting of time entries. No phase-1 schema change needed (dates,
+  participants, conversationId already preserved); future needs: per-message
+  matter/client tag + timesheet ingest (firm billing system / export format
+  still unidentified — ask James before designing phase 3).
+- **`DATA_SECURITY.md` (new)** — comprehensive data-security reference for
+  Rocky, started because James may present on Rocky's data security soon.
+  Covers: data inventory, storage map (local vs OneDrive vs git-excluded),
+  M365 permission model (Level 0, access policy scoping), external-processor
+  table (Graph/Anthropic/Voyage/Healthchecks/Tailscale), code-level controls
+  (permissions.py, outbound.py, kill_switch, dashboard allowlist, DISCARD
+  guardrail), audit trail, known gaps (plaintext keys, BitLocker/Purview/
+  RDP-access confirmations, Voyage SOC 2), and a dated vendor-policy
+  verification log. Living document — update on any new data flow/vendor/
+  permission; re-verify vendor log entries older than ~90 days.
+
+**Decisions made**
+
+- **Voyage AI approved for email-brain embeddings CONDITIONAL on account
+  opt-out.** Verified against Voyage's published FAQ/privacy/ToS (7/12):
+  default terms retain API data and permit training on it — unacceptable for
+  privileged correspondence. Paid accounts can opt out (dashboard → Org
+  settings → ToS toggle; needs payment method + org Admin; one-way), giving
+  **zero-day retention**. **James is opting the account out**; confirming the
+  dashboard shows "Opted Out" is step zero of the first-run sequence (added
+  to BUILD_REFERENCE phase-1 gate). Free tier prohibited — free-tier data is
+  trained on. Rationale recorded in DATA_SECURITY.md §10: opted-out Voyage is
+  the same exposure category as the already-accepted Anthropic API flow
+  (Anthropic Commercial Terms re-verified 7/12: no training on API content,
+  ≤30-day standard retention, ZDR available via sales).
+
+**Open items**
+
+- ~~James: perform the Voyage opt-out~~ **DONE same session (2026-07-12)** —
+  dashboard ToS page shows "Opted Out"; screenshot saved to
+  `docs/voyage_opt_out_2026-07-12.png` (gitignore exception `!docs/*.png`
+  added so compliance artifacts stay tracked); recorded in
+  DATA_SECURITY.md §5/§9/§10 and BUILD_REFERENCE.md (gate cleared).
+- DATA_SECURITY.md §8 gap list needs answers: BitLocker status on the Rocky
+  laptop, Purview coverage confirmation, Tailscale/RDP access list, OneDrive
+  sharing scope of Rocky Cases, whether to pursue an Anthropic ZDR agreement,
+  Voyage SOC 2 inquiry (support@voyageai.com).
+- Phase 3 prerequisite question for James: which billing system, and can past
+  time entries be exported (CSV/Excel/report)?
+
+**Watch-outs**
+
+- Voyage's opt-out toggle is ONE-WAY (can't re-opt-in from the dashboard) —
+  fine for us, but don't be surprised by it.
+- Vendor-policy claims in DATA_SECURITY.md carry verification dates; treat
+  anything older than ~90 days as stale before a presentation.
+
+## Session 2026-07-11 — Signature-image filter fix + DISCARD file action
+
+**What changed**
+
+- **Signature-image ingestion filter broadened (rocky.py + pma_tracker.py).**
+  The 7/10 digest reported two "organizational logo images uploaded" to the
+  Palma case (RRID-0020) — Catholic Charities (image003.png, 41.9 KB) and
+  Esperanza Center (image004.png, 16.9 KB) signature logos from a 7/7 Laura
+  Callahan email — plus a NonProfit Times award badge (image100395.png,
+  20.3 KB) misfiled into Whalen (RRID-0015). The old filter only skipped
+  images that were BOTH isInline AND ≤15 KB. New module-level
+  `is_signature_image()`: image content-type, ≤25 KB
+  (`SIGNATURE_IMAGE_MAX_BYTES`), and (isInline OR auto-name
+  `image\d{2,}.(png|jpe?g|gif|bmp)` — long digit runs like image100395 and
+  image540880 occur in the wild). Deliberately attached photos keep original
+  filenames / aren't inline, so they pass. pma_tracker.py mirrors the logic
+  locally (self-contained module; rocky imports it, so no back-import).
+- **Why 25 KB, not bigger:** RRID-0015 proves substantive PASTED screenshots
+  arrive inline as image001.png at ~45 KB (real AAA arbitrator-name
+  screenshots, filed 6/24 as case documents), while the largest junk logo
+  seen is 41.9 KB. No size threshold separates them, so ingestion only
+  auto-skips clear-cut tiny artifacts; the 25–60 KB gray zone falls through
+  to the daily run's DISCARD action, which judges actual image content via
+  vision.
+- **NEW: DISCARD file action in the daily run.** Root cause of the misfiling:
+  unfiled raws re-appear as "new" every day, so on day 2 the model filed the
+  logos into Pleadings ("Catholic Charities Logo.pdf") just to dispose of
+  them — it had no discard option. DAILY_RUN_SYSTEM_PROMPT now allows
+  `"target_folder": "DISCARD"` for non-substantive email artifacts; executor
+  deletes the raw + its image/PDF companion. **Code-level guardrail** (model
+  can't override): only a small image or a PDF with an image sibling, each
+  ≤200 KB (`DISCARD_IMAGE_MAX_BYTES`), can be discarded — anything else is
+  refused and left in place. Discards are indexed in master_file_index.json
+  as `"disposition": "discarded", "path": null` (never resurface as new) and
+  logged as `document_discarded` activity events.
+- **Digest gating:** `document_discarded` is non-substantive;
+  `daily_run` events subtract `discards_requested` from both
+  file_actions_requested and new_raw_files_seen (artifact-only days no longer
+  surface a case); digest formatter skips `document_discarded`;
+  `_read_filed_since` skips discarded index entries.
+- **RRID-0020 cleanup:** deleted the 6 junk files (Pleadings\Catholic
+  Charities Logo.pdf + Esperanza Center Logo.pdf; Raw Documents image003/004
+  .png + .pdf), rewrote their two master_file_index entries as discarded,
+  appended two `document_discarded` audit events (actor claude-dev-session).
+- **RRID-0015 cleanup:** deleted the NonProfit Times badge pair from Raw
+  Documents, AND found/removed an older mess: three byte-identical copies of
+  the **Gallagher LLP signature logo** (10.3 KB) misfiled on 5/31 into
+  case subfolders with hallucinated vision descriptions ("Email screenshot
+  containing wire transfer mechanics", "settlement amounts", "attorney
+  correspondence"). Index entries corrected to discarded with the real
+  descriptions; audit events appended. The 6/22 image001.png files (45 KB
+  AAA arbitrator-name screenshots) were verified substantive and left filed.
+- **All-case sweep for imageNNN artifacts** found two more cases with junk,
+  cleaned the same way (delete + index disposition + audit events):
+  RRID-0007 Clowney — blank 823 B/1.7 KB signature-spacer images filed as
+  "Unprocessed Document" PDFs in Fact Research and as "Email Signature
+  Image 003.jpg" in Miscellaneous; RRID-0002 Phillips-Moore — Capstone Real
+  Estate signature logo filed as "Corporate Logo.pdf" in Miscellaneous Case
+  Docs, plus another Gallagher-logo copy filed 5/18 as "Unidentified Image
+  001" in Raw Data. Every filed copy hash-verified as junk before deletion.
+  Images verified visually via Claude vision before deleting.
+- **Deployed:** `python build_exe.py` → rocky.exe (45.5 MB) + dashboard.exe
+  copied to OneDrive `Program Files\Rocky\` 7/11 ~7:05 AM; Rocky laptop
+  picks it up on the next scheduled run.
+
+**Watch-outs**
+
+- **Vision hallucination pattern:** when handed a bare logo, the daily-run
+  model invented document descriptions matching the surrounding email's
+  topic (the 5/31 Whalen misfilings). DAILY_RUN_SYSTEM_PROMPT now says to
+  judge an image by what it shows, not the email context — but treat
+  image-only "document_filed" summaries with suspicion when auditing.
+- The 25 KB threshold is a judgment line with real counterexamples on both
+  sides within 4 KB of each other (41.9 KB junk logo vs 45 KB substantive
+  screenshot). A junk logo over 25 KB is expected to reach the DISCARD path
+  rather than the ingestion skip. Ingestion skips log at INFO
+  ("Skipping signature image ...").
+- Legacy daily_run events lack `discards_requested`; gating defaults it to 0
+  (old behavior preserved).
+
+---
+
+## Session 2026-07-09 — Matt's questionnaire reply received and parsed
+
+**What changed**
+
+- **Second --analyze on the laptop (12:46 PM) validated the new passes:**
+  28 cohorts — 22 matter cohorts (all 25 seeded matters except Stag Moose
+  Construction, CVE Term Refi, Syncarpha ME III Construction, whose
+  specific keywords matched no subjects; generic keywords sent that mail
+  to their sibling matters), 4 sender routes, court notices 37→34
+  (sharefile fix confirmed), newsletters 33,073→21,241 (carve-outs
+  working). Internal cohort survived un-refreshed at stale n=54,135 (its
+  match rule didn't change, only exclusions) → added draft-refresh to
+  analyze: same-key cohorts still in draft status get count/wording/seq
+  updated in place (cohorts_refreshed event); proposed/decided stay
+  frozen. Needs one more --analyze after deploy to refresh the internal
+  count.
+- **Chat kickoff failed 7/11 6:31 AM — legacy-UPN bug, FIXED + verified.**
+  Graph 404 "Failed to find users": Azure UPNs are still @gejlaw.com
+  (rocky@'s own UPN verified via /me) while mail + config addresses are
+  @gallagherllp.com; chat member binds need UPNs. Directory reads are
+  403 for rocky@ (no User.ReadBasic.All), so no lookup — instead teams.py
+  _create_chat now parses the failed-UPN list out of the 404 and retries
+  once with the legacy domain swapped on exactly those members
+  (swap_legacy_domain, bidirectional — survives IT flipping UPNs later).
+  Owner-resolution in chat_cycle also matches either domain. LIVE
+  VERIFIED from dev: rocky↔James 1:1 chat created on the retry path;
+  member emails come back @gallagherllp.com. James re-runs --inbox-matt
+  --chat on the laptop after the deploy syncs.
+- **Participant-corroboration guard for generic matter keywords (per
+  James, 7/10).** Optional per-matter "participant_domains" in
+  matters.json: a subject-keyword hit only claims the conversation if
+  some message in it involves (from/to/cc) one of those domains
+  (subdomain-aware). For Twelve/Dimension the hooks are seeded EMPTY (no
+  guard yet) because the counterparty domains aren't knowable from dev —
+  matter cohorts now carry top_senders (workbook + Teams proposal), so
+  James/Matt fill the domains from that evidence and re-analyze before
+  approving those two batches. Guard is stored in the cohort match (new
+  match_key → clean regeneration) and honored at execute time. Tests:
+  14/14 pass incl. "twelve days of CLE" rejection.
+- **Subdomain matching for routes/never_bulk (bug, caught answering
+  James's "is Matt's industry-newsletter rule enforced?").** Route +
+  never_bulk domain matching was exact-equality, so
+  contactus@emails.woodmac.com missed the woodmac.com renewable-updates
+  route and sat in the Deleted Items cohort. New _domain_in() does
+  suffix-safe subdomain matching (emails.woodmac.com ⊂ woodmac.com;
+  woodmac.com.evil.net does NOT match), used in the route pass, bulk
+  exclusions, and _cohort_message_ids. Re-analyze shifts counts.
+- **Delegated write path (per James — "the lighter IT ask").** New per-user
+  config write_via: "app" (default; application Mail.ReadWrite, the
+  original design) or "delegated" (rocky@'s delegated token with
+  Mail.ReadWrite.Shared — verified consented 7/5 — plus an Exchange Full
+  Access delegation on the target mailbox, same mechanism as James's).
+  Matt = delegated. --execute and its mid-run 401 refresh both go through
+  _write_token(). IT ask reduces to ONE Exchange action:
+  Add-MailboxPermission -Identity Mpirnot@... -User rocky@...
+  -AccessRights FullAccess -AutoMapping $false. No Azure change, no admin
+  consent. James must add "write_via": "delegated" to the laptop config's
+  matt block. INBOX_CLEANER.md step 6 rewritten with both options.
+- **NEW: matters.json self-tuning (per James).** --rules-update now has a
+  phase 2: a second guarded Claude call reads the day's chat + matter-
+  cohort statuses and returns STRUCTURED ops (add_matter /
+  update_keywords / set_closed — no delete op exists), applied
+  deterministically by _apply_matter_ops (duplicates/unknowns/no-op
+  changes skipped silently). Old file backed up to
+  rules_history\matters_*.json; matters_updated event logged; digest
+  reports the change ("a new or revised batch proposal will follow");
+  analyze re-runs immediately when anything changed (snapshot present).
+  Safety: edits can never move mail — regenerated cohorts are drafts
+  needing Teams approval. Guardrail tests pass (apply-ops + full suite).
+- **Deal-vocabulary overhaul (per James):** everything user-facing now
+  speaks the user's own language via _matter_noun() — "deal" for Matt
+  (set as "noun": "deal" in his matters.json; matter_noun in config also
+  works), default "case". Flows into cohort descriptions ("closed deal —
+  archive wholesale", "outside any known deal thread", "long-running
+  deal"), Teams proposals (which render cohort text), and the digest
+  prompt (told to say deals/projects, never cases/matters). Chat intro,
+  proposal scaffolding, and rules seed were already vocabulary-neutral.
+  Also fixed: config.example.json had a duplicate inbox_cleaner_dir key
+  (last-wins in JSON → example resolved to "").
+- **NEW: matter + sender-route passes** (built after Matt's first --analyze
+  produced only 3 generic cohorts). His 198,736 messages = 106,877
+  conversations with ZERO thread families ≥150 — the "big case cluster"
+  heuristic is litigation-shaped and never fires for a deal lawyer. Two
+  per-user JSON files in the share folder now drive user-specific passes
+  (templates in _templates\): matters.json (client/matter/keywords/closed —
+  subject keyword match, whole-conversation claims, Client\Matter folders,
+  closed deals = no age floor) and sender_routes.json (standing routes like
+  SEIA → "SEIA Folder" + never_bulk_domains so Box/ShareFile/DocuSign
+  notices are never swept to Deleted Items). Both seeded for Matt from his
+  questionnaire (25 matters, 4 routes). Safety layers added: matter senders
+  excluded from the newsletters pass (his deal counterparty was drafted as
+  a "newsletter" in testing — unread external bulk-ish ledger); execute now
+  claims messages in kind-priority order (matter → big_case → route →
+  court → newsletters → internal), draft order breaking ties within a kind
+  (seq field), with pending AND declined cohorts still shielding their
+  messages from lower passes. --analyze prunes undecided drafts the current
+  rules no longer produce (self-cleaning regeneration). Bug fixed:
+  "efile" marker substring-matched sharefile.com → ShareFile drafted as a
+  court sender. Synthetic 12-check test passed (scratchpad). Matt's
+  cohorts.json drafts regenerate on next --analyze on the laptop.
+- **Snapshot/execute token-refresh fix.** Matt's first laptop snapshot
+  died at 139,100 messages with http_401 after ~65 min — the app token
+  (client credentials) expires at ~1h and snapshot() never refreshed it.
+  Both snapshot() and execute() now re-acquire the app token on a 401
+  and retry (guarded: a 401 within 120s of a fresh token = real
+  permission problem, still aborts/fails). Events:
+  snapshot_token_refreshed / execute_token_refreshed. Cursor checkpoint
+  worked as designed — re-run resumes from 2024-09-25.
+- **NEW: daily digest command** (`--inbox-<user> --digest [--hours N]`,
+  built this session at James's request). Plain-English summary of the
+  window's inbox-cleaner activity, emailed from rocky@ to the mailbox
+  owner + observers (James), styled like the daily case digest (same
+  card HTML, rocky icon cid). Deterministic fact aggregation from
+  activity/comms/moves logs → one Claude call to phrase it ("batch",
+  never "cohort") → deterministic fallback markdown if the API call
+  fails (verified: dev's broken key exercised the fallback on real
+  data). Quiet window = no email AND no API call. Digest's own events
+  (digest_sent etc.) are excluded from the activity test so a sent
+  digest never makes the next day look active. Schedule once daily on
+  the laptop after --rules-update. rocky.exe rebuilt + deployed.
+
+- **Matt answered the questionnaire** (reply landed 2026-07-09 03:12 UTC).
+  Ran `--inbox-matt --questionnaire` from dev: all **10/10 answers parsed**,
+  saved to `Rocky Inboxes\inbox-matt\questionnaire_answers.md`, confirmation
+  ack emailed to Matt. Dev state now has `q_answered_at` — future
+  questionnaire runs are a no-op.
+- **Parser bug found + fixed**: the questionnaire HTML placed the outro
+  paragraph ("From here: I'll analyze...") between answer box 10 and the
+  "(End of questionnaire)" sentinel, so the quoted-back outro bled into
+  Matt's answer 10. Fixed `_questionnaire_html` (sentinel now emitted
+  before the outro) and hand-cleaned answer 10 in the saved answers file.
+  Fix only matters for the *next* user's questionnaire — needs a rebuild
+  /deploy before then, no urgency.
+
+**Open items / watch-outs**
+
+- **Rules fold DONE on the laptop 8:39 AM** (dev config.json's
+  `anthropic_api_key` is invalid — 401 — so it couldn't run from dev; fix
+  the dev key eventually). rules.md now carries all 10 questionnaire
+  answers as standing preferences; verified faithful. Laptop state file
+  updated with q_answered_at (staged via OneDrive, James copied it), so
+  `--questionnaire` runs are no-ops everywhere.
+- Console logging crashed (cosmetic UnicodeEncodeError, cp1252) printing
+  Matt's reply — zero-width chars in his signature. Processing unaffected;
+  flagged for a separate fix.
+- **Laptop share path gotcha (resolved same morning):** on the Rocky
+  laptop, James's shared OneDrive folder mounts as
+  `...\OneDrive - gejlaw.com\James D. Bragdon's files - Program Files\`,
+  NOT plain `Program Files\` (that path is rocky@'s own unshared
+  OneDrive). First laptop config used the plain path → rules-update saw
+  an empty folder, skipped, and created an orphan tree (deleted).
+  Correct `inbox_cleaner_dir` recorded in INBOX_CLEANER.md. Any future
+  laptop config path pointing at the share must use the
+  "James D. Bragdon's files -" prefix.
+
+## Session 2026-07-05 (5) — Deploy for laptop + James joins the approval chat as observer
+
+**What changed**
+
+- **Approval chat is now a GROUP chat** (Rocky + mailbox owner + observers)
+  so James can watch and learn as it runs. New `observers` key per
+  inbox_users entry (default: [user_email] = James; [] = true 1:1).
+  teams.py grew ensure_group_chat (NOT idempotent — Graph creates a new
+  group chat per POST; chat_id persisted in state guards this) and
+  list_chat_members. chat_cycle resolves the OWNER's Teams user id from
+  the member list; **only owner replies decide cohorts** — observer
+  messages are logged to communications.jsonl but never approve anything;
+  unresolved owner = no decisions (fail-safe). Intro message on chat
+  creation explains the rules to the user.
+- **Built + deployed rocky.exe and dashboard.exe** to OneDrive Program
+  Files (first deploy since the 7/04 Maple changes — dashboard rebuild
+  watch-out now cleared). build_exe.py bundles inbox_cleaner.py +
+  teams.py. rocky.exe REBUILT after the group-chat change (first build
+  raced the edit).
+- Matt had NOT yet answered the questionnaire — his "Re: Experiment"
+  email to James was consent + "do I just respond to Rocky's email?"
+  (answer: yes). Questionnaire state (q_sent_at 2026-07-05T17:49:43Z)
+  must be copied to the laptop's state dir before running --questionnaire
+  there, or it will re-send (see INBOX_CLEANER.md / session (4) notes).
+
+- **Share folder relocated** (per James): Rocky Inboxes now lives at
+  OneDrive `Program Files\Rocky\Rocky Inboxes` (config `inbox_cleaner_dir`,
+  set per machine — dev jbragdon profile / laptop rocky profile). Existing
+  inbox-matt data moved from the old Rocky-Cases-sibling location. Rides
+  the already-pinned Program Files tree, keeps Matt's data out of the
+  browsable Rocky Cases tree. Blank config = old sibling fallback.
+
+**Open items**
+
+- Laptop setup checklist (given to James): config inbox_users block +
+  inbox_cleaner_dir (rocky-profile path), state file copy, Maple Digest
+  scheduled-task time check (before 4:30 PM 7/06!), then --inbox-matt
+  --snapshot on the laptop.
+- First real questionnaire reply still pending; verify parsing when it
+  lands.
+
+## Session 2026-07-05 (4) — inbox-matt goes live: permissions verified, questionnaire SENT
+
+**What changed**
+
+- **Matt = Matt Pirnot, Mpirnot@gallagherllp.com** (config.json updated).
+  He's a transactional deal lawyer — questionnaire template rewritten for
+  deals/projects (big deals, closed deals, automated notices like
+  DocuSign/data-room/wire confirmations instead of court e-filing,
+  active-negotiation never-touch, deal-rhythm age line). No code change;
+  analyzer's court-notice pass will simply stay quiet on his mailbox and
+  DocuSign-type senders surface via the sender ledger.
+- **Permission check ran on the Rocky laptop** (PowerShell probe against
+  Graph with Rocky's own creds). Results:
+  - App roles: Mail.Read only (application Mail.ReadWrite still needed at
+    execute time — the ONLY outstanding permission in the project).
+  - **Matt's mailbox is ALREADY covered by the Application Access Policy**
+    — snapshot can run with zero IT action.
+  - **Teams chat scopes ALREADY consented** (Chat.Create, Chat.ReadWrite,
+    ChatMessage.Send — plus, notably, delegated Mail.ReadWrite/.Shared,
+    Mail.Send, Calendars.ReadWrite all in rocky@'s grant). NO Caudill
+    email needed.
+- **Questionnaire SENT to Matt** 2026-07-05 1:49 PM from rocky@ via
+  --inbox-matt --questionnaire on the dev laptop (device-code sign-in as
+  rocky@ — token now cached on dev, so dev can run questionnaire checks
+  and Teams cycles without re-auth).
+
+**Watch-outs / open items**
+
+- rocky@'s password reset ~6/16 revoked the laptop's OLD cached token,
+  but the cache held a second, newer token that is ALIVE — scheduled jobs
+  were never broken (rocky.log clean). Dead entry is harmless.
+- Dev config.json has NO client_secret → --snapshot (app token) can't run
+  from dev yet. Either copy client_secret from the laptop's config or run
+  snapshot on the laptop — which requires a rocky.exe rebuild/deploy
+  (build_exe.py), and deploy ships the 7/04 Maple changes: check the
+  stale "\Rocky\Maple Digest" scheduled-task watch-out first.
+- Next: re-run --inbox-matt --questionnaire periodically (manually or
+  scheduled) to catch Matt's reply; verify the first real Outlook reply
+  parses (raw reply lands in communications.jsonl either way).
+
+## Session 2026-07-05 (3) — Inbox Cleaner: questionnaire moves to email with answer boxes
+
+**What changed**
+
+- **Questionnaire is now an EMAIL, not a Teams message** (per James — too
+  many questions for chat back-and-forth). New `--inbox-<user>
+  --questionnaire [--resend]` subcommand in inbox_cleaner.py:
+  - Sends from rocky@ via `outbound.send_mail_guarded` (HTML, internal
+    recipient — allowlist-clean, NO new permissions; can run before any
+    IT steps).
+  - HTML renders each question with a bordered answer box carrying an
+    `Answer [iq-N]:` marker; user types in the box and hits Reply.
+  - Idempotent cycle: not sent → send; sent → poll rocky@'s inbox for a
+    reply (from = user, subject contains "Rocky Inbox Cleaner
+    questionnaire"); parse answers with the Maple-digest marker-scan
+    pattern (adapted from pma_tracker._parse_digest_answers: stop at next
+    marker / "(End of questionnaire)" / next question heading / quoted
+    From: block); save to share `questionnaire_answers.md`; log full
+    reply to communications.jsonl; email a short confirmation; go quiet.
+  - Unparseable reply → logged as questionnaire_reply_unparsed for James;
+    empty boxes parse to nothing (quoted-back original is harmless).
+- **Teams questionnaire path removed** from chat_cycle (`--send-
+  questionnaire` flag gone) — Teams now carries only cohort proposals.
+- Template `_templates/inbox_questionnaire.md` is now PARSED, not sent
+  verbatim: paragraphs starting "N." are questions; intro/outro around
+  them. Per-user copy in the share folder overrides the repo template.
+- `--status` shows emailed/awaiting/answered; rules_update event filter
+  updated to the new questionnaire event names.
+
+**Decisions made**
+
+- Reply detection: rocky@'s own inbox, delegated token (Mail.Read +
+  Mail.Send already in GRAPH_SCOPES) — the questionnaire leg has zero IT
+  dependencies.
+- Answers reach rules.md through the existing nightly --rules-update
+  (comms + questionnaire events already in its input) — no new Claude
+  call.
+
+**Watch-outs**
+
+- Smoke test extended: template split (10 questions), HTML build (all 10
+  markers + sentinel), reply parsing (answered boxes 1/5/6 extracted,
+  empty boxes skipped, ">"-quoted answer text cleaned, quoted headings and
+  From: block don't bleed into answers). py_compile clean. NOT tested
+  live: actual Outlook reply rendering — verify the first real reply
+  parses before relying on it (raw reply is always in
+  communications.jsonl as a fallback).
+
+## Session 2026-07-05 (2) — Inbox Cleaner: first user is Matt, not Paul
+
+**What changed**
+
+- Per James: the process launches with **Matt** (`--inbox-matt`), not Paul.
+  No code-logic change — the build was per-user generic. Renamed the
+  config block (config.json + config.example.json: inbox_users.matt,
+  placeholder mailbox still to fill), rewrote INBOX_CLEANER.md's
+  operational steps around Matt, and swapped the paul→matt examples in
+  rocky.py / inbox_cleaner.py docstrings + help text.
+
+**Open items**
+
+- Need Matt's real mailbox address in config (and his full name for
+  display_name, currently just "Matt").
+- Paul is unstarted, not cancelled: adding him later = one inbox_users
+  block + the same IT steps (BUILD_REFERENCE notes the switch).
+
+## Session 2026-07-05 — Inbox Cleaner: build (inbox_cleaner.py, teams.py, --inbox-<user>)
+
+**What changed**
+
+- **`inbox_cleaner.py` (new, ~900 lines):** the whole per-user process.
+  `--snapshot` (folder tree + inbox metadata → local JSONL, cursor-
+  checkpointed per page, resumable, app-token Mail.Read); `--analyze`
+  (sender/conversation ledgers, draft cohorts — big_case / court_notices /
+  newsletters / internal_office — review workbook via openpyxl; re-runs
+  never clobber decided cohorts, match_key dedupe); `--chat` (one Teams
+  poll cycle: log all replies, resolve pending proposal YES/NO/folder-name,
+  send questionnaire once with --send-questionnaire, propose next cohort —
+  ONE at a time); `--rules-update` (the daily Claude call: folds decisions +
+  chat into rules.md with rules_history/ backups; quiet day = no API call);
+  `--execute` (dry-run default; --live moves via POST /move, checkpointed
+  to moves.jsonl with source folder for undo; --limit N for first batches);
+  `--status`.
+- **`teams.py` (new):** delegated Teams transport (rocky@ device-code,
+  TEAMS_SCOPES separate from GRAPH_SCOPES so mail runs never prompt for
+  chat consent; TeamsNotEnabled degrades gracefully). ensure 1:1 chat,
+  send, fetch-since-cursor, throttle-aware. Transport only — shared with
+  the future Remy-via-Teams feature.
+- **rocky.py:** dispatch any `--inbox-<user>` flag (lock normalizes to the
+  process name regardless of subflag order); docstring + help text.
+- **config:** `inbox_users` block (paul, placeholder mailbox — CLI refuses
+  PASTE values) + `inbox_cleaner_dir` in config.example.json and dev
+  config.json.
+- **`INBOX_CLEANER.md` (new):** operational guide — ordered start steps
+  (IT: add Paul's mailbox to the Application Access Policy → Teams
+  delegated scopes on the app registration → James: config + snapshot +
+  analyze → Paul: questionnaire → 15-min --chat schedule + nightly
+  --rules-update → Mail.ReadWrite application permission LAST), safety
+  properties, storage map, maintenance mode.
+- **`_templates/inbox_questionnaire.md` (new):** 10-question onboarding,
+  written to Paul, sent verbatim over Teams.
+
+**Decisions made**
+
+- Mailbox access = app token + Application Access Policy (email-brain
+  pattern), NOT Exchange delegation — lighter IT lift per colleague.
+- Storage split: machine data local (C:\Rocky\inbox_cleaner\<user>\
+  snapshot/moves), human-facing on OneDrive (Rocky Inboxes\inbox-<user>\
+  rules.md, cohorts.json, activity.jsonl, communications.jsonl, workbook).
+- Unclear Teams reply → cohort parked as needs_review (nothing moves,
+  James adjudicates); bare "yes" on a label-needed cohort is unclear.
+- Newsletters cohort dispositions to well-known folder "deleteditems";
+  case/internal folders are created under the user's Inbox at execute time.
+
+**Open items**
+
+- Fill Paul's real mailbox in config; IT steps 1 (access policy) and
+  2 (Chat.Create/Chat.ReadWrite/ChatMessage.Send + admin consent) before
+  first snapshot/chat. Mail.ReadWrite application permission only after
+  cohorts approved + dry-run reviewed.
+- Not built (see BUILD_REFERENCE open items): Claude residual pass,
+  proposal reminders/timeouts, conversation-sort pass, dashboard entries.
+- Deploy needs a rocky.exe rebuild (build_exe.py) when this goes live.
+
+**Watch-outs**
+
+- Verified: py_compile on rocky/inbox_cleaner/teams; offline smoke test
+  (synthetic 2,750-msg snapshot → 4 cohorts with exact expected counts,
+  age floors, purely-internal exclusion of external-cc mail, dedupe,
+  re-analyze idempotence, reply interpretation, rules provenance,
+  execute id-matching); CLI guards for missing/placeholder users. NOT
+  verified (needs IT): live Graph snapshot, Teams round-trip, live moves.
+- fetch_folder_tree recurses in Python — very deep folder trees would be
+  slow but fine at law-firm scale.
+
+## Session 2026-07-04 (4) — Inbox Cleaner: process design (supersedes Paul Inbox Review)
+
+**What changed**
+
+- **BUILD_REFERENCE.md only** (no code): replaced the "Paul Inbox Review"
+  two-pass design with the new **Inbox Cleaner** process spec, generalized
+  for any colleague with a 200k+ message inbox (Paul is first user).
+- **Lifecycle framing:** the deep clean is phase one of a permanent
+  per-user process ("paul-inbox", "matt-inbox"). Onboarding questionnaire
+  seeds a per-user rules file; every approved cohort persists as a rule
+  (declined ones as negative rules); recurring maintenance runs apply
+  learned rules to new mail, proposing only novel cohorts. Rules file is
+  plain-English + structured match fields, per the instructions.md
+  incremental-teaching pattern.
+- Design shape: funnel — metadata snapshot (JSONL, `Mail.Read` only,
+  checkpointed paged Graph fetch, no bodies) → sender + conversation
+  ledgers → cohort-approval workbook (rules covering thousands of
+  messages, not per-message rows) → checkpointed execution under
+  `Mail.ReadWrite`, every move logged for undo-by-replay.
+- Categories: big-case clusters (human labels each cluster once),
+  internal office traffic → Office Misc. Archive, newsletters/spam →
+  Deleted Items, Claude batch pass on ambiguous residual (metadata-only).
+- **Teams approval loop:** Rocky proposes each cohort to the inbox owner
+  in a 1:1 Teams chat ("5,012 'Angelos' messages → Angelos folder, OK?");
+  a "yes" queues it for execution. Shares prerequisites with the
+  human-in-the-loop Remy proposal (Teams scopes + pending-job state
+  machine) — whichever builds first creates the skeleton for the other.
+  Workbook stays as audit artifact / bulk-review option.
+
+**Decisions made**
+
+- Age floors are **per category**: 6 months for case mail and internal
+  office traffic; **none** for newsletters/spam.
+- **Flat case folders** — no date-based subfolders; all of a case's mail
+  in one folder for later searching.
+- Newsletters are **moved to Deleted Items**, not hard-deleted (James
+  initially said delete; kept the nothing-is-ever-deleted rule — same
+  clean-inbox outcome, recoverable until retention purges).
+- Whole snapshot/analyze/approve cycle runs under `Mail.Read`;
+  `Mail.ReadWrite` granted only when execute code exists and a workbook
+  is approved.
+- Per-user config from day one (multi-colleague is the point).
+- **Stays in Rocky** — a Claude managed-agent architecture was considered
+  and declined: recurring scheduled runs + permanent rule accumulation
+  fit Rocky; agent sessions are amnesiac between runs; the 200k bulk
+  mechanics need script-driven Graph paging/moves regardless.
+- Teams safety rules: cohorts proposed one at a time (or Adaptive Cards
+  with cohort_id) so "yes" is unambiguous; only the mailbox owner's
+  replies count; a reply can only approve/decline a proposed cohort,
+  never define a new move.
+
+**Open items**
+
+- CLI flag naming (suggested `--inbox-clean --snapshot|--analyze|--execute
+  --user <mailbox>`), workbook schema, Claude batch-pass prompt, per-user
+  config format, Teams approval UX (plain-text vs Adaptive Cards;
+  reminders/timeouts for unanswered proposals).
+- IT prerequisites when building: Exchange-level delegation of Paul's
+  mailbox to rocky@ (same pattern as the existing mailbox delegations);
+  Teams chat scopes (Chat.Create / Chat.ReadWrite / ChatMessage.Send) +
+  app-registration change — same gate as the Remy-via-Teams proposal.
+
 ## Session 2026-07-04 (3) — Email brain: drop rocky@ "James Older Sent" folder for now
 
 **What changed**

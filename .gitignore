@@ -16,6 +16,13 @@ Azure ID Info.txt
 # Authentication state — local to each machine
 state/
 
+# Per-process runtime state (dev-mode DATA_DIR is the repo root, so these
+# land here on the dev laptop; on the Rocky laptop they live in C:\Rocky).
+# Contain cursors, pending queues, and real tenant names — never commit.
+affidavits/
+vault/
+multifamily/
+
 # Logs
 *.log
 
@@ -64,6 +71,8 @@ Thumbs.db
 *.png
 !Icon/*.png
 !Icon/*.ico
+# docs/ holds compliance artifacts (e.g. vendor opt-out evidence) — keep tracked
+!docs/*.png
 inspect_*.py
 smoke_test_*.py
 scratch_*.py

@@ -388,8 +388,9 @@ def _inline(text: str) -> str:
     return out
 
 
-def digest_to_html(md: str) -> str:
-    """Render the digest markdown as a simple, readable HTML email."""
+def digest_fragment_html(md: str) -> str:
+    """The digest rendered as an embeddable HTML fragment (no page
+    wrapper) — used by the Multifamily Digest's Remy section."""
     parts: list[str] = []
     in_list = False
 
@@ -433,8 +434,12 @@ def digest_to_html(md: str) -> str:
                 f'<p style="margin:6px 0;color:#333333;font-size:14px;'
                 f'line-height:1.5;">{_inline(line)}</p>')
     close_list()
+    return "\n".join(parts)
 
-    body = "\n".join(parts)
+
+def digest_to_html(md: str) -> str:
+    """Render the digest markdown as a simple, readable HTML email."""
+    body = digest_fragment_html(md)
     return f"""<html><body style="margin:0;padding:0;background-color:#f5f5f5;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
        style="background-color:#f5f5f5;padding:24px 0;">

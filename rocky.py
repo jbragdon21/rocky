@@ -52,6 +52,73 @@ Rocky — Virtual Paralegal
       they are never drafted twice; stale (earlier-dated) outbox files are
       warned about, never drafted. No digest file = quiet day, exits quietly.
 
+  python rocky.py --remy-digest [--date YYYY-MM-DD] [--yesterday] [--dry-run] [--no-push] [--no-email] [--force]  (5:30 PM weekdays)
+      The Remy digest: read the jbragdon21/remy repo over the GitHub API,
+      find the code commits since the last digest, pull the plain-English
+      session notes those commits carried, and have Claude write the day's
+      digest for James and Shane. Commits digest/YYYY-MM-DD.md back to the
+      repo (keeps the archive browsable on GitHub) and emails it from rocky@.
+      No clone and no git binary — the REMY working tree is never touched.
+      No code commits since the last digest = quiet day, nothing written or
+      sent. A read-only GitHub token still emails; it just can't update the
+      archive. See remy_digest.py.
+
+  python rocky.py --vault [--dry-run] [--source inbox|vault-mail|dropbox] [--backfill-days N] [--limit N]  (3:00 PM daily)
+      The Vault: gather leases, ledgers, affidavits of service, and
+      notices into the shared "The Vault" folder on OneDrive, organized
+      by property/tenant with a regenerated Vault Index.xlsx. Sources:
+      James's inbox (leases/ledgers/affidavits riding on emails), any
+      email to rocky@ with "vault" in the subject (the team's submission
+      channel — Rocky replies with what was filed where), and configured
+      Dropbox accounts (incremental via cursors). --status, --reindex,
+      and --dropbox-auth <account> subcommands. See VAULT.md.
+
+  python rocky.py --monitor [--once]                (24/7, at boot)
+      The fast loop: every monitor_interval_minutes (default 10) run the
+      LetterStream sweep and the Vault mail sources as subprocesses, so
+      certified-mail requests, YES replies, and Vault submissions are
+      handled within minutes. Each subprocess keeps its own lock,
+      cursors, and failure isolation; ROCKY STOP pauses the loop.
+      Replaces the 8:00 AM letterstream and hourly vault-mail /
+      vault-inbox schedule entries (disable those when this runs).
+      --once = one cycle then exit (testing).
+
+  python rocky.py --letterstream [--dry-run] [--limit N] | --fetch <tracking#> | --ingest <proof.pdf> | --probe | --status  (legacy alias --affidavits)
+      LetterStream: for each LetterStream certified mailing,
+      download the proof-of-mailing PDF, generate the Certified Mailing
+      Affidavit (.docx, conformed /s/ signature), and email it with the
+      proof to Hailey for approval. A YES reply files both documents
+      into The Vault under the property/tenant; a NO sets them aside and
+      flags James. --fetch pulls one proof from the LetterStream API by
+      USPS certified tracking number (the discovery path — the API has
+      no job-list call); --ingest feeds a manually downloaded proof PDF
+      through instead; --probe verifies API auth. See
+      LETTERSTREAM.md.
+
+  python rocky.py --litigation [--poll] [--dry-run] | --chat | --digest [--date YYYY-MM-DD] | --report <BMC|B&A|BHI|BCC> | --cleanup [--limit N] | --learn [--days N] | --voice-rebuild | --status
+      Litigation Updater: Bozzuto claims tracking on Smartsheet. Watches
+      rocky@'s inbox for legal notices (legalnotices@bozzuto.com and
+      forwards saying add-to/update/move-to-closed the claims smartsheet),
+      classifies documents via Claude, and proposes every sheet change
+      one at a time over the "Litigation Updates" Teams chat — nothing
+      is written without a YES. Also: daily activity digest drafted into
+      James's Drafts, on-demand entity audit reports (strict Jinja
+      template), a one-time cleanup review of existing entries, a
+      key-document vault answering "do you have the X in the Y case",
+      and a weekly learn pass folding chat feedback into the brain file.
+      See LITIGATION_UPDATER.md.
+
+  python rocky.py --inbox-<user> --cycle|--snapshot|--analyze|--questionnaire|--chat|--rules-update|--digest|--engineer|--execute|--status
+      Inbox Cleaner: per-user inbox triage at 200k+ scale that becomes a
+      permanent, rule-learning maintenance process ("inbox-matt",
+      "inbox-paul", ...). Users defined in config inbox_users. See
+      inbox_cleaner.py and INBOX_CLEANER.md for the full design, IT
+      prerequisites, and the onboarding questionnaire. --cycle runs the
+      whole loop in one shot for small inboxes (--inbox-james: the "sort
+      with friends" conversation-sort pass, proposed over a free-form
+      Claude-interpreted Teams chat). --engineer [--query "..."] does a
+      full Claude workup of one email — report + draft reply in Drafts.
+
 On first run, you'll be prompted to authenticate via device code flow.
 Subsequent runs use the cached refresh token automatically.
 """
@@ -130,6 +197,44 @@ ATTACHMENT_MAX_BYTES = 16 * 1024 * 1024
 ATTACHMENT_TEXT_CAP_PER_FILE = 5000
 # Total text cap across all attachments in a single classification call.
 ATTACHMENT_TEXT_CAP_TOTAL = 20000
+
+# Signature-image skip. Email-signature logos/banners/social icons arrive as
+# small image attachments; saving them buries real documents in junk. An image
+# is treated as a signature artifact when it is small AND either flagged inline
+# by Outlook or carries an auto-generated embedded-image name (image001.png,
+# image100395.png, ...). Deliberately attached photos keep their original
+# filenames and are not flagged inline, so they pass through.
+#
+# 25 KB is deliberately conservative: substantive PASTED screenshots also
+# arrive inline with imageNNN names and can be small — RRID-0015 has a real
+# AAA arbitrator-list screenshot at 45 KB, while the largest junk logo seen is
+# 42 KB. No size cleanly separates them, so ingestion only skips clear-cut
+# tiny artifacts (observed logos: 10–21 KB; Gallagher's own signature logo is
+# 10 KB). Anything bigger is saved and left to the daily run's DISCARD action,
+# which judges actual content via Claude vision.
+SIGNATURE_IMAGE_MAX_BYTES = 25_000
+_SIGNATURE_IMAGE_NAME_RE = re.compile(r"^image\d{2,}\.(png|jpe?g|gif|bmp)$", re.IGNORECASE)
+
+# Ceiling for the daily run's DISCARD file action (deleting a signature
+# artifact from Raw Documents). Higher than SIGNATURE_IMAGE_MAX_BYTES because
+# image-derived PDF companions carry container overhead.
+DISCARD_IMAGE_MAX_BYTES = 200_000
+
+# After this many daily runs where a Raw Documents file is analyzed but never
+# successfully filed or discarded, the file is parked ("seen but unfiled") so
+# it stops being re-analyzed every day; a project session asks James about it.
+UNFILED_PARK_THRESHOLD = 3
+
+
+def is_signature_image(name: str | None, content_type: str | None,
+                       size: int, is_inline: bool) -> bool:
+    """True if an email image attachment looks like a signature logo/banner."""
+    ct = (content_type or "").lower()
+    if not ct.startswith("image/"):
+        return False
+    if size > SIGNATURE_IMAGE_MAX_BYTES:
+        return False
+    return bool(is_inline) or bool(_SIGNATURE_IMAGE_NAME_RE.match(name or ""))
 
 
 # =============================================================================
@@ -476,9 +581,15 @@ def fetch_attachments(token: str, user_email: str, message_id: str) -> list[dict
 # Case index
 # =============================================================================
 
-# Expected columns in Rocky Case Index.xlsx (first row = headers):
+# Expected columns in Rocky Case Index.xlsx (first row of each sheet = headers):
 #   RRID#, File Name, Case Folder, C/M, Client, Description,
 #   Any other GEJ lawyers to include on digest email, Open/Closed
+#
+# Worksheets: all worksheets are read. Any worksheet whose name contains
+# "closed" holds closed cases — its rows are loaded with Open/Closed forced
+# to "Closed" so every downstream open/closed check works even when the row
+# itself leaves the column blank. Moving a row between sheets is all James
+# needs to do to close (or reopen) a case.
 #
 # Case Folder: Outlook folder path for the case, e.g.
 #   "Inbox\__Bozzuto Management\__DC\Eden, Artemus (943)"
@@ -489,11 +600,91 @@ def fetch_attachments(token: str, user_email: str, message_id: str) -> list[dict
 #
 # Columns are looked up by header name — missing columns return None.
 
+# =============================================================================
+# Graph API: filing processed mail into Inbox subfolders
+# =============================================================================
+# Shared by The Vault (Inbox\The Vault) and Mailing Affidavits
+# (Inbox\Letterstream). The Litigation Updater predates these helpers and
+# carries its own equivalent (litigation_updater._file_source_mail).
+
+def acquire_mail_move_token(config: dict) -> str | None:
+    """Best-effort delegated token carrying Mail.ReadWrite.Shared from
+    rocky@'s cached sign-in (consented 2026-07-05 — covers her own
+    mailbox and mailboxes she holds Full Access on, e.g. James's).
+    Returns None on failure; callers must leave the mail in place."""
+    try:
+        app = get_msal_app(config)
+        accounts = app.get_accounts()
+        result = app.acquire_token_silent(
+            ["Mail.ReadWrite.Shared"], account=accounts[0]) if accounts else None
+        if hasattr(app, "_save_cache"):
+            app._save_cache()
+        if result and "access_token" in result:
+            return result["access_token"]
+        log.warning("No delegated mail-write token in the cached sign-in — "
+                    "processed mail left in the inbox")
+    except Exception as e:
+        log.warning(f"Mail-move token acquisition failed: {e}")
+    return None
+
+
+def ensure_inbox_subfolder(token: str, mailbox: str, name: str,
+                           cache: dict | None = None) -> str | None:
+    """Find-or-create an Inbox child folder by display name; the id is
+    cached in `cache` (a plain dict the caller may persist)."""
+    if cache is not None and cache.get(name):
+        return cache[name]
+    base = f"{GRAPH_API_BASE}/users/{mailbox}/mailFolders/inbox/childFolders"
+    headers = {"Authorization": f"Bearer {token}"}
+    r = requests.get(base, headers=headers, params={"$top": "200"}, timeout=30)
+    r.raise_for_status()
+    folder_id = next((f["id"] for f in r.json().get("value", [])
+                      if (f.get("displayName") or "").strip().lower()
+                      == name.lower()), None)
+    if folder_id is None:
+        r = requests.post(base, headers=headers,
+                          json={"displayName": name}, timeout=30)
+        r.raise_for_status()
+        folder_id = r.json()["id"]
+    if cache is not None:
+        cache[name] = folder_id
+    return folder_id
+
+
+def file_message_to_inbox_subfolder(
+    token: str, mailbox: str, message_id: str, name: str,
+    cache: dict | None = None,
+) -> bool:
+    """Move a message into Inbox\\<name> (created if needed). Best-effort:
+    returns False on failure (caller logs and moves on); a message that's
+    already gone (404) counts as success. A Graph move CHANGES the message
+    id — always move last, after all other use of the message."""
+    try:
+        for attempt in (1, 2):
+            folder_id = ensure_inbox_subfolder(token, mailbox, name, cache)
+            r = requests.post(
+                f"{GRAPH_API_BASE}/users/{mailbox}/messages/{message_id}/move",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"destinationId": folder_id}, timeout=30)
+            if r.status_code == 404 and attempt == 1 and cache is not None:
+                cache.pop(name, None)   # stale cached folder id — retry once
+                continue
+            if r.status_code == 404:
+                return True             # already moved / deleted
+            r.raise_for_status()
+            return True
+    except Exception as e:
+        log.warning(f"Could not move message to Inbox\\{name}: {e}")
+    return False
+
+
 def load_case_index() -> list[dict]:
     """
     Load the Rocky Case Index spreadsheet from OneDrive. Returns a list of
-    case dicts (one per non-empty row). Returns [] on any failure — the
-    classifier still works without it, just without RRID matching.
+    case dicts (one per non-empty row, across all worksheets). Rows from
+    worksheets named like "Closed" come back with Open/Closed = "Closed".
+    Returns [] on any failure — the classifier still works without it, just
+    without RRID matching.
 
     Common failure: the .xlsx is a OneDrive cloud-only placeholder. Fix by
     pinning the Rocky Cases folder ("Always keep on this device") in File
@@ -509,8 +700,7 @@ def load_case_index() -> list[dict]:
         return []
     try:
         wb = openpyxl.load_workbook(CASE_INDEX_PATH, data_only=True, read_only=True)
-        ws = wb.active
-        rows = list(ws.iter_rows(values_only=True))
+        sheets = [(ws.title, list(ws.iter_rows(values_only=True))) for ws in wb.worksheets]
         wb.close()
     except PermissionError:
         log.warning(
@@ -522,15 +712,25 @@ def load_case_index() -> list[dict]:
         log.warning(f"Could not read case index: {e}")
         return []
 
-    if not rows:
-        return []
-    headers = [(str(h).strip() if h is not None else "") for h in rows[0]]
     cases = []
-    for row in rows[1:]:
-        if not row or not row[0]:
+    for title, rows in sheets:
+        if not rows:
             continue
-        case = {headers[i]: row[i] for i in range(min(len(headers), len(row)))}
-        cases.append(case)
+        sheet_is_closed = "closed" in (title or "").lower()
+        headers = [(str(h).strip() if h is not None else "") for h in rows[0]]
+        for row in rows[1:]:
+            if not row or not row[0]:
+                continue
+            # Pre-numbered skeleton rows (an RRID with every other cell blank)
+            # are placeholders, not cases. A skeleton on the Closed sheet would
+            # otherwise shadow the real Sheet1 row for the same RRID (callers
+            # key cases by RRID, last row wins) and mark an open case Closed.
+            if not any(v is not None and str(v).strip() for v in row[1:]):
+                continue
+            case = {headers[i]: row[i] for i in range(min(len(headers), len(row)))}
+            if sheet_is_closed:
+                case["Open/Closed"] = "Closed"
+            cases.append(case)
     return cases
 
 
@@ -858,12 +1058,19 @@ def extract_image_text_via_vision(
 _UNSAFE_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
+# Case folders James has retired live under this subfolder of Rocky Cases.
+# Top-level scans are non-recursive, so anything inside is invisible to Rocky;
+# _find_in_closed_cases exists only to tell "closed" apart from "missing".
+CLOSED_CASES_DIRNAME = "Closed Cases"
+
+
 def find_case_folder(rrid: str) -> Path | None:
     """Return the on-disk folder for a given RRID, or None if not found.
 
     Folders are named with the convention "Last, First (RRID-XXXX)". We match
     by looking for the RRID substring rather than reconstructing the full name,
-    so renames don't break the mapping.
+    so renames don't break the mapping. Only top-level folders are searched —
+    a case moved into Closed Cases/ is deliberately not found.
     """
     if not ROCKY_CASES_ROOT.exists():
         return None
@@ -874,6 +1081,21 @@ def find_case_folder(rrid: str) -> Path | None:
                 return child
     except OSError as e:
         log.warning(f"Could not scan {ROCKY_CASES_ROOT}: {e}")
+    return None
+
+
+def _find_in_closed_cases(rrid: str) -> Path | None:
+    """Return the folder for an RRID under Closed Cases/, or None."""
+    closed_root = ROCKY_CASES_ROOT / CLOSED_CASES_DIRNAME
+    if not closed_root.is_dir():
+        return None
+    rrid_upper = rrid.upper()
+    try:
+        for child in closed_root.iterdir():
+            if child.is_dir() and rrid_upper in child.name.upper():
+                return child
+    except OSError as e:
+        log.warning(f"Could not scan {closed_root}: {e}")
     return None
 
 
@@ -1090,15 +1312,13 @@ def save_email_to_case(
                 log.warning(f"Could not write email to Email Correspondence/: {e}")
 
     # Save each attachment that has bytes.
-    SIGNATURE_IMAGE_MAX = 15_000  # 15 KB — signature icons/logos are typically <5 KB
     for att in email.get("attachments", []):
         raw = att.get("contentBytes")
         if not raw:
             continue
         ct = (att.get("contentType") or "").lower()
-        if (att.get("isInline") and ct.startswith("image/")
-                and len(raw) <= SIGNATURE_IMAGE_MAX):
-            log.debug(f"Skipping inline signature image {att.get('name')!r} ({len(raw)} bytes)")
+        if is_signature_image(att.get("name"), ct, len(raw), att.get("isInline", False)):
+            log.info(f"Skipping signature image {att.get('name')!r} ({len(raw)} bytes)")
             continue
         safe_name = _sanitize_filename(att.get("name") or "attachment.bin")
         att_path = raw_dir / f"{prefix}_{safe_name}"
@@ -1198,7 +1418,8 @@ Follow the case-specific instructions. Return ONLY a JSON object:
 }
 
 RULES:
-- file_actions: only include entries for files the instructions ask you to classify/file. target_folder MUST be from the AVAILABLE SUBFOLDERS list. Empty [] if no filing needed or instructions don't request it.
+- file_actions: only include entries for files the instructions ask you to classify/file. target_folder MUST be from the AVAILABLE SUBFOLDERS list (or "DISCARD", below). Empty [] if no filing needed or instructions don't request it.
+- DISCARD: if a file is a non-substantive email artifact — an organizational or firm logo, signature graphic, award badge, banner, or social-media icon with no case content — set target_folder to "DISCARD". Rocky deletes it from Raw Documents. NEVER file such artifacts into a case subfolder, and do not mention them in analysis or recommendations. Only use DISCARD for decorative images/graphics; never for anything with substantive text (screenshots of messages or documents, photographed documents, evidence photos). Judge an image by what it actually shows, never by the surrounding email's topic — a logo attached to a wire-transfer email is still just a logo.
 - recommendations: ATTORNEY ACTIONS ONLY — steps James must take out in the world (court filings, deadlines, communications with opposing counsel/client/court, strategic or legal decisions, monitoring a docket). These surface in James's daily digest. Concrete, not vague. Empty [] if nothing needs his attention.
 - internal_suggestions: case-FILE maintenance you could perform on request — updating the Case Status Memorandum, refreshing the File / Searchable Text / Pleadings indexes, re-filing/renaming/moving documents within the case folder, updating the activity log. These are parked in the activity log for a Claude project session to offer James; they are NEVER surfaced in the daily digest. Do not duplicate an item across both lists. Empty [] if none.
 - analysis: this gets logged and read in the daily digest. Be terse and factual.
@@ -1212,28 +1433,46 @@ CLAUDE_MD_SUGGESTIONS_SECTION = """## Rocky Suggestions
 Rocky parks internal case-file maintenance suggestions (updating the Case Status Memorandum, refreshing the File / Searchable Text / Pleadings indexes, re-filing or renaming documents) in this case's activity log rather than in James's daily digest. **When you open this case as a project, read the recent `internal_suggestions` entries in `activity.jsonl` and ask James whether he wants you to act on them before doing so.**
 """
 
+# Standing pointer Rocky drops into a case's CLAUDE.md the first time it parks
+# a document it could not file, so a project session asks James about it.
+CLAUDE_MD_UNFILED_SECTION = """## Rocky Unfiled Documents
 
-def _ensure_claude_md_suggestions_pointer(case_folder: Path) -> None:
-    """Make sure the case's CLAUDE.md tells a project session to check the
-    activity log for Rocky's parked internal suggestions.
+Rocky parks a `Raw Documents/` file after several daily runs analyze it without ever successfully filing it (the model returned no usable file_action, a DISCARD was refused, the copy kept failing). Parked files are listed in `master_file_index.json` under `files` with `"disposition": "parked_unfiled"`, and each parking is logged as a `document_parked_unfiled` event in `activity.jsonl`. **When you open this case as a project, check for `parked_unfiled` entries that are still unresolved and ask James what to do with each one — file it to a case subfolder, discard it, or leave it parked — before other case work.** When James decides, carry it out and update that index entry (replace `disposition` with the outcome, and set `path`/`target_folder` if filed).
+"""
 
-    Idempotent: inserts the section once and does nothing if it is already
-    present. Does NOT create a CLAUDE.md where none exists — a case that isn't
-    set up as a project shouldn't get one littered in; the suggestion still
-    lives in activity.jsonl regardless.
+
+def _ensure_claude_md_section(case_folder: Path, heading: str, section: str) -> None:
+    """Append a standing section to the case's CLAUDE.md if not already there.
+
+    Idempotent: inserts the section once (keyed on its heading) and does
+    nothing if it is already present. Does NOT create a CLAUDE.md where none
+    exists — a case that isn't set up as a project shouldn't get one littered
+    in; the underlying records still live in the index/activity log regardless.
     """
     claude_md = case_folder / "CLAUDE.md"
     try:
         if not claude_md.exists():
             return
         text = claude_md.read_text(encoding="utf-8")
-        if "## Rocky Suggestions" in text:
+        if heading in text:
             return
-        new_text = text.rstrip() + "\n\n---\n\n" + CLAUDE_MD_SUGGESTIONS_SECTION
+        new_text = text.rstrip() + "\n\n---\n\n" + section
         claude_md.write_text(new_text, encoding="utf-8")
-        log.info(f"Added Rocky Suggestions pointer to {claude_md}")
+        log.info(f"Added {heading!r} pointer to {claude_md}")
     except OSError as e:
         log.warning(f"Could not update {claude_md}: {e}")
+
+
+def _ensure_claude_md_suggestions_pointer(case_folder: Path) -> None:
+    """Point project sessions at Rocky's parked internal suggestions."""
+    _ensure_claude_md_section(case_folder, "## Rocky Suggestions",
+                              CLAUDE_MD_SUGGESTIONS_SECTION)
+
+
+def _ensure_claude_md_unfiled_pointer(case_folder: Path) -> None:
+    """Point project sessions at Rocky's parked seen-but-unfiled documents."""
+    _ensure_claude_md_section(case_folder, "## Rocky Unfiled Documents",
+                              CLAUDE_MD_UNFILED_SECTION)
 
 
 def extract_text_from_path(path: Path) -> str | None:
@@ -1321,6 +1560,17 @@ def _strip_raw_prefix(filename: str) -> str:
     # Format is YYYYMMDDTHHMM_8charhex_<rest>
     m = re.match(r"^\d{8}T\d{4}_[0-9a-f]{8}_(.+)$", filename)
     return m.group(1) if m else filename
+
+
+def _normalize_name_for_match(filename: str) -> str:
+    """Collapse runs of Unicode whitespace to single spaces, casefolded.
+
+    Filenames echoed back by Claude in file_actions can lose exotic
+    whitespace — e.g. Outlook subject-line artifacts like 'Re_\xa0 ...'
+    (non-breaking space) come back as a plain space — so raw-file matching
+    falls back to this normalized form when the exact name doesn't match.
+    """
+    return re.sub(r"\s+", " ", filename).strip().casefold()
 
 
 def _build_filed_filename(raw_filename: str, suggested_name: str | None) -> str:
@@ -1509,6 +1759,10 @@ Follow the case-specific instructions above. Return ONLY the JSON object."""
     file_actions = result.get("file_actions", [])
     recommendations = result.get("recommendations", [])
     internal_suggestions = result.get("internal_suggestions", [])
+    discards_requested = sum(
+        1 for a in file_actions
+        if str(a.get("target_folder", "")).strip().upper() == "DISCARD"
+    )
 
     # Log the analysis + recommendations as a daily_run event.
     append_case_activity(case_folder, {
@@ -1520,6 +1774,7 @@ Follow the case-specific instructions above. Return ONLY the JSON object."""
         "recommendations": recommendations,
         "internal_suggestions": internal_suggestions,
         "file_actions_requested": len(file_actions),
+        "discards_requested": discards_requested,
         "new_raw_files_seen": len(new_raws),
     })
 
@@ -1540,15 +1795,106 @@ Follow the case-specific instructions above. Return ONLY the JSON object."""
     processed = 0
     errors = 0
     skipped = 0
+    discarded = 0
+    handled_names: set[str] = set()  # raws successfully filed or discarded this run
     raw_names = {f.name for f, _ in new_raws}
+    # Whitespace-tolerant fallback: if the model's echoed source_raw doesn't
+    # match any raw name exactly, try matching with whitespace normalized.
+    # Without this, a file whose name contains a non-breaking space (or other
+    # exotic whitespace) can never be filed and gets re-analyzed every day.
+    normalized_raw_names: dict[str, str] = {}
+    for name in raw_names:
+        normalized_raw_names.setdefault(_normalize_name_for_match(name), name)
 
     for action in file_actions:
         source_name = action.get("source_raw", "")
         target_folder_name = action.get("target_folder", "")
 
         if source_name not in raw_names:
-            log.warning(f"[{rrid}] file_action references unknown file {source_name!r}; skipping.")
-            skipped += 1
+            resolved = normalized_raw_names.get(_normalize_name_for_match(source_name))
+            if resolved:
+                log.info(
+                    f"[{rrid}] file_action name {source_name!r} matched "
+                    f"{resolved!r} after whitespace normalization."
+                )
+                source_name = resolved
+            else:
+                log.warning(f"[{rrid}] file_action references unknown file {source_name!r}; skipping.")
+                skipped += 1
+                continue
+
+        # DISCARD: delete a non-substantive email artifact (signature logo,
+        # banner) from Raw Documents instead of filing it. Code-level guardrail
+        # regardless of what the model asked: only a small image, or a PDF that
+        # is the companion of a small image, can be discarded — anything else
+        # is left in place.
+        if str(target_folder_name).strip().upper() == "DISCARD":
+            raw_file = raw_dir / source_name
+            companion = None
+            if _is_image_file(raw_file.name):
+                cand = raw_file.with_suffix(".pdf")
+                companion = cand if cand.exists() else None
+                is_image_pair = True
+            elif raw_file.suffix.lower() == ".pdf":
+                companion = next(
+                    (raw_file.with_suffix(ext)
+                     for ext in (".png", ".jpg", ".jpeg", ".gif", ".bmp")
+                     if raw_file.with_suffix(ext).exists()),
+                    None,
+                )
+                is_image_pair = companion is not None
+            else:
+                is_image_pair = False
+
+            sizes_ok = all(
+                p.stat().st_size <= DISCARD_IMAGE_MAX_BYTES
+                for p in (raw_file, companion) if p is not None and p.exists()
+            )
+            if not (is_image_pair and sizes_ok):
+                log.warning(
+                    f"[{rrid}] DISCARD refused for {source_name!r} "
+                    f"(not a small image/image-PDF pair); leaving in place."
+                )
+                skipped += 1
+                continue
+
+            discard_errors = False
+            for p in (raw_file, companion):
+                if p is None or not p.exists():
+                    continue
+                try:
+                    p.unlink()
+                except OSError as e:
+                    log.error(f"[{rrid}] Could not delete {p.name}: {e}")
+                    discard_errors = True
+            if discard_errors:
+                errors += 1
+                continue
+
+            # Index the name so it can never resurface as "new", and leave an
+            # audit trail in the activity log.
+            index.setdefault("files", []).append({
+                "path": None,
+                "target_folder": None,
+                "disposition": "discarded",
+                "source_raw": raw_file.name,
+                "processed_at": datetime.now(timezone.utc).isoformat(),
+                "summary": action.get("summary"),
+                "filed_by": "rocky",
+            })
+            append_case_activity(case_folder, {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "actor": "rocky",
+                "event": "document_discarded",
+                "rrid": rrid,
+                "source_raw": raw_file.name,
+                "also_deleted": companion.name if companion else None,
+                "summary": action.get("summary"),
+            })
+            log.info(f"[{rrid}] discarded email artifact {raw_file.name}"
+                     + (f" (+ {companion.name})" if companion else ""))
+            discarded += 1
+            handled_names.add(raw_file.name)
             continue
 
         if target_folder_name not in available_folders:
@@ -1613,9 +1959,58 @@ Follow the case-specific instructions above. Return ONLY the JSON object."""
 
         log.info(f"[{rrid}] filed {raw_file.name} -> {target_folder_name}/{target_path.name}")
         processed += 1
+        handled_names.add(raw_file.name)
+
+    # Seen-but-unfiled guard. A raw file that keeps getting analyzed without
+    # ever being filed or discarded (the model returned no usable file_action,
+    # a DISCARD was refused, the copy kept failing) would otherwise be
+    # re-analyzed as "new" every day forever. Count the misses per file; once
+    # a file misses UNFILED_PARK_THRESHOLD runs, park it — index it so it
+    # stops surfacing as new, and leave a question for a project session
+    # (see CLAUDE_MD_UNFILED_SECTION) instead of burning a Claude call daily.
+    unfiled_attempts = index.setdefault("unfiled_attempts", {})
+    parked_names: list[str] = []
+    for f, _ in new_raws:
+        if f.name in handled_names:
+            unfiled_attempts.pop(f.name, None)
+            continue
+        misses = unfiled_attempts.get(f.name, 0) + 1
+        if misses < UNFILED_PARK_THRESHOLD:
+            unfiled_attempts[f.name] = misses
+            continue
+        unfiled_attempts.pop(f.name, None)
+        now = datetime.now(timezone.utc).isoformat()
+        index.setdefault("files", []).append({
+            "path": None,
+            "target_folder": None,
+            "disposition": "parked_unfiled",
+            "source_raw": f.name,
+            "processed_at": now,
+            "summary": (f"Seen by {misses} daily runs without being successfully "
+                        f"filed or discarded; parked for James to decide."),
+            "filed_by": "rocky",
+        })
+        append_case_activity(case_folder, {
+            "timestamp": now,
+            "actor": "rocky",
+            "event": "document_parked_unfiled",
+            "rrid": rrid,
+            "source_raw": f.name,
+            "summary": (f"Parked after {misses} daily runs without a successful "
+                        f"filing. File remains in Raw Documents/ and will no "
+                        f"longer be re-analyzed; a project session should ask "
+                        f"James what to do with it."),
+        })
+        log.warning(f"[{rrid}] parked seen-but-unfiled raw file {f.name!r} "
+                    f"after {misses} runs; project session will ask James.")
+        parked_names.append(f.name)
+    if parked_names:
+        _ensure_claude_md_unfiled_pointer(case_folder)
 
     save_master_index(index_path, index)
-    return {"rrid": rrid, "processed": processed, "skipped": skipped, "errors": errors}
+    return {"rrid": rrid, "processed": processed, "skipped": skipped,
+            "discarded": discarded, "errors": errors,
+            "parked": len(parked_names)}
 
 
 def daily_run(
@@ -1649,6 +2044,11 @@ def daily_run(
             continue
 
         meta = cases_by_rrid.get(rrid, {})
+        # Closed cases are skipped — unless James targeted the RRID explicitly.
+        if not target_rrid and not _is_open_case(meta):
+            log.info(f"[{rrid}] Closed case — skipping daily run.")
+            continue
+
         case_description = (
             f"{meta.get('File Name', child.name)} — Client: {meta.get('Client', 'unknown')}. "
             f"{meta.get('Description', '')}"
@@ -1788,7 +2188,8 @@ def _read_filed_since(case_folder: Path, since_dt: datetime) -> list[dict]:
         return []
     return [
         f for f in index.get("files", [])
-        if (_parse_iso(f.get("processed_at")) or datetime.min.replace(tzinfo=timezone.utc)) >= since_dt
+        if f.get("disposition") not in ("discarded", "parked_unfiled")
+        and (_parse_iso(f.get("processed_at")) or datetime.min.replace(tzinfo=timezone.utc)) >= since_dt
     ]
 
 
@@ -1807,10 +2208,15 @@ def _is_substantive_event(ev: dict) -> bool:
     Unknown event types are treated as substantive (bias toward surfacing).
     """
     event_type = ev.get("event", "")
-    if event_type in ("session_start", "session_end", "daily_run_error"):
+    if event_type in ("session_start", "session_end", "daily_run_error",
+                      "document_discarded"):
         return False
     if event_type == "daily_run":
-        return bool(ev.get("file_actions_requested", 0)) or bool(ev.get("new_raw_files_seen", 0))
+        # Discarded email artifacts (signature logos) don't count as activity.
+        discards = ev.get("discards_requested", 0)
+        real_actions = ev.get("file_actions_requested", 0) - discards
+        real_new_files = ev.get("new_raw_files_seen", 0) - discards
+        return real_actions > 0 or real_new_files > 0
     if event_type == "daily_cases_email_summary":
         return bool(ev.get("emails_fetched", 0)) or bool(ev.get("files_saved", 0))
     return True
@@ -1955,7 +2361,7 @@ def build_case_digest_section(
                 activity_lines.append(f"- daily_run analysis: {ev['analysis']}")
             for rec in ev.get("recommendations", []):
                 activity_lines.append(f"  RECOMMENDATION: {rec}")
-        elif event_type in ("session_start", "session_end"):
+        elif event_type in ("session_start", "session_end", "document_discarded"):
             continue
         elif ev.get("summary"):
             actor = ev.get("actor", "")
@@ -2371,9 +2777,14 @@ def daily_digest(
         rrid = m.group(0).upper()
         if target_rrid and rrid != target_rrid.upper():
             continue
-        cases_examined += 1
 
         meta = cases_by_rrid.get(rrid, {"RRID#": rrid, "File Name": child.name})
+        # Closed cases get no digest section at all, even with folder
+        # activity — unless James targeted the RRID explicitly.
+        if not target_rrid and not _is_open_case(meta):
+            log.info(f"[{rrid}] Closed case — omitted from digest.")
+            continue
+        cases_examined += 1
 
         activity = _read_activity_since(child, since_dt)
         filed = _read_filed_since(child, since_dt)
@@ -2382,8 +2793,9 @@ def daily_digest(
         # markers) don't count — those cases drop to the no-activity list.
         substantive = [e for e in activity if _is_substantive_event(e)]
         if not substantive and not filed:
-            # Open cases get listed at the bottom with their next event;
-            # closed cases are omitted entirely.
+            # Open cases get listed at the bottom with their next event.
+            # (Closed cases were skipped above; this check only matters when
+            # a closed RRID is explicitly targeted.)
             if _is_open_case(meta):
                 no_activity_cases.append(
                     (rrid, str(meta.get("File Name") or child.name), child)
@@ -3007,9 +3419,18 @@ def daily_cases(
             continue
         if target_rrid and rrid != target_rrid.upper():
             continue
+        # Closed cases get no email fetch — unless explicitly targeted.
+        if not target_rrid and not _is_open_case(case):
+            log.info(f"[{rrid}] Closed case — skipping email fetch.")
+            results.append({"rrid": rrid, "emails": 0, "saved": 0, "reason": "closed"})
+            continue
 
         case_folder = find_case_folder(rrid)
         if not case_folder:
+            if _find_in_closed_cases(rrid):
+                log.info(f"[{rrid}] Folder is in {CLOSED_CASES_DIRNAME}/ — skipping.")
+                results.append({"rrid": rrid, "emails": 0, "saved": 0, "reason": "closed"})
+                continue
             log.warning(f"[{rrid}] Case folder not found under {ROCKY_CASES_ROOT}")
             results.append({"rrid": rrid, "emails": 0, "saved": 0, "reason": "no_case_folder"})
             continue
@@ -3109,6 +3530,7 @@ def run_daily_run_cli() -> None:
         log.info(
             f"  {r['rrid']}: processed {r.get('processed', 0)}, "
             f"skipped {r.get('skipped', 0)}, errors {r.get('errors', 0)}"
+            + (f", parked {r.get('parked', 0)}" if r.get('parked') else "")
             + (f" — {r.get('reason')}" if r.get('reason') else "")
         )
     log.info(f"Total: {total_processed} filed, {total_errors} error(s).")
@@ -4329,124 +4751,84 @@ def run_pma_activity_cli() -> None:
     log.info(f"[maple-pma] Done: {result}")
 
 
-def run_email_brain_cli() -> None:
-    """Entry point for `python rocky.py --email-brain [flags]`.
+# NOTE: The Email Brain (sent-mail corpus + retrieval) moved ENTIRELY to
+# Minotaur on 2026-08-02 — `minotaur.py brain stats|query|ingest|migrate`
+# in OneDrive Program Files\Minotaur, data at C:\Minotaur\email_brain.
+# The --email-brain command, email_brain.py, and the numpy dependency were
+# removed from Rocky after the data migration was verified (29,699 pairs).
 
-    Pulls ALL of James's sent mail from config['sent_brain_folders'] into a local
-    SQLite DB (+ JSONL export), pairs each reply with the inbound message it
-    answered (via conversationId), and embeds the retrieval-key text via Voyage.
-    Incremental on re-run (per-folder sentDateTime cursor). Uses the app-level
-    token (same Mail.Read + Application Access Policy as --maple-pma-activity).
 
-    Flags:
-      --rebuild              wipe db/jsonl/cursor and rebuild from scratch
-      --backfill-days N      first-run lookback (default: entire folder)
-      --no-embed             skip the Voyage embedding phase
-      --limit N              process at most N sent messages (testing)
-      --query "text"         embed the query and print top-k past exchanges
-      --stats                print corpus stats and exit
+# =============================================================================
+# Monitor — fast recurring sweep of the inbox-driven processes
+# =============================================================================
+
+# Each cycle runs these as SUBPROCESSES so every process keeps its own
+# instance lock, cursors, and failure isolation (a crash or API outage in
+# one never stalls the others — the monitor is a scheduler, not a merge).
+# Config monitor_commands overrides without a rebuild.
+MONITOR_DEFAULT_COMMANDS = ["--letterstream", "--vault-mail", "--vault-inbox"]
+
+
+def _self_command(flag: str) -> list[str]:
+    """How to invoke this same program with one flag, frozen or dev."""
+    if getattr(sys, "frozen", False):
+        return [sys.executable, flag]
+    return [sys.executable, str(Path(__file__).resolve()), flag]
+
+
+def run_monitor_cli() -> None:
     """
-    import email_brain
+    Entry point for `rocky.exe --monitor [--once]`. Runs forever (launch
+    at boot via Task Scheduler, like --monitor-remy): every
+    monitor_interval_minutes (default 10) it runs the LetterStream sweep
+    and the Vault mail sources, so certified-mail requests, release
+    replies, affidavit approvals, and Vault submissions are acted on
+    within minutes instead of at the next daily/hourly slot. Honors the
+    ROCKY STOP kill switch. A subprocess that finds its instance lock
+    held (an overlapping scheduled run) exits quietly — overlap is safe,
+    just redundant, so disable the hourly vault-mail/vault-inbox and
+    8:00 AM letterstream schedules once the monitor runs.
+    """
+    import subprocess
+    from kill_switch import is_dormant
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     config = load_config()
+    interval = int(config.get("monitor_interval_minutes") or 10) * 60
+    commands = list(config.get("monitor_commands")
+                    or MONITOR_DEFAULT_COMMANDS)
+    once = "--once" in sys.argv
 
-    rebuild = "--rebuild" in sys.argv
-    no_embed = "--no-embed" in sys.argv
+    log.info("=" * 60)
+    log.info(f"Rocky — monitor: {' '.join(commands)} every "
+             f"{interval // 60} min" + (" (single cycle)" if once else ""))
+    log.info("=" * 60)
 
-    backfill_days = None
-    limit = None
-    query = None
-    for i, arg in enumerate(sys.argv):
-        if arg == "--backfill-days" and i + 1 < len(sys.argv):
-            try:
-                backfill_days = int(sys.argv[i + 1])
-            except ValueError:
-                print(f"Invalid --backfill-days value: {sys.argv[i + 1]}")
-                sys.exit(1)
-        elif arg == "--limit" and i + 1 < len(sys.argv):
-            try:
-                limit = int(sys.argv[i + 1])
-            except ValueError:
-                print(f"Invalid --limit value: {sys.argv[i + 1]}")
-                sys.exit(1)
-        elif arg == "--query" and i + 1 < len(sys.argv):
-            query = sys.argv[i + 1]
-
-    # --stats: report and exit (no Graph calls).
-    if "--stats" in sys.argv:
-        result = email_brain.stats(config, DATA_DIR)
-        print(json.dumps(result, indent=2))
-        return
-
-    # --query: retrieval smoke test (needs DB + voyage key, no Graph calls).
-    if query is not None:
-        brain_dir = Path(config["email_brain_dir"]) if config.get("email_brain_dir") \
-            else (DATA_DIR / "email_brain")
-        db_path = brain_dir / "brain.db"
-        if not db_path.exists():
-            print(f"No database at {db_path}. Run --email-brain first.")
-            sys.exit(1)
-        conn = email_brain.open_db(db_path)
+    while True:
+        if is_dormant(STATE_DIR):
+            log.info("[monitor] dormant (ROCKY STOP) — skipping cycle")
+        else:
+            for flag in commands:
+                try:
+                    result = subprocess.run(
+                        _self_command(flag), timeout=900,
+                        capture_output=True, text=True)
+                    if result.returncode != 0:
+                        tail = (result.stderr or result.stdout or "")[-400:]
+                        log.warning(f"[monitor] {flag} exited "
+                                    f"{result.returncode}: {tail}")
+                except subprocess.TimeoutExpired:
+                    log.error(f"[monitor] {flag} still running after 15 "
+                              f"min — killed; next cycle retries")
+                except Exception as e:
+                    log.exception(f"[monitor] {flag} failed to launch: {e}")
+        if once:
+            break
         try:
-            results = email_brain.vector_search(conn, config, query, k=5)
-        finally:
-            conn.close()
-        print(f"\nTop matches for: {query!r}\n" + "=" * 60)
-        for i, r in enumerate(results, 1):
-            print(f"\n[{i}] score={r['score']:.3f}  source={r['embed_source']}")
-            if r.get("inbound_subject"):
-                print(f"    Incoming ({r['inbound_from']}): {r['inbound_subject']}")
-                print(f"    > {r['inbound_text'][:300].replace(chr(10), ' ')}")
-            print(f"    James replied: {r['reply_text'][:400].replace(chr(10), ' ')}")
-        return
-
-    # Resolve source folders. Each entry may be a bare path string (uses the
-    # default mailbox) or {"mailbox": ..., "path": ...} so current Sent Items
-    # (jbragdon@) and archived sends dragged into rocky@ can be mixed in one run.
-    # Skip any that don't resolve (e.g. an unreachable Online Archive mailbox).
-    app_token = acquire_app_token(config)
-    default_mailbox = config.get("sent_brain_mailbox") or config.get("user_email") \
-        or "jbragdon@gallagherllp.com"
-    folder_entries = config.get("sent_brain_folders") or ["Sent Items"]
-
-    resolved: list[tuple[str, str, str]] = []
-    for entry in folder_entries:
-        if isinstance(entry, dict):
-            mbox = entry.get("mailbox") or default_mailbox
-            path = entry.get("path") or entry.get("folder") or ""
-        else:
-            mbox, path = default_mailbox, entry
-        if not path:
-            continue
-        fid = resolve_folder_path(app_token, mbox, path)
-        if fid:
-            resolved.append((path.replace("\\", "/"), mbox, fid))
-            log.info(f"[email-brain] resolved {mbox}:{path!r}")
-        else:
-            log.warning(f"[email-brain] could NOT resolve {mbox}:{path!r} — skipping. "
-                        f"(Online Archive mailboxes are not reachable via Graph; see the "
-                        f"available-folders list logged above.)")
-
-    if not resolved:
-        log.error("[email-brain] no source folders resolved; nothing to do.")
-        sys.exit(1)
-
-    log.info(f"[email-brain] starting "
-             f"({'REBUILD' if rebuild else 'incremental'}"
-             f"{', no-embed' if no_embed else ''}"
-             f"{f', limit {limit}' if limit else ''})")
-    result = email_brain.run_email_brain(
-        app_token=app_token,
-        config=config,
-        data_dir=DATA_DIR,
-        resolved_folders=resolved,
-        rebuild=rebuild,
-        backfill_days=backfill_days,
-        no_embed=no_embed,
-        limit=limit,
-    )
-    log.info(f"[email-brain] done: {json.dumps(result, indent=2)}")
+            time.sleep(interval)
+        except KeyboardInterrupt:
+            log.info("Monitor stopped by user.")
+            break
 
 
 def acquire_instance_lock(command: str):
@@ -4500,8 +4882,14 @@ _DEFAULT_MAPLE_CLIENT_DIGEST_RECIPIENTS = [
 # Always-CC list. pma@bozzuto.com is load-bearing, not a courtesy copy: its
 # existing routing delivers Beth's reply-all into rocky@'s watched
 # "Inbox\PMA emails" folder, which is how her typed answers reach the feed
-# (no inbox sweep of James's mailbox). Override "maple_client_digest_cc".
-_DEFAULT_MAPLE_CLIENT_DIGEST_CC = ["pma@bozzuto.com"]
+# (no inbox sweep of James's mailbox). The Bozzuto individuals (added
+# 2026-08-21) are courtesy copies. Override "maple_client_digest_cc".
+_DEFAULT_MAPLE_CLIENT_DIGEST_CC = [
+    "pma@bozzuto.com",
+    "rprice@bozzuto.com",
+    "ccooley@bozzuto.com",
+    "mbarry@bozzuto.com",
+]
 
 # Maple's daily run writes a ready-to-send HTML email to the updater's
 # outbox\ folder. Rocky cannot email external addresses (the outbound
@@ -4651,11 +5039,41 @@ def main():
     # spellings share one instance lock and can't run concurrently.
     if command == "pma-activity":
         command = "maple-pma-activity"
+    # Inbox Cleaner commands are per-user (--inbox-matt, --inbox-paul, ...).
+    # Lock on the process name regardless of subflag order, so e.g.
+    # `--snapshot --inbox-matt` still serializes against other inbox-matt runs.
+    inbox_flag = next(
+        (a for a in sys.argv[1:] if a.startswith("--inbox-")), None
+    )
+    if inbox_flag:
+        command = inbox_flag.lstrip("-")
+    # Litigation Updater: subflags (--chat, --digest, ...) may precede the
+    # --litigation flag, and the dashboard uses the aliases
+    # --litigation-digest / --litigation-learn. All litigation commands
+    # share one lock (they share state.json).
+    lit_flag = next(
+        (a for a in sys.argv[1:] if a.startswith("--litigation")), None
+    )
+    if lit_flag:
+        command = "litigation"
+    # --affidavits is the legacy spelling of --letterstream (renamed
+    # 2026-08-23: the process also sends mailings without affidavits).
+    # Normalize so both spellings share one instance lock.
+    if command == "affidavits":
+        command = "letterstream"
     if command:
         lock_fh = acquire_instance_lock(command)  # noqa: F841 — must stay alive
 
+    if inbox_flag:
+        import inbox_cleaner
+        inbox_cleaner.run_cli(inbox_flag[len("--inbox-"):], load_config(),
+                              DATA_DIR)
+        return
+
     if "--monitor-remy" in sys.argv:
         run_monitor_remy_cli()
+    elif "--monitor" in sys.argv:
+        run_monitor_cli()
     elif "--daily-cases" in sys.argv:
         run_daily_cases_cli()
     elif "--daily-run" in sys.argv:
@@ -4672,12 +5090,40 @@ def main():
         run_pma_activity_cli()
     elif "--maple-digest" in sys.argv:
         run_maple_digest_cli()
-    elif "--email-brain" in sys.argv:
-        run_email_brain_cli()
+    elif "--remy-digest" in sys.argv:
+        import remy_digest
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        remy_digest.run_cli(load_config(), DATA_DIR)
+    elif "--multifamily-digest" in sys.argv:
+        import multifamily_digest
+        multifamily_digest.run_cli(load_config(), DATA_DIR)
+    elif "--vault-digest" in sys.argv:
+        import vault
+        vault.run_digest_cli(load_config(), DATA_DIR)
+    elif "--vault-dropbox" in sys.argv:
+        import vault
+        vault.run_cli(load_config(), DATA_DIR, forced_source="dropbox")
+    elif "--vault-mail" in sys.argv:
+        import vault
+        vault.run_cli(load_config(), DATA_DIR, forced_source="vault-mail")
+    elif "--vault-inbox" in sys.argv:
+        import vault
+        vault.run_cli(load_config(), DATA_DIR, forced_source="inbox")
+    elif "--vault" in sys.argv:
+        import vault
+        vault.run_cli(load_config(), DATA_DIR)
+    elif "--letterstream" in sys.argv or "--affidavits" in sys.argv:
+        import mailing_affidavits
+        mailing_affidavits.run_cli(load_config(), DATA_DIR)
+    elif lit_flag:
+        import litigation_updater
+        litigation_updater.run_cli(load_config(), DATA_DIR)
     else:
         print(__doc__)
         print("Available commands:")
         print("  --monitor-remy                          Poll Rocky's inbox for Remy requests (24/7)")
+        print("  --monitor      [--once]                 Fast loop (24/7): letterstream + vault mail sweeps every")
+        print("                                          monitor_interval_minutes (default 10); --once = single cycle")
         print("  --daily-cases  [RRID-XXXX]              Fetch emails, summarize, save")
         print("  --daily-run    [RRID-XXXX]              Run per-case folder skills")
         print("  --daily-digest [RRID-XXXX] [--hours N]  Generate daily case digest")
@@ -4686,8 +5132,34 @@ def main():
         print("  --pending-llt  [--dry-run] [--limit N]  Draft LLT status emails by property")
         print("  --maple-pma-activity [--dry-run] [--backfill-days N]  Export PMA emails folder to JSONL for the Maple updater (legacy alias: --pma-activity)")
         print("  --maple-digest [--date YYYY-MM-DD] [--yesterday] [--dry-run]  Draft the Maple PMA digest into James's Drafts (James sends)")
-        print("  --email-brain  [--rebuild] [--backfill-days N] [--no-embed] [--limit N] [--query \"...\"] [--stats]")
-        print("                                          Build the sent-mail corpus + retrieval index")
+        print("  --remy-digest  [--date YYYY-MM-DD] [--yesterday] [--dry-run] [--no-push] [--no-email] [--force]")
+        print("                                          Write the day's plain-English Remy digest from the GitHub repo,")
+        print("                                          commit it to digest/, and email it to James and Shane")
+        print("  --vault        [--dry-run] [--source inbox|vault-mail|dropbox] [--backfill-days N] [--limit N] [--max-age-days N]")
+        print("                 --status | --reindex | --dropbox-auth <account>")
+        print("                                          The Vault: gather leases/ledgers/affidavits into the shared team folder (all sources)")
+        print("  --vault-dropbox | --vault-mail | --vault-inbox   [same flags]")
+        print("                                          One Vault source each (Dropbox / rocky@ submissions / James's inbox);")
+        print("                                          independent locks + state, safe to schedule separately (e.g. hourly)")
+        print("  --multifamily-digest [--hours N] [--dry-run]")
+        print("                                          One daily email: certified mail sent, affidavits drafted/filed, Vault")
+        print("                                          additions, the day's Remy development digest, and everything still")
+        print("                                          pending; quiet day = no email")
+        print("  --vault-digest [--hours N] [--dry-run]  Email the day's Vault additions only (SUPERSEDED by --multifamily-digest)")
+        print("  --letterstream [--dry-run] [--limit N] | --mail <packet.pdf> | --fetch <tracking#> | --ingest <proof.pdf> | --probe | --status")
+        print("                                          LetterStream (legacy alias --affidavits): certified mail — submit (preauth ->")
+        print("                                          [CM-####] YES releases), track, then affidavit + proof to Hailey; her YES")
+        print("                                          files both in The Vault (see LETTERSTREAM.md)")
+        print("  --litigation   [--poll] [--dry-run] | --chat | --digest [--date YYYY-MM-DD] |")
+        print("                 --report <BMC|B&A|BHI|BCC> | --cleanup [--limit N] | --learn [--days N] |")
+        print("                 --voice-rebuild | --status")
+        print("                                          Litigation Updater: Bozzuto claims Smartsheet — notices, updates,")
+        print("                                          closures over the Litigation Updates Teams chat (see LITIGATION_UPDATER.md)")
+        print("  --inbox-<user> --cycle|--snapshot|--analyze|--questionnaire|--chat|--rules-update|--digest|--engineer|--execute|--status")
+        print("                                          Inbox Cleaner per-user process (e.g. --inbox-matt);")
+        print("                                          users are defined in config inbox_users;")
+        print("                                          --cycle = snapshot+analyze+chat+execute in one shot (small inboxes, e.g. --inbox-james)")
+        print("                                          --engineer [--query \"...\"] = full Claude workup of one email (report + draft reply)")
         sys.exit(0)
 
 

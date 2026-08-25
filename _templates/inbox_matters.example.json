@@ -1,0 +1,34 @@
+{
+  "_comment": [
+    "Per-user matters file for the Inbox Cleaner (copy to the user's share",
+    "folder as matters.json). Seed it from the onboarding questionnaire.",
+    "The analyzer matches message SUBJECTS against each matter's keywords",
+    "(whole-word, case-insensitive) and claims the whole conversation when",
+    "any message matches. Folder defaults to 'Client\\Matter'; add a",
+    "\"folder\" key to override. closed=true archives wholesale (no age",
+    "floor); closed=false moves only mail older than the user's age line.",
+    "Matters earlier in the file win when keywords overlap — put the more",
+    "specific matter first. Avoid generic single words as keywords; check",
+    "drafted counts in the review workbook before anything is proposed.",
+    "For a generic keyword, add participant_domains (client + counterparty",
+    "email domains): a subject hit then only counts if the conversation",
+    "also involves someone at those domains. Fill from the cohort's Top",
+    "Senders list. Empty/absent = no guard.",
+    "Re-run --analyze after editing; draft cohorts regenerate.",
+    "noun: the user-facing word for their unit of work ('deal' for a",
+    "transactional practice, 'case' for litigation — default 'case').",
+    "Everything Rocky says to the user (Teams proposals, digests, cohort",
+    "descriptions) uses this word."
+  ],
+  "noun": "case",
+  "clients": [
+    {
+      "client": "Example Client",
+      "matters": [
+        {"matter": "Project Falcon", "keywords": ["falcon"], "closed": false,
+         "participant_domains": ["falcon-counterparty.com"]},
+        {"matter": "Old Closed Deal", "keywords": ["old closed deal"], "closed": true}
+      ]
+    }
+  ]
+}

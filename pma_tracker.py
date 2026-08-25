@@ -31,8 +31,12 @@ log = logging.getLogger("rocky")
 
 GRAPH_API_BASE = "https://graph.microsoft.com/v1.0"
 
-# Skip inline signature images at/under this size when exporting attachments.
-SIGNATURE_IMAGE_MAX = 15_000
+# Skip signature images (inline-flagged OR auto-named imageNNN.*) at/under
+# this size when exporting attachments. Mirrors rocky.is_signature_image — kept
+# local because this module is self-contained (rocky imports it). 25 KB is
+# deliberately conservative: substantive pasted screenshots can be ~45 KB.
+SIGNATURE_IMAGE_MAX = 25_000
+_SIGNATURE_IMAGE_NAME_RE = re.compile(r"^image\d{2,}\.(png|jpe?g|gif|bmp)$", re.IGNORECASE)
 ATTACHMENT_MAX_BYTES = 16 * 1024 * 1024
 
 
@@ -330,8 +334,10 @@ def build_activity_record(email: dict, app_token: str, mailbox: str,
         for att in atts:
             raw = att.get("contentBytes")
             ct = (att.get("contentType") or "").lower()
-            # Skip small inline signature images, matching the corpus archiver.
-            if att.get("isInline") and ct.startswith("image/") and raw and len(raw) <= SIGNATURE_IMAGE_MAX:
+            # Skip small signature images, matching the corpus archiver.
+            if (ct.startswith("image/") and raw and len(raw) <= SIGNATURE_IMAGE_MAX
+                    and (att.get("isInline")
+                         or _SIGNATURE_IMAGE_NAME_RE.match(att.get("name") or ""))):
                 continue
             text = None
             if extract_attachments and raw:

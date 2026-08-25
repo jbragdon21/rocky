@@ -1,0 +1,31 @@
+{
+  "_comment": [
+    "Per-user standing sender->folder routes for the Inbox Cleaner (copy to",
+    "the user's share folder as sender_routes.json). Seed from questionnaire",
+    "answers. Each route becomes its own approval cohort. domains match the",
+    "sender's email domain; senders match exact addresses; age_floor_days 0",
+    "= all ages. never_bulk_domains lists senders the newsletters pass must",
+    "NEVER sweep to Deleted Items (file-share / data-room / e-signature",
+    "notices) — the matter pass files the ones whose subjects name a deal,",
+    "and the rest are left alone. Re-run --analyze after editing."
+  ],
+  "routes": [
+    {
+      "title": "Example newsletter the user wants kept",
+      "target_folder": "Example Archive Folder",
+      "domains": ["example-newsletter.org"],
+      "senders": [],
+      "age_floor_days": 0
+    }
+  ],
+  "never_bulk_domains": [
+    "box.com",
+    "dropbox.com",
+    "dropboxmail.com",
+    "sharefile.com",
+    "sf-notifications.com",
+    "smartsheet.com",
+    "docusign.net",
+    "docusign.com"
+  ]
+}

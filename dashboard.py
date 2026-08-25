@@ -7,7 +7,7 @@ Start:
     dashboard.exe                       (production)
 
 Opens a web server at http://localhost:5001 with:
-- Live log viewer (tails rocky.log via Server-Sent Events)
+- Live log viewer (tails rocky.log + today's Maple updater run log via SSE)
 - Dormant/active status toggle (kill switch)
 - Scheduled task status and enable/disable controls
 - Running process indicators (lock-file check)
@@ -81,15 +81,14 @@ def load_config() -> dict:
 # /api/run from being an arbitrary-command sink.
 
 # Scheduling fields per command:
+#   args           extra fixed argv after the flag (e.g. inbox-james runs
+#                  "--inbox-james --cycle")
 #   sched_time     "HH:MM" default start time (None = no sensible default)
 #   sched_freq     DAILY | MINUTE | ... (default DAILY when a time is set)
 #   sched_interval minutes between runs, for MINUTE frequency
 #   recommended    include in the one-click "recommended daily schedule"
 #                  (True only for commands with a *documented* run time)
 # Documented times come from rocky.py's header docstring + BUILD_REFERENCE.
-# email-brain runs "once daily" with no documented time, so it carries a
-# *suggested* time for the quick-schedule button but is left out of the
-# bulk auto-setup.
 #
 # The "Maple" group is the daily Maple loop, in run order:
 #   maple-pma-activity (15:30, feed export) -> maple-updater (~16:00,
@@ -107,14 +106,30 @@ ROCKY_COMMANDS = [
     {"flag": "daily-cases",   "label": "Daily Cases",     "group": "Cases", "dry_run": False, "desc": "Collect and summarize today's emails for each case",    "sched_time": "16:00", "recommended": True},
     {"flag": "daily-run",     "label": "Daily Run",       "group": "Cases", "dry_run": False, "desc": "File new documents into each case folder",              "sched_time": "16:30", "recommended": True},
     {"flag": "daily-digest",  "label": "Daily Digest",    "group": "Cases", "dry_run": False, "desc": "Write the end-of-day summary of case activity",         "sched_time": "17:00", "recommended": True},
+    {"flag": "inbox-james",   "label": "James Inbox",     "group": "Inbox", "dry_run": False, "args": ["--cycle"], "desc": "Sort James's inbox — file-with-friends suggestions over Teams", "sched_time": "08:00"},
     {"flag": "steve-todo",    "label": "Steve To-Do",     "group": "Inbox", "dry_run": False, "desc": "Build Steve's morning to-do list from his email",       "sched_time": "07:30", "recommended": True},
     {"flag": "ella-digest",   "label": "Ella Digest",     "group": "Inbox", "dry_run": False, "desc": "Write Ella's daily summary of her case emails",         "sched_time": "17:00", "recommended": True},
     {"flag": "pending-llt",   "label": "Pending LLT",     "group": "Inbox", "dry_run": True,  "desc": "Draft status-update emails for landlord-tenant matters"},
     {"flag": "maple-pma-activity", "label": "Maple PMA Activity", "group": "Maple", "dry_run": False, "desc": "Step 1 — collect the day's PMA emails for Maple", "sched_time": "15:30", "recommended": True},
     {"flag": "maple-updater", "label": "Maple Updater",   "group": "Maple", "dry_run": False, "desc": "Step 2 — Maple updates HubSpot and writes the client update", "sched_time": "16:00", "external": True},
     {"flag": "maple-digest",  "label": "Maple Digest",    "group": "Maple", "dry_run": True,  "desc": "Step 3 — put the client update in James's Drafts to send", "sched_time": "19:00", "recommended": True},
-    {"flag": "email-brain",   "label": "Email Brain",     "group": "Other", "dry_run": False, "desc": "Re-read sent mail so Rocky's drafts sound like James",   "sched_time": "02:00"},
+    {"flag": "litigation",    "label": "Litigation Updater", "group": "Litigation", "dry_run": True, "args": ["--poll"], "desc": "Check for Bozzuto legal notices & claim requests, propose over Teams", "sched_time": "10:00"},
+    {"flag": "litigation-digest", "label": "Litigation Digest", "group": "Litigation", "dry_run": True, "desc": "Draft the day's claims activity into James's Drafts", "sched_time": "18:30"},
+    {"flag": "litigation-learn", "label": "Litigation Learn", "group": "Litigation", "dry_run": False, "desc": "Fold the week's Teams feedback into the litigation brain"},
+    # LetterStream's documented slot is 8:00 AM, but it's deliberately NOT
+    # "recommended": the --monitor loop already runs it every 10 minutes
+    # (like the hourly vault-mail/vault-inbox), and auto-setup shouldn't
+    # install a daily task that double-runs beside a deployed monitor.
+    # Overlap is safe (instance lock) — just redundant.
+    {"flag": "letterstream",  "label": "LetterStream",    "group": "Mail",  "dry_run": True,  "desc": "Certified mail sweep — requests, releases, tracking, affidavits & reminders", "sched_time": "08:00"},
+    {"flag": "remy-digest",   "label": "Remy Digest",     "group": "Other", "dry_run": True,  "args": ["--no-email"], "desc": "Write the day's Remy digest to GitHub + disk (the Multifamily Digest emails it)", "sched_time": "17:15", "recommended": True},
+    {"flag": "vault-dropbox", "label": "Vault Dropbox",   "group": "Vault", "dry_run": True,  "desc": "Pull new documents from the client Dropbox sources",        "sched_freq": "HOURLY", "sched_interval": 1},
+    {"flag": "vault-mail",    "label": "Vault Rocky Inbox", "group": "Vault", "dry_run": True, "desc": "File documents emailed to rocky@ with 'Vault' in the subject", "sched_freq": "HOURLY", "sched_interval": 1},
+    {"flag": "vault-inbox",   "label": "Vault James Inbox", "group": "Vault", "dry_run": True, "desc": "Sweep James's inbox for leases, ledgers & affidavits",      "sched_freq": "HOURLY", "sched_interval": 1},
+    {"flag": "vault",         "label": "The Vault",       "group": "Vault", "dry_run": True,  "desc": "All Vault sources in one run — manual use; don't schedule beside the split tasks"},
+    {"flag": "multifamily-digest", "label": "Multifamily Digest", "group": "Vault", "dry_run": True,  "desc": "One daily email: certified mail, affidavits, Vault additions, Remy development, and pending items", "sched_time": "17:45", "recommended": True},
     {"flag": "monitor-remy",  "label": "Monitor Remy",    "group": "Other", "dry_run": False, "desc": "Watch the inbox for notice requests (stays running)"},
+    {"flag": "monitor",       "label": "Monitor",         "group": "Other", "dry_run": False, "desc": "Fast loop — LetterStream + Vault mail sweeps every 10 min (stays running)"},
 ]
 
 _COMMANDS_BY_FLAG = {c["flag"]: c for c in ROCKY_COMMANDS}
@@ -150,6 +165,9 @@ def rocky_target() -> list[str]:
 def external_argv(flag: str) -> list[str]:
     """Argv for an external (non-rocky.py) command in the registry."""
     if flag == "maple-updater":
+        # No extra flags needed for live feedback: the dashboard tails the
+        # updater's own run log (logs\scheduled_run_*.log) directly, so every
+        # run shows in the viewer no matter how it was launched.
         return [
             "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
             "-File", str(maple_updater_script()),
@@ -157,12 +175,18 @@ def external_argv(flag: str) -> list[str]:
     raise ValueError(f"No external argv defined for: {flag}")
 
 
-def command_argv(flag: str, dry_run: bool = False) -> list[str]:
+def command_argv(flag: str, dry_run: bool = False,
+                 extra_args: list[str] | None = None) -> list[str]:
     """Full argv for any registry command (rocky flag or external)."""
     cmd = _COMMANDS_BY_FLAG[flag]
     if cmd.get("external"):
         return external_argv(flag)
-    argv = rocky_target() + [f"--{flag}"]
+    # "args" = extra fixed argv after the flag (Inbox Cleaner subcommands,
+    # e.g. --inbox-james --cycle). extra_args = per-launch additions from a
+    # dedicated endpoint (e.g. --letterstream --fetch <tracking#>) — never
+    # raw user input; callers validate first.
+    argv = (rocky_target() + [f"--{flag}"] + list(cmd.get("args") or [])
+            + list(extra_args or []))
     if dry_run and cmd.get("dry_run"):
         argv.append("--dry-run")
     return argv
@@ -182,7 +206,8 @@ def rocky_command_string(flag: str, dry_run: bool = False) -> str:
 _EXTERNAL_PROCS: dict[str, subprocess.Popen] = {}
 
 
-def launch_command(flag: str, dry_run: bool = False) -> dict:
+def launch_command(flag: str, dry_run: bool = False,
+                   extra_args: list[str] | None = None) -> dict:
     """
     Launch a registry command as a detached background process.
 
@@ -206,7 +231,7 @@ def launch_command(flag: str, dry_run: bool = False) -> dict:
                 "error": f"Updater script not found: {script}. Check "
                          f"'maple_updater_script' in config.json / OneDrive sync.",
             }
-    argv = command_argv(flag, dry_run)
+    argv = command_argv(flag, dry_run, extra_args)
 
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
@@ -245,22 +270,176 @@ def tail_log(path: Path, num_lines: int = 500) -> list[str]:
         return []
 
 
-def stream_log(path: Path):
-    """Generator that yields new log lines as SSE ``data:`` frames."""
-    # Wait for the file to appear.
-    while not path.exists():
-        yield "data: \n\n"
-        time.sleep(2)
+# --- Maple updater run log --------------------------------------------------
+# run-daily-update.ps1 appends to logs\scheduled_run_<date>.log line-by-line
+# during every run (however it was launched), including the relayed progress
+# of the Python step. The viewer tails it alongside rocky.log. Its lines are
+# "YYYY-MM-DD HH:MM:SS  msg" (no level tag); rewrite them into rocky.log's
+# format so the front-end's level filters and Plain-English rules apply as-is.
 
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
-        f.seek(0, 2)  # jump to end
-        while True:
-            line = f.readline()
-            if line:
-                yield f"data: {json.dumps(line.rstrip())}\n\n"
-            else:
-                time.sleep(0.5)
-                yield ": keepalive\n\n"
+_MAPLE_LINE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+(.*)$")
+
+
+def maple_run_log_path() -> Path:
+    """Today's Maple updater run log (may not exist yet)."""
+    return (maple_updater_script().parent / "logs"
+            / f"scheduled_run_{datetime.now():%Y-%m-%d}.log")
+
+
+def _normalize_maple_line(line: str, last_ts: list) -> str:
+    """Rewrite one Maple run-log line into rocky.log's format.
+
+    last_ts is a 1-element list carrying the most recent timestamp forward so
+    continuation lines (the multi-line run summary) stay ordered.
+    """
+    line = line.lstrip("\ufeff").rstrip()
+    m = _MAPLE_LINE.match(line)
+    if m:
+        last_ts[0] = m.group(1)
+        msg = m.group(2)
+    else:
+        msg = line
+    level = "ERROR" if msg.lstrip().startswith(("FATAL", "| FATAL")) else "INFO"
+    return f"{last_ts[0]},000 [{level}] [maple-updater] {msg}"
+
+
+def _maple_ts_seed() -> list:
+    return [f"{datetime.now():%Y-%m-%d} 00:00:00"]
+
+
+_TS_PREFIX = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3})")
+
+
+def merged_log_history(num_lines: int = 500) -> list[str]:
+    """Last lines of rocky.log + today's Maple run log, merged by timestamp."""
+    entries = []  # (timestamp key, insertion order, line)
+
+    def add(lines):
+        last = ""
+        for ln in lines:
+            m = _TS_PREFIX.match(ln)
+            if m:
+                last = m.group(1)
+            entries.append((last, len(entries), ln))
+
+    add(tail_log(LOG_PATH, num_lines))
+    seed = _maple_ts_seed()
+    add([_normalize_maple_line(l, seed)
+         for l in tail_log(maple_run_log_path(), num_lines)])
+    entries.sort(key=lambda e: (e[0], e[1]))
+    return [e[2] for e in entries[-num_lines:]]
+
+
+def stream_logs_merged():
+    """SSE generator — pushes new lines from rocky.log and today's Maple run
+    log as they appear. The Maple path is re-resolved every poll so the tail
+    follows the date rollover, and a file that appears mid-stream (a run that
+    just started) is streamed from its beginning.
+    """
+    offsets: dict[str, int] = {}
+    buffers: dict[str, bytes] = {}
+    maple_ts = _maple_ts_seed()
+
+    def new_lines(path: Path, start_at_end: bool) -> list[str]:
+        key = str(path)
+        try:
+            if not path.exists():
+                offsets.pop(key, None)
+                buffers.pop(key, None)
+                return []
+            size = path.stat().st_size
+            if key not in offsets:
+                offsets[key] = size if start_at_end else 0
+                buffers[key] = b""
+            if size < offsets[key]:      # file was truncated — start over
+                offsets[key], buffers[key] = 0, b""
+            if size == offsets[key]:
+                return []
+            with open(path, "rb") as f:
+                f.seek(offsets[key])
+                chunk = f.read()
+                offsets[key] = f.tell()
+            # Hold any partial trailing line (as bytes, so a multi-byte char
+            # split across reads is never mangled) until it completes.
+            buf = buffers[key] + chunk
+            *raw, buffers[key] = buf.split(b"\n")
+            return [r.decode("utf-8", errors="replace").rstrip("\r")
+                    for r in raw]
+        except OSError:
+            return []
+
+    first = True
+    while True:
+        lines = new_lines(LOG_PATH, start_at_end=first)
+        lines += [_normalize_maple_line(l, maple_ts)
+                  for l in new_lines(maple_run_log_path(), start_at_end=first)]
+        first = False
+        if lines:
+            for ln in lines:
+                yield f"data: {json.dumps(ln)}\n\n"
+        else:
+            time.sleep(0.5)
+            yield ": keepalive\n\n"
+
+
+# ===================================================================
+# LetterStream (certified mail) — pipeline snapshot for the sidebar card
+# ===================================================================
+
+def letterstream_summary() -> dict:
+    """
+    What the certified-mail process is waiting on, for the Certified Mail
+    card: affidavits awaiting Hailey's YES, mailings awaiting the
+    requester's release, and released jobs still in flight.
+
+    Reads the process's local state file directly (mailing_affidavits.py
+    keeps it in DATA_DIR\\affidavits\\state.json) — no LetterStream or
+    Graph calls, so it's cheap enough for the 10-second status poll.
+    """
+    try:
+        state = json.loads((DATA_DIR / "affidavits" / "state.json")
+                           .read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        state = {}
+    config = load_config()
+
+    affidavits = []
+    for tag, entry in sorted((state.get("pending") or {}).items()):
+        fields = entry.get("fields") or {}
+        detail = fields.get("property") or ""
+        sent = (entry.get("created") or "")[:10]
+        if sent:
+            detail = f"{detail} — sent {sent}" if detail else f"sent {sent}"
+        affidavits.append({"tag": tag,
+                           "who": fields.get("tenant") or "?",
+                           "detail": detail})
+
+    releases = []
+    for tag, entry in sorted((state.get("mail_pending") or {}).items()):
+        cost = entry.get("cost")
+        bits = []
+        if isinstance(cost, (int, float)):
+            bits.append(f"${cost:.2f}")
+        if entry.get("requester"):
+            bits.append(f"waiting on {entry['requester']}")
+        releases.append({"tag": tag,
+                         "who": entry.get("label") or "?",
+                         "detail": " — ".join(bits)})
+
+    in_flight = []
+    for tag, entry in sorted((state.get("in_flight") or {}).items()):
+        released = (entry.get("released") or "")[:10]
+        in_flight.append({"tag": tag,
+                          "who": entry.get("label") or "?",
+                          "detail": f"released {released}" if released else ""})
+
+    return {
+        "configured": bool(config.get("letterstream_api_id")
+                           and config.get("letterstream_api_key")),
+        "affidavits": affidavits,
+        "releases": releases,
+        "in_flight": in_flight,
+    }
 
 
 # ===================================================================
@@ -665,9 +844,9 @@ def index():
 
 @app.route("/api/stream")
 def api_stream():
-    """SSE endpoint — pushes new log lines in real time."""
+    """SSE endpoint — pushes new log lines in real time (rocky + Maple)."""
     return Response(
-        stream_log(LOG_PATH),
+        stream_logs_merged(),
         mimetype="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -678,8 +857,8 @@ def api_stream():
 
 @app.route("/api/log-history")
 def api_log_history():
-    """Return the last 500 log lines (initial page load)."""
-    return jsonify({"lines": tail_log(LOG_PATH, 500)})
+    """Return the last 500 log lines, both logs merged (initial page load)."""
+    return jsonify({"lines": merged_log_history(500)})
 
 
 @app.route("/api/status")
@@ -693,6 +872,7 @@ def api_status():
         "running": get_running_commands(),
         "tasks": tasks,
         "run_info": command_run_info(tasks),
+        "letterstream": letterstream_summary(),
         "log_size": log_stat.st_size if log_stat else 0,
         "log_modified": log_stat.st_mtime if log_stat else None,
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -730,6 +910,33 @@ def api_run():
     if not flag:
         return jsonify({"success": False, "error": "Missing command flag"}), 400
     result = launch_command(flag, dry_run)
+    code = 200 if result.get("success") else 409
+    return jsonify(result), code
+
+
+# A USPS certified tracking number (20+ digits) or a LetterStream doc id.
+# The strict shape is what lets us hand it to the subprocess safely.
+_LS_REF_RE = re.compile(r"^[A-Za-z0-9._-]{3,64}$")
+
+
+@app.route("/api/letterstream/fetch", methods=["POST"])
+def api_letterstream_fetch():
+    """
+    Pull ONE mailing's proof from LetterStream by tracking number (or doc
+    id) and run it through the affidavit pipeline — the day-to-day
+    discovery path, since the API can't list website-submitted jobs.
+    Runs `rocky --letterstream --fetch <ref>` under the letterstream lock.
+    """
+    data = request.get_json(silent=True) or {}
+    ref = re.sub(r"\s+", "", str(data.get("ref") or ""))
+    if not _LS_REF_RE.match(ref):
+        return jsonify({
+            "success": False,
+            "error": "Enter the USPS certified tracking number (or "
+                     "LetterStream doc id) — letters, digits, dots and "
+                     "dashes only.",
+        }), 400
+    result = launch_command("letterstream", extra_args=["--fetch", ref])
     code = 200 if result.get("success") else 409
     return jsonify(result), code
 

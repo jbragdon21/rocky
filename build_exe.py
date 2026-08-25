@@ -35,16 +35,23 @@ def build_rocky():
         "--hidden-import", "openpyxl",
         "--hidden-import", "pypdf",
         "--hidden-import", "docx",
-        # numpy is imported (lazily) by email_brain for vector similarity.
-        "--hidden-import", "numpy",
         # Bundle the local modules alongside rocky.py.
+        # (email_brain.py + its numpy dependency moved to Minotaur 2026-08-02.)
         "--add-data", f"{ROOT / 'permissions.py'};.",
         "--add-data", f"{ROOT / 'outbound.py'};.",
         "--add-data", f"{ROOT / 'remy_runner.py'};.",
+        "--add-data", f"{ROOT / 'remy_digest.py'};.",
         "--add-data", f"{ROOT / 'kill_switch.py'};.",
         "--add-data", f"{ROOT / 'pending_llt.py'};.",
         "--add-data", f"{ROOT / 'pma_tracker.py'};.",
-        "--add-data", f"{ROOT / 'email_brain.py'};.",
+        "--add-data", f"{ROOT / 'inbox_cleaner.py'};.",
+        "--add-data", f"{ROOT / 'teams.py'};.",
+        "--add-data", f"{ROOT / 'vault.py'};.",
+        "--add-data", f"{ROOT / 'litigation_updater.py'};.",
+        "--add-data", f"{ROOT / 'mailing_affidavits.py'};.",
+        "--add-data", f"{ROOT / 'letterstream.py'};.",
+        "--add-data", f"{ROOT / 'multifamily_digest.py'};.",
+        "--add-data", f"{ROOT / '_templates' / 'affidavit_template.docx'};_templates",
         "--add-data", f"{ROOT / 'Icon'};Icon",
         # Jinja2 is used by pending_llt; ensure PyInstaller bundles it.
         "--hidden-import", "jinja2",

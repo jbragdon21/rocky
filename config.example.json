@@ -20,7 +20,12 @@
     "jbragdon@gallagherllp.com",
     "kvirtue@gallagherllp.com"
   ],
-  "maple_client_digest_cc": ["pma@bozzuto.com"],
+  "maple_client_digest_cc": [
+    "pma@bozzuto.com",
+    "rprice@bozzuto.com",
+    "ccooley@bozzuto.com",
+    "mbarry@bozzuto.com"
+  ],
 
   "_maple_updater_comment": "Path to the Maple updater's run-daily-update.ps1 (lives in the Maple OneDrive folder, not in Rocky). The dashboard's 'Maple Updater' button/schedule runs this script. Defaults IN CODE to the production path on the Rocky laptop (rocky profile); set this on machines where the Maple folder mounts elsewhere.",
   "maple_updater_script": "C:\\Users\\jbragdon\\OneDrive - gejlaw.com\\Program Files\\Maple\\Maple updater agent\\run-daily-update.ps1",
@@ -35,6 +40,19 @@
     "jbragdon@gallagherllp.com",
     "caraviakis@gallagherllp.com"
   ],
+
+  "_remy_digest_comment": "Remy digest (--remy-digest, 5:15 PM weekdays, WITH --no-email since 2026-08-23 — the Multifamily Digest at 5:45 embeds the day's Remy digest, so add Shane to multifamily_digest_recipients; the GitHub digest/ commit and local copy still happen every run). Rocky reads the Remy repo over the GitHub API, summarizes the day's code commits and session notes in plain English, and commits digest/YYYY-MM-DD.md back to the repo. remy_github_token is a fine-grained PAT scoped to jbragdon21/remy with 'Contents: Read and write' — read-only cannot update the on-GitHub archive. remy_digest_recipients only matters for manual runs without --no-email; must be firm addresses. remy_digest_mailbox defaults to rocky_email.",
+  "remy_github_token": "",
+  "remy_github_repo": "jbragdon21/remy",
+  "remy_github_branch": "main",
+  "remy_digest_recipients": [
+    "jbragdon@gallagherllp.com"
+  ],
+  "remy_digest_mailbox": "rocky@gallagherllp.com",
+
+  "_monitor_comment": "The Monitor (--monitor, 24/7 at boot — separate from --monitor-remy). Every monitor_interval_minutes it runs monitor_commands as subprocesses (own locks/cursors/failure isolation), so certified-mail requests, YES replies, and Vault submissions get handled within minutes. Honors ROCKY STOP. Disable the 8:00 AM letterstream and hourly vault-mail/vault-inbox schedule entries once this runs (overlap is lock-safe, just redundant). Heavier jobs (vault-dropbox, litigation --poll, digests) stay on their own schedules; add a flag here to fold one in without a rebuild.",
+  "monitor_interval_minutes": 10,
+  "monitor_commands": ["--letterstream", "--vault-mail", "--vault-inbox"],
 
   "_kill_switch_comment": "Email addresses authorized to send ROCKY STOP / ROCKY START commands.",
   "kill_switch_authorized": [
@@ -78,14 +96,146 @@
   "pma_activity_backfill_days": 30,
   "pma_activity_extract_attachments": true,
 
-  "_email_brain_comment": "Email Brain (--email-brain). Pulls ALL of James's sent mail from sent_brain_folders into a local SQLite DB (brain.db, with FTS5) + a raw sent_emails.jsonl export, pairs each reply with the inbound message it answered (via conversationId), and embeds the retrieval-key text via Voyage AI for similarity search. DB/JSONL live in email_brain_dir (blank = C:\\Rocky\\email_brain — LOCAL and private, not OneDrive). Reads via the app-level token + Application Access Policy (covers jbragdon@ AND rocky@); no new Graph permission. voyage_api_key from voyageai.com; voyage_model defaults to voyage-3-large.",
-  "_sent_brain_folders_comment": "Each entry is either a bare path string (read from sent_brain_mailbox) or {mailbox, path}. Current sent mail lives in jbragdon@'s Sent Items — that's the only source for now. LATER, once the archived sends are moved over: the Online Archive ('__Older Sent Items') is a separate In-Place Archive mailbox Graph CANNOT read, so drag those archived sends into a DEDICATED folder in rocky@ (e.g. create 'Inbox\\James Older Sent' first — do NOT use Rocky's bare Inbox or you'll ingest Rocky's operational mail) and add the entry {\"mailbox\": \"rocky@gallagherllp.com\", \"path\": \"Inbox\\\\James Older Sent\"} to the list below. Incremental cursors are per-folder, so adding it later just backfills that folder without re-pulling Sent Items. sent_brain_author is the single identity treated as 'James' for pairing, even when the host mailbox is rocky@.",
-  "sent_brain_mailbox": "jbragdon@gallagherllp.com",
-  "sent_brain_author": "jbragdon@gallagherllp.com",
-  "sent_brain_folders": [
-    {"mailbox": "jbragdon@gallagherllp.com", "path": "Sent Items"}
+  "_email_brain_comment": "The Email Brain moved ENTIRELY to Minotaur 2026-08-02 — commands are now 'minotaur.py brain ...' and its config keys (sent_brain_*, voyage_*, email_brain_dir) live in C:\\Minotaur\\config.json (see Program Files\\Minotaur\\MINOTAUR.md). rocky.py no longer reads them; the deployed C:\\Rocky\\config.json may still carry them harmlessly, and Minotaur's setup command copies from there.",
+
+  "_vault_comment": "The Vault (--vault, 3:00 PM daily). Shared team library of Remy-filing documents (leases, ledgers, affidavits of service) at vault_root — blank derives '<cases_root parent>\\The Vault'. Pin the folder 'Always keep on this device' on the Rocky laptop. Sources: vault_inbox_mailbox (defaults to user_email — scanned for lease/ledger/affidavit attachments), vault_mailbox (defaults to rocky_email — any subject containing vault_subject_keyword is a team submission; everything attached gets filed and Rocky replies with where it went, gated by vault_confirmation_replies), and vault_dropbox_accounts. Reads use the app token (client_secret + Application Access Policy). First run backfills vault_backfill_days.",
+  "vault_root": "",
+  "vault_subject_keyword": "vault",
+  "vault_backfill_days": 7,
+  "vault_confirmation_replies": true,
+  "_vault_property_table_comment": "Property grounding (2026-08-24): classification is grounded against Remy's property list (240 canonical community names) — the list rides in every classify prompt, and returned names snap to canonical spelling with a confidence floor when a tenant is also present. Default location is data\\property_table.csv beside remy_cli_path; set vault_property_table to override; missing file just disables grounding.",
+  "_vault_move_comment": "Processed mail leaves the inbox (2026-08-23): vault-mail submissions move to Inbox\\The Vault in rocky@'s mailbox; James-inbox emails the Vault took documents from move to Inbox\\The Vault in HIS mailbox. Set either key to \"\" to disable. (Same pattern: litigation_processed_folder -> Inbox\\Litigation Updater, letterstream_processed_folder -> Inbox\\Letterstream.)",
+  "vault_processed_folder": "The Vault",
+  "vault_inbox_processed_folder": "The Vault",
+  "letterstream_processed_folder": "Letterstream",
+  "_multifamily_digest_comment": "Multifamily Digest (--multifamily-digest, 5:30 PM daily — dashboard 'Multifamily Digest'). ONE daily email from rocky@: certified mail sent through LetterStream (requested/released/mailed with costs and approvers), affidavits drafted/filed/declined, the day's Vault additions, and a snapshot of everything still pending. SUBSUMES the standalone Vault Digest — don't schedule both. Quiet day = no email. Recipients fall back to vault_digest_recipients, then user_email.",
+  "multifamily_digest_recipients": ["jbragdon@gallagherllp.com", "PASTE-SHANES-ADDRESS@gallagherllp.com"],
+  "_multifamily_banner_comment": "Masthead image for the Multifamily Digest email. OMIT the multifamily_digest_banner key to use the bundled Icon\\multifamily_banner.png (the default — no config needed); set it to a path to override (must exist on the machine that runs the digest); set it to \"\" to disable the banner (plain text title instead).",
+  "_vault_digest_comment": "Vault Digest (--vault-digest). SUPERSEDED by the Multifamily Digest (which includes the same Vault section); the command still works for manual use. Recipients also serve as the multifamily digest's fallback list.",
+  "vault_digest_recipients": ["jbragdon@gallagherllp.com"],
+  "_vault_dropbox_comment": "Each entry is one Dropbox login to pull from. Create an app at dropbox.com/developers/apps (scoped access; permissions files.metadata.read + files.content.read + sharing.read), paste app_key/app_secret here, then run 'rocky.exe --vault --dropbox-auth <name>' once to get the refresh_token. folders are paths in that account's own Dropbox ('' = entire accessible root; app-folder apps see only their folder); omit folders entirely for a link-only account. shared_links are shared-FOLDER links from anyone (rlkey and all query params kept intact) — the token just needs to be any authorized Dropbox login, e.g. James's own, so ONE app covers every client's shared link; description feeds the classifier context. max_files_per_run (default 200) throttles big first pulls — cursors/marks hold so the rest arrives on later runs.",
+  "vault_dropbox_accounts": [
+    {
+      "name": "james-dropbox",
+      "app_key": "PASTE-DROPBOX-APP-KEY",
+      "app_secret": "PASTE-DROPBOX-APP-SECRET",
+      "refresh_token": "RUN --vault --dropbox-auth james-dropbox",
+      "shared_links": [
+        {
+          "name": "rad-notices",
+          "url": "https://www.dropbox.com/scl/fo/PASTE-FULL-SHARED-LINK-WITH-rlkey",
+          "description": "DC RAD-stamped notices supporting Remy complaint drafting",
+          "max_age_days": 183
+        }
+      ],
+      "_max_age_comment": "max_age_days (per link, or account-wide) skips files whose Dropbox modified date is older — e.g. 183 = only the last ~6 months. CLI --max-age-days overrides for one run.",
+      "max_files_per_run": 200
+    }
   ],
-  "voyage_api_key": "PASTE-VOYAGE-KEY-HERE",
-  "voyage_model": "voyage-3-large",
-  "email_brain_dir": ""
+
+  "_affidavit_comment": "LetterStream process (--letterstream, legacy alias --affidavits; 8:00 AM daily; renamed from Mailing Affidavits 2026-08-23 — it also sends mailings without affidavits; the affidavit_* key names are unchanged). Generates the Certified Mailing Affidavit from a LetterStream proof-of-mailing PDF and emails it to affidavit_approver (Hailey) for a YES/NO reply; YES files the affidavit + proof into The Vault. letterstream_api_id/key come from My Account > API Information after LetterStream activates API access. IMPORTANT: LetterStream's documented API (Feb 2023) has NO job-list call, so discovery is '--letterstream --fetch <certified tracking #>' (proof pulled via the API) or '--letterstream --ingest <proof.pdf>' (downloaded by hand); if support ever provides a list call, put its POST params in letterstream_list_params (e.g. {\"action\": \"...\"}) and the 8 AM pull becomes automatic — see LETTERSTREAM.md. '--letterstream --probe' verifies auth (accountstatus). affidavit_root blank derives '<cases_root parent>\\Mailing Affidavits' (pin it on the Rocky laptop). affidavit_cc is added to every approval email (default: James). affidavit_pdf: convert the approved affidavit to PDF via Word before vaulting (needs Word on the machine; falls back to the .docx).",
+  "letterstream_api_id": "PASTE-LETTERSTREAM-API-ID-WHEN-ACTIVATED",
+  "letterstream_api_key": "PASTE-LETTERSTREAM-API-KEY-WHEN-ACTIVATED",
+  "_affidavit_submit_comment": "Primary discovery channel (LetterStream confirmed 2026-08-16 that the API can't list or serve proofs for website-submitted jobs): any firm sender emails rocky@ with affidavit_subject_keyword in the subject and the proof-of-mailing PDF(s) from the LetterStream job page attached; the 8 AM sweep turns each into an affidavit sent for approval and replies to the submitter.",
+  "affidavit_subject_keyword": "proof of mailing",
+  "_mail_submit_comment": "Outbound: Rocky submits certified mail through the LetterStream API. A firm sender emails rocky@ with mail_request_keyword in the subject + ONE PDF (the complete packet); Rocky preauths on LetterStream (nothing bills), emails the requester the recipient + page count + quoted cost tagged [CM-####]; YES from the requester or James releases it (the billing step). mail_max_cost caps the LetterStream quote. mail_from = the firm return address printed on the envelope/coversheet (defaults in code to the Baltimore office). letterstream_mailtype: 'certified' (with Electronic Return Receipt) or 'certnoerr' (without). Once mailed, the proof is pulled via the API and the affidavit flows automatically.",
+  "mail_request_keyword": "certified mail",
+  "mail_max_cost": 50.0,
+  "letterstream_mailtype": "certified",
+  "letterstream_coversheet": true,
+  "_letterstream_extra_comment": "Extra POST fields merged into every job submission — the hook for options the Feb 2023 API doc doesn't cover. Pending answer from LetterStream support: the field name for EXPEDITED production (the website's expedite option), which the firm wants as the default; when support names it, add it here (e.g. {\"expedite\": \"1\"}) — no rebuild needed. Uploads/job names follow the firm convention 'LastName Matter#' (matter number extracted from the request email; job names carry a short unique suffix).",
+  "letterstream_extra_fields": {},
+  "mail_from": {"name1": "Gallagher LLP", "name2": "", "addr1": "650 South Exeter Street", "addr2": "Suite 1200", "city": "Baltimore", "state": "MD", "zip": "21202"},
+  "affidavit_root": "",
+  "affidavit_approver": "PASTE-HAILEYS-EMAIL@gallagherllp.com",
+  "affidavit_approver_first_name": "Hailey",
+  "affidavit_cc": ["jbragdon@gallagherllp.com"],
+  "affidavit_affiant_name": "Hailey Mondragon",
+  "affidavit_affiant_title": "Legal Administrative Assistant",
+  "affidavit_reminder_days": 3,
+  "affidavit_backfill_days": 7,
+  "affidavit_pdf": true,
+
+  "_litigation_comment": "Litigation Updater (--litigation). Bozzuto claims tracking on Smartsheet. smartsheet_token: a Smartsheet API access token (Account > Apps & Integrations > API Access) from an account with access to both sheets. Sheet IDs: File > Properties on each sheet. litigation_root holds the shared data (activity/comms logs, brain.md, voices, report template, the Litigation Update Vault, Reports) — pin it 'Always keep on this device'. Column names are matched by TITLE, so set litigation_entity_column / litigation_closure_column / litigation_disclosure_column / litigation_update_columns to your actual column titles; litigation_update_columns lists the columns updates are normally written into (empty = let Claude use any non-primary column). litigation_entities maps report keys to entity names (report requests: --report BMC or a Teams message 'run a litigation update for BMC'). litigation_audit_reports_dir: folder of PAST audit reports (.docx/.pdf) that teach the third-party-disclosure voice. litigation_summary_column: the internal claim-summary narrative column ('Summary of Claim') — teaches the summary voice. Exemplar documents dropped in <litigation_root>\\_litigation\\voices\\seeds\\<updates|summary|closure|disclosure>\\ are folded into that voice on every --voice-rebuild as gold-standard references. litigation_notice_senders: mail from (or forwarded from) these addresses is treated as a new legal notice. After a YES executes, the source mail is moved out of rocky@'s inbox into the litigation_processed_folder subfolder (created under the Inbox if missing; set to \"\" to disable). litigation_mail_move_via: \"delegated\" (default — rocky@'s cached sign-in, Mail.ReadWrite.Shared, consented 2026-07-05) or \"app\" (needs Mail.ReadWrite Application). The Teams chat is a persistent group chat titled litigation_chat_topic between rocky@ and litigation_chat_owner (default user_email); litigation_observers may watch but never decide.",
+  "smartsheet_token": "PASTE-SMARTSHEET-API-TOKEN-HERE",
+  "_litigation_sheets_comment": "TWO open sheets share one closed sheet. Each open-sheet entry: key (shown in chat/logs), sheet_id, entities (routes NEW claims — an incoming notice for one of these entities lands on this sheet), claim_column (the sheet's claim-identifier column), and column_map additions (open->closed title translations layered over the global litigation_column_map). The BCC/BDC master ('BCC_BDC Litigation Report - MASTER', verified 2026-08-02) uses 'Project' where the BMC master uses 'Property Name (State)', and 'Combined Claimant/Project' like the closed sheet. (Legacy single-sheet key litigation_open_sheet_id still works if litigation_open_sheets is absent.)",
+  "litigation_open_sheets": [
+    {
+      "key": "BMC",
+      "sheet_id": "PASTE-BMC-MASTER-SHEET-ID",
+      "entities": ["BMC", "B&A"],
+      "claim_column": "Combined Claimant (Project)"
+    },
+    {
+      "key": "BCC/BDC",
+      "sheet_id": "PASTE-BCC-BDC-MASTER-SHEET-ID",
+      "entities": ["BCC", "BDC", "BHI"],
+      "claim_column": "Combined Claimant/Project",
+      "column_map": {"Project": "Property"}
+    }
+  ],
+  "litigation_closed_sheet_id": "PASTE-CLOSED-CLAIMS-SHEET-ID",
+  "litigation_root": "C:\\Users\\jbragdon\\OneDrive - gejlaw.com\\Program Files\\Rocky\\Litigation Updates",
+  "litigation_mailbox": "rocky@gallagherllp.com",
+  "litigation_notice_senders": ["legalnotices@bozzuto.com"],
+  "_litigation_columns_comment": "Column titles below match the 'BMC Litigation Report - MASTER' sheet (verified 2026-08-02): Entity | Claimant | Last Name of Claimant (if applicable) | Date of Loss/Filing | Property Name (State) | Combined Claimant (Project) | Type of Case | Summary of Claim | Attorneys | Status/Action Items | Exposure | Exposure/Analysis | Estimated Settlement Expense | Estimated Attorneys' Fees | Court/Agency | Case No. | Date Filed | List of All Defendants | Third Party Disclosure Summary | Overall Status. litigation_claim_column names a claim for correlation/vault/chat. Entity cells hold 'BMC' plus variants like 'B&A d/b/a The Bozzuto Group' — the match lists cover them.",
+  "litigation_entities": {
+    "BMC": "Bozzuto Management Company",
+    "B&A": {"name": "Bozzuto & Associates",
+            "match": ["B&A", "Bozzuto & Associates", "Bozzuto Group"]},
+    "BHI": "Bozzuto Homes",
+    "BCC": "Bozzuto Construction Company",
+    "BDC": "Bozzuto Development Company"
+  },
+  "litigation_entity_column": "Entity",
+  "litigation_claim_column": "Combined Claimant (Project)",
+  "litigation_update_columns": ["Status/Action Items", "Overall Status"],
+  "litigation_correlate_columns": ["Claimant", "Entity", "Property Name (State)", "Project", "Type of Case", "Case No."],
+  "_litigation_closed_comment": "Closed sheet ('Closed Claims - MASTER', verified 2026-08-02) mirrors the open sheet plus 'Date Closed' and 'Closure Notes', but three titles drifted — litigation_column_map translates open-sheet titles to closed-sheet titles when a claim moves. Date Closed is auto-set to the move date when the drafted note doesn't carry one.",
+  "litigation_closure_column": "Closure Notes",
+  "litigation_date_closed_column": "Date Closed",
+  "litigation_column_map": {
+    "Date of Loss/Filing": "Date of Loss / Filing",
+    "Property Name (State)": "Property",
+    "Combined Claimant (Project)": "Combined Claimant/Project"
+  },
+  "litigation_processed_folder": "Litigation Updater",
+  "litigation_mail_move_via": "delegated",
+  "litigation_summary_column": "Summary of Claim",
+  "litigation_disclosure_column": "Third Party Disclosure Summary",
+  "litigation_audit_reports_dir": "",
+  "litigation_report_template": "",
+  "litigation_chat_topic": "Litigation Updates",
+  "litigation_observers": [],
+  "litigation_backfill_days": 7,
+
+  "_inbox_cleaner_comment":"Inbox Cleaner (--inbox-<key>, e.g. --inbox-matt). Per-user inbox triage that becomes a permanent rule-learning maintenance process. Each key under inbox_users is a process name suffix (inbox-matt, inbox-paul, ...). mailbox must be covered by the Application Access Policy (IT adds it — see INBOX_CLEANER.md). chat_upn defaults to mailbox. Tunables: age_floor_days (case + internal cohorts; newsletters have none), big_cluster_min (thread size before it's 'a big case'), newsletter_min_count / newsletter_max_read_rate (bulk-sender heuristics). inbox_cleaner_dir = the human-facing share folder (rules.md, cohorts, activity + communications logs, review workbook); standard location is 'Rocky Inboxes' under OneDrive Program Files\\Rocky (already pinned/synced on the laptop; set the machine's own profile path). Blank = fallback to a 'Rocky Inboxes' folder beside Rocky Cases. Snapshot/moves logs stay LOCAL under C:\\Rocky\\inbox_cleaner\\<key>.",
+  "inbox_cleaner_dir": "C:\\Users\\jbragdon\\OneDrive - gejlaw.com\\Program Files\\Rocky\\Rocky Inboxes",
+  "_inbox_observers_comment": "observers: extra people in the user's Teams approval chat (group chat instead of 1:1) who can watch and comment — but ONLY the mailbox owner's replies count as approvals. Omit the key to default to [user_email] (James). Set to [] for a true 1:1.",
+  "_inbox_write_via_comment": "write_via: how --execute authenticates. 'app' (default) = application token, needs Mail.ReadWrite (Application) + admin consent, fenced by the Application Access Policy. 'delegated' = rocky@'s own delegated token (Mail.ReadWrite.Shared, already consented), needs only an Exchange Full Access delegation on the target mailbox — the lighter IT ask, chosen for Matt.",
+  "_inbox_james_comment": "James's own process (--inbox-james) runs the whole loop via --cycle (snapshot+analyze+chat+execute, dashboard 'James Inbox' button / 08:00 schedule). conversation_sort:true enables the 'sort with friends' pass — for each message still in the inbox, find where the rest of its conversation is already filed (mailbox-wide; conversationId first, normalized-subject search fallback — the SortByConversation Outlook macro, ported to Graph) and propose moving it there over Teams. Runs live against the CURRENT inbox; skipped when the inbox holds more than conversation_sort_max messages (default 200). cycle_execute:true lets --cycle execute APPROVED cohorts live (rocky@ already has Full Access on James's mailbox, so write_via delegated works with no IT step). observers:[] = true 1:1 Teams chat (James IS the owner). chat_mode 'open' (vs the default 'strict' YES/NO protocol) routes every chat message through a guarded Claude call: it can approve/decline the pending proposal, append standing rules to rules.md, add exclusions/routes to sender_routes.json, and log feature requests to code_changes.md; open-ended requests come back as a concrete [PROPOSAL A####] listing the exact effects, applied only after a YES — mail still moves only via approved cohorts. engineer_draft_reply:true lets the Engineer workup (chat 'engineer ...' or --engineer) put a DRAFT reply in the owner's Drafts (never sends).",
+  "inbox_users": {
+    "matt": {
+      "mailbox": "PASTE-MATTS-MAILBOX@gallagherllp.com",
+      "display_name": "Matt",
+      "matter_noun": "deal",
+      "write_via": "delegated",
+      "observers": ["jbragdon@gallagherllp.com"],
+      "age_floor_days": 180,
+      "big_cluster_min": 150,
+      "newsletter_min_count": 50
+    },
+    "james": {
+      "mailbox": "jbragdon@gallagherllp.com",
+      "display_name": "James",
+      "matter_noun": "case",
+      "write_via": "delegated",
+      "observers": [],
+      "conversation_sort": true,
+      "conversation_sort_max": 200,
+      "cycle_execute": true,
+      "chat_mode": "open",
+      "engineer_draft_reply": true
+    }
+  }
 }

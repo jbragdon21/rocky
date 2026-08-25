@@ -90,6 +90,7 @@ All done. Rocky laptop is live and running.
 | `--ella-digest [--hours N]` | 5:00 PM | Ella's daily case digest |
 | `--monitor-remy` | 24/7 (via wrapper) | Poll Rocky's inbox for Remy requests |
 | `--pending-llt [--dry-run]` | On demand | Download LLT + contacts from SharePoint, draft status emails by property |
+| `--remy-digest [--date YYYY-MM-DD] [--dry-run]` | 5:30 PM weekdays | Summarize the day's Remy app changes from GitHub, commit the digest, email James + Shane |
 
 ---
 
@@ -103,6 +104,20 @@ All done. Rocky laptop is live and running.
 - [ ] Run `--pending-llt --dry-run` to validate property matching
 - [ ] Add "LLT Name" column to BMC Contacts spreadsheet for unmatched properties
 - [ ] Run `--pending-llt` live to create drafts, review in Outlook
+
+### Remy digest (code complete 2026-08-05, activation pending)
+- [x] `remy_digest.py` — reads jbragdon21/remy over the GitHub API, writes the
+      plain-English digest via Claude, commits it to `digest/`, emails it
+- [x] `--remy-digest` wired into `rocky.py`, dashboard registry, and the build
+- [ ] Mint a fine-grained GitHub PAT: repo `jbragdon21/remy`, **Contents: Read
+      and write**, long expiration → `remy_github_token` in config.json
+- [ ] Add Shane's email address to `remy_digest_recipients`
+- [ ] Rebuild/deploy `rocky.exe`, add the 5:30 PM weekday scheduled task
+- [ ] Verify with `--remy-digest --dry-run`, then a live run
+- [ ] After a clean live run: delete the `remy-daily-digest` Claude Code
+      scheduled task on the dev laptop and update `digest/README.md` +
+      `digest/ROCKY.md` in the REMY repo (both still describe the old
+      generate-on-dev-laptop / Rocky-only-emails split)
 
 ### Remy activation
 - [ ] Send test "Run Remy:" email to `rocky@gallagherllp.com`, verify end-to-end

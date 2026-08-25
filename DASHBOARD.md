@@ -4,7 +4,15 @@ The dashboard is a small web page that shows what Rocky is doing and lets you
 control it from any device:
 
 - **Live activity log** — in **Plain English** by default (toggle to Technical
-  for the raw log).
+  for the raw log). The viewer tails **two** files merged into one stream:
+  Rocky's own `rocky.log`, and today's Maple updater run log
+  (`Maple updater agent\logs\scheduled_run_<date>.log` in the Maple OneDrive
+  folder). The updater writes that log line-by-line during every run — however
+  it was launched (dashboard button, Task Scheduler, or by hand) — so its
+  progress (start, email count, HubSpot writes, client digest queued, complete)
+  always shows live. No flags or task re-creation needed. On a machine other
+  than the one running the updater, those lines arrive at OneDrive-sync speed
+  (typically seconds).
 - **Pause / Resume Rocky** (the kill switch).
 - **Run a command now** — one-click ▶ on any Rocky job.
 - **Scheduling** — 📅 to schedule one job, **⚡ Auto-setup** to install the whole
