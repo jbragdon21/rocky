@@ -27,7 +27,24 @@ The Vault\
 ```
 
 - **Property/tenant folders** are created by Rocky from Claude's read of
-  each document (plus the email body / Dropbox path for hints).
+  each document (plus the email body / Dropbox path for hints). Property
+  names are grounded (2026-08-24) against Remy's property_table.csv AND
+  (2026-08-29) `_vault\property_aliases.json` — a human-editable JSON on
+  the share mapping variant spellings to the canonical folder ("Alula" →
+  "Alula at Bridge District"); it also carries `known_properties` for
+  communities missing from Remy's table. Teach new variants there — every
+  run rereads it. Before creating folders, Rocky reuses an existing
+  property folder that matches case-insensitively and an existing tenant
+  folder for the same person ("Holland, D" arriving when "Holland,
+  Deleona" exists files into the existing folder; two plausible matches =
+  ambiguous = no reuse).
+- **Filename dates are the document's OWN date** (service date, lease
+  execution, ledger through-date) — never the email/Dropbox timestamp.
+  When no date is extractable the name says `undated` (revised
+  2026-08-29; the old source-date fallback stamped half the vault with
+  the client's 8/6 Dropbox upload date). Scanned PDFs with no text layer
+  are attached to the classify call as PDF pages (first 4), so Claude
+  reads the scan itself — dates and parties now come from the image.
 - **`_Needs Review`** holds anything below the confidence floor (0.75) or
   missing a property/tenant. Files keep their original name prefixed
   `YYYY-MM-DD_<hash8>_`. Humans may move these into place by hand; the
@@ -71,17 +88,17 @@ Each `--vault` run walks all configured sources (or one, with
    allowlist keeps this internal-only, and replies aren't needed for the
    filing itself).
 
-   **Processed mail leaves the inbox (2026-08-23).** A handled
-   vault-mail submission moves to `Inbox\The Vault` in rocky@'s mailbox
-   (`vault_processed_folder`; "" disables). Likewise, a James-inbox
-   email the Vault actually took documents from moves to
-   `Inbox\The Vault` in *his* mailbox (`vault_inbox_processed_folder`)
-   — mail the sweep examined but took nothing from stays put. Moves use
-   rocky@'s delegated Mail.ReadWrite.Shared (no new permissions), are
-   best-effort (failure logs, filing stands), and run LAST because a
-   Graph move changes the message id. Same pattern as the Litigation
-   Updater's `Inbox\Litigation Updater` and Mailing Affidavits'
-   `Inbox\Letterstream` (`letterstream_processed_folder`).
+   **Processed mail leaves ROCKY'S inbox only (revised 2026-08-24).** A
+   handled vault-mail submission moves to `Inbox\The Vault` in rocky@'s
+   mailbox (`vault_processed_folder`; "" disables). James's own inbox
+   is NEVER touched by the Vault sweep — it files copies of his
+   attachments and leaves his mail exactly where it is (his decision
+   2026-08-24; a briefly-shipped James-inbox move was removed same
+   day). Moves use rocky@'s delegated Mail.ReadWrite.Shared (no new
+   permissions), are best-effort (failure logs, filing stands), and run
+   LAST because a Graph move changes the message id. Same pattern as
+   the Litigation Updater's `Inbox\Litigation Updater` and Mailing
+   Affidavits' `Inbox\Letterstream` (`letterstream_processed_folder`).
 
 3. **Dropbox (`dropbox`).** Each entry in `vault_dropbox_accounts` is
    one Dropbox *login*, which can watch two kinds of things:
@@ -143,7 +160,24 @@ rocky.exe --vault-digest [--hours N]       # email the day's additions from rock
 rocky.exe --vault --status                 # catalog counts + cursor state
 rocky.exe --vault --reindex                # rebuild Vault Index.xlsx only
 rocky.exe --vault --dropbox-auth <name>    # one-time Dropbox OAuth
+rocky.exe --vault --cleanup [--execute]    # merge fragmented property/tenant
+                                           # folders + casing + exact-dup files;
+                                           # dry-run writes _vault\cleanup_plan.txt
+rocky.exe --vault --reclassify-review [--limit N] [--dry-run]
+                                           # retry _Needs Review with scanned-PDF
+                                           # vision; files what comes back confident
 ```
+
+Both maintenance commands accept `--vault-root <path>` (the share mounts
+at a different local path on each machine). **Catalog-rewrite caution:**
+--cleanup --execute and --reclassify-review rewrite catalog.jsonl
+(backed up to `_vault\catalog.backup-*.jsonl` first). A vault ingest on
+ANOTHER machine appending to the catalog while the rewrite syncs makes
+OneDrive fork a conflict copy (this happened live 2026-08-29 and had to
+be merged by hand). Run them right AFTER an hourly ingest finishes, not
+around :49 when the Rocky laptop's tasks fire — or pause the Vault
+schedules first. An in-progress check (activity.jsonl) aborts the
+rewrite when a live run looks unfinished; `--force` overrides.
 
 All per-run flags (--dry-run / --limit / --backfill-days /
 --max-age-days) work on the split flags too.
@@ -161,8 +195,11 @@ finishes are safe.
 **Vault Digest — SUPERSEDED 2026-08-23 by the Multifamily Digest**
 (`rocky.exe --multifamily-digest`, same 5:30 PM slot), which carries
 this same Vault section plus certified mail and affidavit activity from
-the Mailing Affidavits process (see LETTERSTREAM.md). The
-standalone command below still works for manual use.
+the Mailing Affidavits process (see LETTERSTREAM.md). Since 2026-08-29
+the Multifamily Digest lands as a DRAFT in James's Drafts folder
+(pre-addressed to the multifamily group; James sends) rather than an
+email from rocky@. The standalone command below still works for manual
+use.
 
 **Vault Digest (`--vault-digest`, suggested 5:30 PM daily).** Emails
 the window's additions (default 24h) from rocky@ to
@@ -181,7 +218,7 @@ and "Vault James Inbox" (each defaulting to an hourly schedule),
 
 **Mail sources — nothing new.** Reads use the app-level token
 (`client_secret` in config + the Application Access Policy, which already
-covers jbragdon@ and rocky@ for --email-brain / --inbox-james).
+covers jbragdon@ and rocky@).
 Confirmation replies use rocky@'s existing delegated Mail.Send with the
 outbound allowlist. No IT steps.
 
@@ -224,11 +261,31 @@ the same `name` avoids re-processing (dedup would absorb it anyway).
 - Operational logging to `rocky.log` with a `[vault]` tag, instance lock
   `state/rocky_vault.lock` (via main()'s standard lock).
 
+## 2026-08-29 folder cleanup (one-time, executed)
+
+The 8/17 bulk ingest predated property grounding and scanned-PDF
+support, leaving ~400 files split across variant folders. A cleanup pass
+(`--vault --cleanup --execute`) merged them: 433 files moved, 10 folder
+casings fixed, 1 byte-identical duplicate removed, ~700 catalog entries
+normalized. Same-person tenant variants merged on strict rules
+(initial/extension always; one-letter first-name slips only in cleanup,
+never live filing); genuinely ambiguous groups were left alone and are
+listed in `_vault\cleanup_plan.txt`. Deliberately NOT merged: "Cloisters
+I/II" vs "The Cloisters" and "Solstice I/II" vs the table's
+"Solstice - 3500/3534 E Capitol" (distinct phases — needs a human call,
+then alias lines).
+
 ## Design notes / future
 
 - Classification confidence floor is a constant (`CONFIDENCE_FLOOR` =
   0.75 in vault.py); doc-type vocabulary: lease, ledger,
   affidavit_of_service, notice, other.
+- **Dropbox double-coverage:** the `rad-notices` shared link and the
+  mounted `RAD CASES` folder watch the same client tree — the same
+  document arrived through both routes with different bytes (dedup can't
+  catch that). Remove the `rad-notices` entry from `shared_links` in the
+  Rocky laptop's config.json; the mounted folder (delta cursors) is the
+  keeper per the hourly-runs guidance above.
 - Level 0 holds: the only outbound mail is the guarded confirmation
   reply from rocky@ (internal-only allowlist, both in code and tenant
   mail-flow rule).
@@ -238,7 +295,8 @@ the same `name` avoids re-processing (dedup would absorb it anyway).
   established pattern); OCR for scanned leases with no text layer —
   those land in _Needs Review today. Possible later: reuse
   `extract_image_text_via_vision` for scanned PDFs.
-- Teaching: misfilings should become prompt refinements in
-  `_CLASSIFY_RULES` (vault.py) — or, if this recurs enough, a
-  `vault_instructions.md` following the classifier's incremental-teaching
-  pattern.
+- Teaching: property-name misfilings go in
+  `_vault\property_aliases.json` (built 2026-08-29 — no rebuild needed);
+  other misfilings become prompt refinements in `_CLASSIFY_RULES`
+  (vault.py) — or, if this recurs enough, a `vault_instructions.md`
+  following the classifier's incremental-teaching pattern.

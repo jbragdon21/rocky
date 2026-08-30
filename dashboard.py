@@ -81,8 +81,8 @@ def load_config() -> dict:
 # /api/run from being an arbitrary-command sink.
 
 # Scheduling fields per command:
-#   args           extra fixed argv after the flag (e.g. inbox-james runs
-#                  "--inbox-james --cycle")
+#   args           extra fixed argv after the flag (e.g. litigation runs
+#                  "--litigation --poll")
 #   sched_time     "HH:MM" default start time (None = no sensible default)
 #   sched_freq     DAILY | MINUTE | ... (default DAILY when a time is set)
 #   sched_interval minutes between runs, for MINUTE frequency
@@ -106,7 +106,6 @@ ROCKY_COMMANDS = [
     {"flag": "daily-cases",   "label": "Daily Cases",     "group": "Cases", "dry_run": False, "desc": "Collect and summarize today's emails for each case",    "sched_time": "16:00", "recommended": True},
     {"flag": "daily-run",     "label": "Daily Run",       "group": "Cases", "dry_run": False, "desc": "File new documents into each case folder",              "sched_time": "16:30", "recommended": True},
     {"flag": "daily-digest",  "label": "Daily Digest",    "group": "Cases", "dry_run": False, "desc": "Write the end-of-day summary of case activity",         "sched_time": "17:00", "recommended": True},
-    {"flag": "inbox-james",   "label": "James Inbox",     "group": "Inbox", "dry_run": False, "args": ["--cycle"], "desc": "Sort James's inbox — file-with-friends suggestions over Teams", "sched_time": "08:00"},
     {"flag": "steve-todo",    "label": "Steve To-Do",     "group": "Inbox", "dry_run": False, "desc": "Build Steve's morning to-do list from his email",       "sched_time": "07:30", "recommended": True},
     {"flag": "ella-digest",   "label": "Ella Digest",     "group": "Inbox", "dry_run": False, "desc": "Write Ella's daily summary of her case emails",         "sched_time": "17:00", "recommended": True},
     {"flag": "pending-llt",   "label": "Pending LLT",     "group": "Inbox", "dry_run": True,  "desc": "Draft status-update emails for landlord-tenant matters"},
@@ -127,8 +126,7 @@ ROCKY_COMMANDS = [
     {"flag": "vault-mail",    "label": "Vault Rocky Inbox", "group": "Vault", "dry_run": True, "desc": "File documents emailed to rocky@ with 'Vault' in the subject", "sched_freq": "HOURLY", "sched_interval": 1},
     {"flag": "vault-inbox",   "label": "Vault James Inbox", "group": "Vault", "dry_run": True, "desc": "Sweep James's inbox for leases, ledgers & affidavits",      "sched_freq": "HOURLY", "sched_interval": 1},
     {"flag": "vault",         "label": "The Vault",       "group": "Vault", "dry_run": True,  "desc": "All Vault sources in one run — manual use; don't schedule beside the split tasks"},
-    {"flag": "multifamily-digest", "label": "Multifamily Digest", "group": "Vault", "dry_run": True,  "desc": "One daily email: certified mail, affidavits, Vault additions, Remy development, and pending items", "sched_time": "17:45", "recommended": True},
-    {"flag": "monitor-remy",  "label": "Monitor Remy",    "group": "Other", "dry_run": False, "desc": "Watch the inbox for notice requests (stays running)"},
+    {"flag": "multifamily-digest", "label": "Multifamily Digest", "group": "Vault", "dry_run": True,  "desc": "Draft the daily digest into James's Drafts to send: certified mail, affidavits, Vault additions, Remy development, and pending items", "sched_time": "17:45", "recommended": True},
     {"flag": "monitor",       "label": "Monitor",         "group": "Other", "dry_run": False, "desc": "Fast loop — LetterStream + Vault mail sweeps every 10 min (stays running)"},
 ]
 
@@ -181,8 +179,8 @@ def command_argv(flag: str, dry_run: bool = False,
     cmd = _COMMANDS_BY_FLAG[flag]
     if cmd.get("external"):
         return external_argv(flag)
-    # "args" = extra fixed argv after the flag (Inbox Cleaner subcommands,
-    # e.g. --inbox-james --cycle). extra_args = per-launch additions from a
+    # "args" = extra fixed argv after the flag (subcommands, e.g.
+    # --litigation --poll). extra_args = per-launch additions from a
     # dedicated endpoint (e.g. --letterstream --fetch <tracking#>) — never
     # raw user input; callers validate first.
     argv = (rocky_target() + [f"--{flag}"] + list(cmd.get("args") or [])

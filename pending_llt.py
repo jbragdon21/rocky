@@ -362,11 +362,16 @@ def create_draft_email(
     subject: str,
     html_body: str,
     cc_addresses: list[str] | None = None,
+    attachments: list[dict] | None = None,
 ) -> dict:
     """Create a draft email in the user's Drafts folder.
 
     Uses POST /users/{email}/messages which creates a message in Drafts
     (NOT sendMail — no mail is sent).
+
+    attachments: list of {"name": str, "path": str, "contentId": str?}
+    dicts (same shape outbound.send_mail_guarded takes). A contentId
+    marks the file as an inline image referenced by cid: in the body.
 
     Returns {"created": True, "message_id": ...} or {"created": False, "reason": ...}.
     """
@@ -385,6 +390,25 @@ def create_draft_email(
         payload["ccRecipients"] = [
             {"emailAddress": {"address": addr}} for addr in cc_addresses
         ]
+    if attachments:
+        import base64
+        graph_atts = []
+        for att in attachments:
+            file_path = Path(att["path"])
+            if not file_path.exists():
+                log.warning(f"Draft attachment not found, skipping: {file_path}")
+                continue
+            att_obj: dict = {
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "name": att.get("name") or file_path.name,
+                "contentBytes": base64.b64encode(file_path.read_bytes()).decode("ascii"),
+            }
+            if att.get("contentId"):
+                att_obj["contentId"] = att["contentId"]
+                att_obj["isInline"] = True
+            graph_atts.append(att_obj)
+        if graph_atts:
+            payload["attachments"] = graph_atts
 
     try:
         resp = requests.post(url, headers=headers, json=payload, timeout=30)

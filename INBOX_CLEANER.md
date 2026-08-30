@@ -6,12 +6,15 @@ rule-learning maintenance process. Design ground truth lives in
 what IT and the user must do to start, how the process runs day to day, and
 where everything is written.
 
-First user: Matt (`--inbox-matt`). Second user: James himself
-(`--inbox-james`, added 2026-07-12) — a small-inbox maintenance process with
-the "sort with friends" conversation-sort pass; see its own section below.
-Adding a colleague later (Paul, or anyone else) = one new `inbox_users`
-block in config + the same IT steps for their mailbox. Process names sort
-together on purpose: `inbox-matt`, `inbox-james`, `inbox-paul`, ...
+First user: Matt (`--inbox-matt`). Adding a colleague later (Paul, or
+anyone else) = one new `inbox_users` block in config + the same IT steps
+for their mailbox. Process names sort together on purpose: `inbox-matt`,
+`inbox-paul`, ...
+
+(James's own process — `--inbox-james` small-inbox mode with the "sort
+with friends" conversation-sort pass, open chat mode, and Engineer — was
+REMOVED 2026-08-29 along with its dashboard button and config block; only
+the multi-user deep-clean machinery documented here remains.)
 
 ---
 
@@ -164,123 +167,6 @@ Then, either way:
   capped; spot-check in Outlook; then run uncapped (it re-runs safely —
   moves are checkpointed, a 200k cleanup spans days).
 
----
-
-## James's own process (`--inbox-james`) — small-inbox mode
-
-James runs the same machinery on his own inbox (`jbragdon@gallagherllp.com`),
-but tuned for the opposite problem: an inbox he keeps near zero, where the
-work is *filing the trickle*, not draining a 200k backlog.
-
-**No IT steps.** Everything is already in place: jbragdon@ is in the
-Application Access Policy (read), rocky@ has Exchange Full Access on James's
-mailbox (write via `write_via: "delegated"`), and the Teams chat scopes were
-consented 2026-07-05.
-
-**One command runs the whole loop:**
-
-    rocky.exe --inbox-james --cycle
-
-snapshot → analyze → chat → execute-approved, in one shot. Dashboard button
-"James Inbox" (suggested schedule 08:00 daily; also fine on demand, any
-time). Because the config sets `cycle_execute: true`, cohorts James has
-approved on Teams are moved *live* at the end of the cycle — a YES on Teams
-is acted on the next time the cycle runs (or immediately, if he clicks the
-button after replying). Everything else about the safety model is unchanged:
-only approved cohorts move, every move is logged to `moves.jsonl`, nothing
-is ever deleted.
-
-Chat replies are only *read* when a cycle runs, so conversational latency
-follows the schedule. On a near-empty inbox a full cycle is a handful of
-Graph calls (and a Claude call only when James actually wrote something),
-so it's fine to schedule `--inbox-james --cycle` every 15–30 minutes for a
-responsive chat, or keep it daily and click the dashboard button when a
-conversation is going.
-
-**The "sort with friends" pass** (`conversation_sort: true` in the config;
-James's first standing rule, 2026-07-12). His SortByConversation Outlook
-VBA macro, ported to Graph: for each message still in the Inbox, Rocky looks
-mailbox-wide for OTHER messages in the same conversation, and if they're
-already filed in a folder, proposes moving the inbox message there.
-
-- Strategy 1: mailbox-wide `$filter` on `conversationId` (Graph's id is
-  computed from thread headers, so it survives the `[EXTERNAL]`-style
-  gateway subject rewrites that broke Outlook's native matching — this one
-  filter covers the macro's strategies 1 and 2).
-- Strategy 2 (fallback): mailbox-wide `$search` on the normalized subject
-  (RE:/FW:/[EXTERNAL] stripped), post-filtered to exact normalized-subject
-  equality — the macro's strategy 3.
-- Sent Items / Deleted Items / Drafts / Junk / Outbox and the Inbox root
-  never count as "filed" (the macro's IsExcludedFolder); the folder holding
-  the most conversation siblings wins (GetBestFolder).
-
-The pass reads the **current** inbox live — never the snapshot — so a
-message James already filed by hand is never proposed. It drafts one cohort
-per target folder ("2 inbox emails in conversations you've already filed in
-'Litigation\\Smith v Jones' — move them there? YES/NO"), proposed over the
-normal 1:1 Teams chat. It is skipped whenever the inbox holds more than
-`conversation_sort_max` messages (default 200): per-message sibling lookups
-are only sane on small inboxes, and this pass must never run against a
-deep-clean-scale mailbox like Matt's.
-
-**Open chat mode** (`chat_mode: "open"`; Matt stays on the strict YES/NO
-protocol). James talks to Rocky in plain English and one guarded Claude
-call per chat cycle turns the conversation into structured effects:
-
-- *Decide the pending proposal* — "yes", "no thanks", "actually put those
-  under Litigation\Court" all work; free text still can't command a move
-  that wasn't proposed.
-- *Open-ended requests become concrete proposals* (the propose→confirm
-  loop). When James's request needs a judgment call to operationalize
-  ("stop bugging me about bar association stuff"), Rocky doesn't apply
-  anything: it comes back with a specific proposal — `[PROPOSAL A0001]`
-  plus the exact effects, rendered by the code, not paraphrased — and
-  waits for YES/NO. On YES the *stored* effects apply exactly as shown
-  (rules.md lines get `[A0001 approved YYYY-MM-DD]` provenance); on NO it's
-  dropped; "make it cover X too" gets a revised proposal that replaces the
-  old one. One ask at a time: while a proposal is pending, no new cohort
-  proposal goes out, and a bare "yes" always refers to the most recent
-  ask. A YES even works when the Claude API is down — the stored effects
-  apply deterministically. Crisp instructions ("skip newsletters@x.com")
-  still apply immediately with no extra round-trip.
-- *Standing rules* — "skip emails from x because y" is appended to
-  `rules.md` immediately (`[chat YYYY-MM-DD]` provenance) AND becomes a
-  machine-executable exclusion in `sender_routes.json`
-  (`exclude_senders` / `exclude_domains`), honored by every proposal pass
-  and at execute time. Named routes ("SEIA mail goes to the SEIA folder")
-  are appended as standing routes, which surface as normal approval
-  cohorts on the next analyze.
-- *Code-change backlog* — anything James asks for that the current code
-  can't do is appended to `Rocky Inboxes\inbox-james\code_changes.md`
-  (title + developer-ready detail + the chat quote). That file is the
-  dev to-do list; delete entries as they ship.
-- Every applied effect is logged to `activity.jsonl`;
-  `sender_routes.json` is backed up to `rules_history\` before each edit.
-  If the Claude call fails, the strict parser still catches a YES/NO and
-  the messages sit in `communications.jsonl` for the nightly rules update.
-
-**Engineer** — full workup of one email. From Teams, start a message with
-the word *engineer* ("engineer", "engineer the one from Behroozi"); from the
-CLI, `rocky.exe --inbox-james --engineer [--query "behroozi"]`. Rocky pulls
-the newest matching inbox email, downloads its attachments and the whole
-conversation history, runs one deep Claude call, and delivers four things:
-
-1. `report.md` (Summary / Timeline / Analysis / Recommended response) +
-   the raw attachments → `Rocky Inboxes\inbox-james\engineer\<stamp>_<slug>\`
-2. the full report emailed from rocky@ to James
-3. a **draft reply** in James's Drafts folder (createReply with the
-   recommended response — Level 0 holds: Rocky drafts, never sends)
-4. a Teams ack with the summary
-
-**Adding more rules over time** works exactly like every other user:
-`matters.json` and `sender_routes.json` in `Rocky Inboxes\inbox-james\`
-drive the matter and standing-route passes, chat decisions accumulate in
-`rules.md`, and the generic passes (court notices, newsletters, internal)
-are all active — they just rarely trip their volume thresholds on an inbox
-this small.
-
----
-
 ## Safety properties
 
 - **Nothing is ever deleted.** Newsletters go to Deleted Items (recoverable
@@ -328,15 +214,10 @@ and more personalized every cycle.
 ## Current limitations / open items
 
 - Executed moves take messages *from the Inbox only* (that's where the
-  problem is). The inbox-side "sort with friends" conversation-sort pass
-  exists for small inboxes (James, 2026-07-12); the mailbox-wide backfill
-  variant (file OLDER messages wherever a newer reply already lives) is
-  still a future enhancement, as is running the pass at deep-clean scale
-  (it is deliberately capped at `conversation_sort_max` messages).
+  problem is).
 - The Claude batch pass over the ambiguous residual (mail matching no
   deterministic cohort) is designed but not yet wired in — v1 leaves the
   residual untouched.
 - Reminders/timeouts for unanswered Teams proposals: not yet built; the
   proposal simply stays pending until the next reply.
-- Dashboard registry: `inbox-james --cycle` added ("James Inbox" button,
-  2026-07-12); Matt's stage-by-stage commands are still CLI-only.
+- Dashboard registry: Matt's stage-by-stage commands are still CLI-only.

@@ -4,7 +4,8 @@ Multifamily Digest — one daily email for the multifamily practice
 
     python rocky.py --multifamily-digest [--hours N] [--dry-run]  (5:30 PM daily)
 
-One email from rocky@ covering the day across the multifamily
+One DRAFT in James's Drafts folder (changed 2026-08-29 — Rocky used to
+email it from rocky@) covering the day across the multifamily
 processes, in four sections (empty sections are omitted):
 
     CERTIFIED MAIL   — LetterStream activity from the LetterStream
@@ -19,19 +20,26 @@ processes, in four sections (empty sections are omitted):
                        SUBSUMES it; don't schedule both).
     REMY             — the day's Remy software-development digest, read
                        from the local copy --remy-digest wrote (schedule
-                       remy-digest EARLIER, e.g. 17:15 with --no-email,
-                       and add Shane to the recipients here — this
+                       remy-digest EARLIER, e.g. 17:15 with --no-email;
+                       Shane is in the default draft recipients — this
                        digest subsumes the standalone Remy digest email;
                        the GitHub digest/ archive commit still happens).
     STILL PENDING    — snapshot of everything awaiting a human: mailings
                        awaiting a release YES, mailings in flight,
                        affidavits awaiting approval.
 
-Quiet window (nothing in the first three sections) = no email at all,
+Quiet window (nothing in the first three sections) = no draft at all,
 even if items are pending — the reminder pass nags about those.
-Recipients: multifamily_digest_recipients (falls back to
-vault_digest_recipients, then James). Window is the last N hours
-(default 24), matching the Vault Digest's model.
+
+Delivery model (same as the Maple Digest): the digest is created as a
+DRAFT in James's Drafts folder, pre-addressed to the multifamily group
+(_DEFAULT_DRAFT_RECIPIENTS below; override with config
+multifamily_digest_draft_recipients). James reviews and hits send from
+his own account — Rocky never sends this email. The old
+multifamily_digest_recipients / vault_digest_recipients keys applied
+only to the retired send-from-rocky@ model and are now ignored.
+Window is the last N hours (default 24), matching the Vault Digest's
+model.
 """
 
 from __future__ import annotations
@@ -44,6 +52,25 @@ from html import escape
 from pathlib import Path
 
 log = logging.getLogger("rocky.mfdigest")
+
+# The multifamily group the draft is pre-addressed to (set 2026-08-29).
+# These go on a draft in James's mailbox — he reviews and sends — so the
+# outbound allowlist doesn't apply here (though all are firm-internal
+# anyway). Override with config "multifamily_digest_draft_recipients".
+# (New key on purpose: the retired send-from-rocky@ model used
+# "multifamily_digest_recipients" for a different audience — reusing it
+# could silently mis-address the draft if an old config.json lingers.)
+_DEFAULT_DRAFT_RECIPIENTS = [
+    "hmondragon@gallagherllp.com",   # Hailey Mondragon
+    "swenger@gallagherllp.com",      # Sarah Wenger
+    "sronan@gallagherllp.com",       # Shane Ronan
+    "mbrown@gallagherllp.com",       # Michael L. Brown
+    "afrantzis@gallagherllp.com",    # Adamandia Frantzis
+    "mkobylski@gallagherllp.com",    # Mia R. Kobylski
+    "gomara@gallagherllp.com",       # Gina O'Mara
+    "caraviakis@gallagherllp.com",   # Christina Araviakis
+    "pgoranin@gallagherllp.com",     # Paul O. Goranin
+]
 
 _STYLE_H3 = "margin:18px 0 6px 0;"
 _STYLE_UL = "margin:0;padding-left:20px;font-size:13px;"
@@ -360,37 +387,41 @@ def run_cli(config: dict, data_dir: Path) -> None:
     html_body, attachments = build_digest(config, data_dir, hours)
     if html_body is None:
         log.info(f"[mf-digest] nothing happened in the last {hours}h — "
-                 f"no email")
+                 f"no draft")
         return
 
-    recipients = config.get("multifamily_digest_recipients") \
-        or config.get("vault_digest_recipients") \
-        or [config.get("user_email", "jbragdon@gallagherllp.com")]
-    subject = (f"Rocky — Multifamily Digest "
+    recipients = (config.get("multifamily_digest_draft_recipients")
+                  or _DEFAULT_DRAFT_RECIPIENTS)
+    mailbox = config.get("multifamily_digest_mailbox",
+                         config.get("user_email", "jbragdon@gallagherllp.com"))
+    subject = (f"Multifamily Digest "
                f"({datetime.now().strftime('%B %d, %Y')})")
 
     if dry_run:
-        log.info(f"[mf-digest] DRY-RUN — would email {recipients} "
+        log.info(f"[mf-digest] DRY-RUN — would draft into {mailbox}'s "
+                 f"Drafts, addressed to {recipients} "
                  f"(subject: {subject!r}, {len(html_body)} chars)")
         print(html_body)
         return
 
-    import outbound
-    from rocky import acquire_token, get_msal_app  # lazy
+    import pending_llt
+    from rocky import acquire_token, audit_token_scopes, get_msal_app  # lazy
     token = acquire_token(get_msal_app(config))
-    result = outbound.send_mail_guarded(
+    audit_token_scopes(token)
+    result = pending_llt.create_draft_email(
         token=token,
-        sender_mailbox=config.get("rocky_email", "rocky@gallagherllp.com"),
-        to=recipients,
+        user_email=mailbox,
+        to_addresses=recipients,
         subject=subject,
-        body=html_body,
-        body_type="HTML",
+        html_body=html_body,
         attachments=attachments or None,
     )
-    if result.get("sent"):
-        log.info(f"[mf-digest] sent to {recipients}")
+    if result.get("created"):
+        log.info(f"[mf-digest] drafted into {mailbox}'s Drafts, addressed "
+                 f"to {recipients} (message {result.get('message_id')}). "
+                 f"James reviews and sends.")
     else:
-        log.warning(f"[mf-digest] send FAILED: {result.get('reason')}")
+        log.warning(f"[mf-digest] draft FAILED: {result.get('reason')}")
 
 
 def _argv_value(flag: str) -> str | None:

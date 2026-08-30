@@ -382,6 +382,41 @@ class LetterStreamClient:
         return out
 
 
+def earliest_datetime_from(data) -> tuple[str | None, str | None]:
+    """
+    The earliest date+time found anywhere in an API response, as
+    (YYYY-MM-DD, 'H:MM a.m.'). Used on jobstatus responses to get a
+    website-submitted job's submission stamp: status queries report
+    production-stage timestamps, and the earliest one is when the job
+    reached LetterStream. Shape-tolerant on purpose (the doc doesn't
+    specify the status JSON) — responses are raw-logged for calibration.
+    """
+    text = json.dumps(data, default=str)
+    stamps: list[datetime] = []
+    for m in re.finditer(r"\b(20\d{2})-([01]\d)-([0-3]\d)[ T]"
+                         r"([0-2]?\d):([0-5]\d)", text):
+        y, mo, d, h, mi = (int(g) for g in m.groups())
+        try:
+            stamps.append(datetime(y, mo, d, h, mi))
+        except ValueError:
+            continue
+    for m in re.finditer(r"\b([01]?\d)/([0-3]?\d)/(20\d{2})\s+"
+                         r"([0-1]?\d):([0-5]\d)\s*([ap])\.?\s*m\.?",
+                         text, re.IGNORECASE):
+        mo, d, y, h, mi, ap = m.groups()
+        hour = int(h) % 12 + (12 if ap.lower() == "p" else 0)
+        try:
+            stamps.append(datetime(int(y), int(mo), int(d), hour, int(mi)))
+        except ValueError:
+            continue
+    if not stamps:
+        return None, None
+    dt = min(stamps)
+    hour12 = dt.hour % 12 or 12
+    return (dt.strftime("%Y-%m-%d"),
+            f"{hour12}:{dt.minute:02d} {'a.m.' if dt.hour < 12 else 'p.m.'}")
+
+
 def mail_date_from_trackx(data) -> str | None:
     """
     The mailing date from a trackx response: the earliest event date in

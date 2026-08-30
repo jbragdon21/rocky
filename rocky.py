@@ -2,10 +2,6 @@
 Rocky — Virtual Paralegal
 =================================================
 
-  python rocky.py --monitor-remy                    (24/7, at boot)
-      Poll rocky@gallagherllp.com inbox every 5 minutes for Remy requests.
-      Classifies each email; invokes Remy CLI if it's a document request.
-
   python rocky.py --daily-cases [RRID-XXXX]        (4:00 PM)
       Pull today's emails from each case's Outlook folder, summarize via
       Claude, save documents to the case folder.
@@ -108,16 +104,12 @@ Rocky — Virtual Paralegal
       and a weekly learn pass folding chat feedback into the brain file.
       See LITIGATION_UPDATER.md.
 
-  python rocky.py --inbox-<user> --cycle|--snapshot|--analyze|--questionnaire|--chat|--rules-update|--digest|--engineer|--execute|--status
+  python rocky.py --inbox-<user> --snapshot|--analyze|--questionnaire|--chat|--rules-update|--digest|--execute|--status
       Inbox Cleaner: per-user inbox triage at 200k+ scale that becomes a
       permanent, rule-learning maintenance process ("inbox-matt",
       "inbox-paul", ...). Users defined in config inbox_users. See
       inbox_cleaner.py and INBOX_CLEANER.md for the full design, IT
-      prerequisites, and the onboarding questionnaire. --cycle runs the
-      whole loop in one shot for small inboxes (--inbox-james: the "sort
-      with friends" conversation-sort pass, proposed over a free-form
-      Claude-interpreted Teams chat). --engineer [--query "..."] does a
-      full Claude workup of one email — report + draft reply in Drafts.
+      prerequisites, and the onboarding questionnaire.
 
 On first run, you'll be prompted to authenticate via device code flow.
 Subsequent runs use the cached refresh token automatically.
@@ -164,8 +156,6 @@ TOKEN_CACHE_PATH = STATE_DIR / "token_cache.json"
 LOG_PATH = DATA_DIR / "rocky.log"
 
 GRAPH_SCOPES = ["Mail.Read", "Mail.Send", "Sites.Read.All"]
-REMY_LAST_CHECK_PATH = STATE_DIR / "remy_last_check.json"
-REMY_POLL_INTERVAL_SECONDS = 300  # 5 minutes
 GRAPH_API_BASE = "https://graph.microsoft.com/v1.0"
 
 # Claude model and parameters.
@@ -3589,180 +3579,15 @@ def run_daily_digest_cli() -> None:
 
 
 # =============================================================================
-# Remy inbox monitor — polls rocky@gallagherllp.com for Remy requests
+# Remy inbox monitor — RETIRED 2026-08-29
 # =============================================================================
-# Runs 24/7 via Task Scheduler (--monitor-remy). Checks Rocky's inbox every
-# 5 minutes. Classifies each new email; if it's a Remy request, invokes the
-# Remy CLI to generate a draft document. All results logged.
-#
-# High-water mark: state/remy_last_check.json stores the last poll time so
-# Rocky doesn't reprocess emails after a restart.
-
-def _load_remy_last_check() -> datetime:
-    """Load the last-check timestamp, or default to 6 hours ago."""
-    if REMY_LAST_CHECK_PATH.exists():
-        try:
-            data = json.loads(REMY_LAST_CHECK_PATH.read_text(encoding="utf-8"))
-            return datetime.fromisoformat(data["last_check"].replace("Z", "+00:00"))
-        except Exception:
-            pass
-    return datetime.now(timezone.utc) - timedelta(hours=6)
-
-
-def _save_remy_last_check(dt: datetime) -> None:
-    STATE_DIR.mkdir(exist_ok=True)
-    REMY_LAST_CHECK_PATH.write_text(
-        json.dumps({"last_check": dt.isoformat()}),
-        encoding="utf-8",
-    )
-
-
-def _deliver_remy_draft(
-    token: str,
-    rocky_email: str,
-    config: dict,
-    original_email: dict,
-    remy_result: dict,
-) -> dict | None:
-    """Email the Remy draft to the configured delivery recipients."""
-    import outbound
-
-    recipients = config.get("remy_delivery_recipients", [])
-    if not recipients:
-        log.info("[remy-monitor] No remy_delivery_recipients configured; skipping email delivery.")
-        return None
-
-    output_path = remy_result.get("output_path")
-    if not output_path:
-        return None
-
-    original_subject = original_email.get("subject", "(no subject)")
-    sender = (original_email.get("from") or {}).get("emailAddress", {})
-    sender_name = sender.get("name") or sender.get("address") or "unknown"
-    project_type = remy_result.get("project_type", "document")
-
-    subject = f"Rocky — Remy draft ready: {project_type} ({original_subject[:60]})"
-    body = (
-        f"Rocky processed a Remy request and generated a draft.\n\n"
-        f"Project type: {project_type}\n"
-        f"Original request from: {sender_name}\n"
-        f"Original subject: {original_subject}\n"
-        f"Draft saved to: {output_path}\n\n"
-        f"The draft is attached to this email."
-    )
-
-    result = outbound.send_mail_guarded(
-        token=token,
-        sender_mailbox=rocky_email,
-        to=recipients,
-        subject=subject,
-        body=body,
-        attachments=[{"name": Path(output_path).name, "path": output_path}],
-    )
-    if result.get("sent"):
-        log.info(f"[remy-monitor] Draft emailed to {recipients}")
-    else:
-        log.warning(f"[remy-monitor] Draft email failed: {result.get('reason')}")
-    return result
-
-
-def remy_poll_cycle(
-    anthropic_client: Anthropic,
-    token: str,
-    rocky_email: str,
-    config: dict,
-    instructions: str,
-) -> int:
-    """
-    One poll cycle: fetch new emails from Rocky's inbox, classify each,
-    invoke Remy for requests. Returns the number of emails processed.
-    """
-    import remy_runner
-
-    since = _load_remy_last_check()
-    poll_time = datetime.now(timezone.utc)
-
-    emails = fetch_folder_emails(token, rocky_email, "Inbox", since)
-    if not emails:
-        _save_remy_last_check(poll_time)
-        return 0
-
-    log.info(f"[remy-monitor] {len(emails)} new email(s) in Rocky's inbox")
-
-    for email in emails:
-        subject = email.get("subject", "(no subject)")
-
-        classification = classify_email(
-            anthropic_client, email, instructions, include_attachments=True,
-        )
-
-        if classification.get("is_remy_request"):
-            log.info(
-                f"[remy-monitor] Remy request detected: {subject[:60]} "
-                f"({classification.get('project_category')})"
-            )
-            remy_result = remy_runner.run(email, classification, config)
-            if remy_result.get("invoked"):
-                log.info(f"[remy-monitor] Remy draft: {remy_result.get('output_path')}")
-                _deliver_remy_draft(token, rocky_email, config, email, remy_result)
-            else:
-                log.warning(
-                    f"[remy-monitor] Remy skipped: {remy_result.get('reason') or remy_result.get('error')}"
-                )
-        else:
-            log.info(
-                f"[remy-monitor] Not a Remy request: {subject[:60]} "
-                f"(confidence={classification.get('confidence', 0):.2f})"
-            )
-
-        log_classification(
-            email, classification, mailbox=rocky_email,
-            claude_called=True,
-        )
-
-    _save_remy_last_check(poll_time)
-    return len(emails)
-
-
-def run_monitor_remy_cli() -> None:
-    """Entry point for `python rocky.py --monitor-remy`. Runs forever."""
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    log.info("=" * 60)
-    log.info("Rocky — Remy inbox monitor (polling rocky@gallagherllp.com)")
-    log.info("=" * 60)
-
-    config = load_config()
-    instructions = load_instructions()
-    anthropic_client = Anthropic(api_key=config["anthropic_api_key"])
-    rocky_email = config.get("rocky_email", "rocky@gallagherllp.com")
-
-    app = get_msal_app(config)
-    token = acquire_token(app)
-    audit_token_scopes(token)
-
-    log.info(f"Monitoring: {rocky_email}")
-    log.info(f"Poll interval: {REMY_POLL_INTERVAL_SECONDS}s")
-
-    while True:
-        try:
-            # Refresh token each cycle in case it expired.
-            token = acquire_token(app)
-            count = remy_poll_cycle(
-                anthropic_client, token, rocky_email, config, instructions,
-            )
-            if count:
-                log.info(f"[remy-monitor] Processed {count} email(s). Sleeping.")
-        except KeyboardInterrupt:
-            log.info("Remy monitor stopped by user.")
-            break
-        except Exception as e:
-            log.exception(f"[remy-monitor] Error in poll cycle: {e}")
-
-        try:
-            time.sleep(REMY_POLL_INTERVAL_SECONDS)
-        except KeyboardInterrupt:
-            log.info("Remy monitor stopped by user.")
-            break
+# The 24/7 --monitor-remy loop (poll rocky@'s inbox, classify, invoke the
+# Remy CLI headlessly) was removed: unused in practice, and a boot-launched
+# forever-process keeps running whatever rocky.exe it started with, so it
+# drifts stale as the exe is rebuilt. The Remy classifier (classify_email +
+# CLASSIFIER_SYSTEM_PROMPT above) and remy_runner.py stay for a future re-wire;
+# if it comes back, run it as a monitor_commands subprocess so every cycle
+# picks up the current exe (see run_monitor_cli).
 
 
 # =============================================================================
@@ -4779,7 +4604,7 @@ def _self_command(flag: str) -> list[str]:
 def run_monitor_cli() -> None:
     """
     Entry point for `rocky.exe --monitor [--once]`. Runs forever (launch
-    at boot via Task Scheduler, like --monitor-remy): every
+    at boot via Task Scheduler): every
     monitor_interval_minutes (default 10) it runs the LetterStream sweep
     and the Vault mail sources, so certified-mail requests, release
     replies, affidavit approvals, and Vault submissions are acted on
@@ -4882,13 +4707,15 @@ _DEFAULT_MAPLE_CLIENT_DIGEST_RECIPIENTS = [
 # Always-CC list. pma@bozzuto.com is load-bearing, not a courtesy copy: its
 # existing routing delivers Beth's reply-all into rocky@'s watched
 # "Inbox\PMA emails" folder, which is how her typed answers reach the feed
-# (no inbox sweep of James's mailbox). The Bozzuto individuals (added
-# 2026-08-21) are courtesy copies. Override "maple_client_digest_cc".
+# (no inbox sweep of James's mailbox). The Bozzuto and Gallagher individuals
+# (added 2026-08-29) are courtesy copies. Override "maple_client_digest_cc".
 _DEFAULT_MAPLE_CLIENT_DIGEST_CC = [
     "pma@bozzuto.com",
     "rprice@bozzuto.com",
     "ccooley@bozzuto.com",
     "mbarry@bozzuto.com",
+    "cesmeir@gallagherllp.com",
+    "sstephey@gallagherllp.com",
 ]
 
 # Maple's daily run writes a ready-to-send HTML email to the updater's
@@ -5070,9 +4897,7 @@ def main():
                               DATA_DIR)
         return
 
-    if "--monitor-remy" in sys.argv:
-        run_monitor_remy_cli()
-    elif "--monitor" in sys.argv:
+    if "--monitor" in sys.argv:
         run_monitor_cli()
     elif "--daily-cases" in sys.argv:
         run_daily_cases_cli()
@@ -5121,7 +4946,6 @@ def main():
     else:
         print(__doc__)
         print("Available commands:")
-        print("  --monitor-remy                          Poll Rocky's inbox for Remy requests (24/7)")
         print("  --monitor      [--once]                 Fast loop (24/7): letterstream + vault mail sweeps every")
         print("                                          monitor_interval_minutes (default 10); --once = single cycle")
         print("  --daily-cases  [RRID-XXXX]              Fetch emails, summarize, save")
@@ -5137,6 +4961,8 @@ def main():
         print("                                          commit it to digest/, and email it to James and Shane")
         print("  --vault        [--dry-run] [--source inbox|vault-mail|dropbox] [--backfill-days N] [--limit N] [--max-age-days N]")
         print("                 --status | --reindex | --dropbox-auth <account>")
+        print("                 --cleanup [--execute] [--force]  Merge fragmented property/tenant folders (dry-run writes _vault\\cleanup_plan.txt)")
+        print("                 --reclassify-review [--limit N] [--dry-run]  Retry _Needs Review with scanned-PDF vision")
         print("                                          The Vault: gather leases/ledgers/affidavits into the shared team folder (all sources)")
         print("  --vault-dropbox | --vault-mail | --vault-inbox   [same flags]")
         print("                                          One Vault source each (Dropbox / rocky@ submissions / James's inbox);")
@@ -5155,11 +4981,9 @@ def main():
         print("                 --voice-rebuild | --status")
         print("                                          Litigation Updater: Bozzuto claims Smartsheet — notices, updates,")
         print("                                          closures over the Litigation Updates Teams chat (see LITIGATION_UPDATER.md)")
-        print("  --inbox-<user> --cycle|--snapshot|--analyze|--questionnaire|--chat|--rules-update|--digest|--engineer|--execute|--status")
+        print("  --inbox-<user> --snapshot|--analyze|--questionnaire|--chat|--rules-update|--digest|--execute|--status")
         print("                                          Inbox Cleaner per-user process (e.g. --inbox-matt);")
-        print("                                          users are defined in config inbox_users;")
-        print("                                          --cycle = snapshot+analyze+chat+execute in one shot (small inboxes, e.g. --inbox-james)")
-        print("                                          --engineer [--query \"...\"] = full Claude workup of one email (report + draft reply)")
+        print("                                          users are defined in config inbox_users")
         sys.exit(0)
 
 

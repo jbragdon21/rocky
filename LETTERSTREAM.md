@@ -92,14 +92,19 @@ submitting, the entire chain runs itself:
    Vault). Zero manual steps between the release YES and the vaulted
    affidavit. No-affidavit jobs are just tracked to completion.
 
-**Mailing-date policy (2026-08-17):** the affidavit swears to the date
-and time the mailing was **communicated to LetterStream** — i.e. the
-`[CM-####]` release — not the later date LetterStream hands it to USPS.
-The release confirmation email states the exact date/time that will
-appear on the affidavit. (Website-submitted mailings that come in via
-the proof-of-mailing email channel still use the notice's own date,
-subject to Hailey's review, since Rocky can't see when those were
-submitted.)
+**Mailing date/time policy (2026-08-17, time source refined
+2026-08-26):** the affidavit swears to the date and time the mailing
+was **communicated to LetterStream**, not the later date LetterStream
+hands it to USPS. For Rocky-released jobs that's the `[CM-####]`
+release moment (stamped at release; the confirmation email states it).
+For website-submitted mailings, Rocky reads the LetterStream **job
+number off the proof's cover page** (e.g. `14102628.1.1fc-21` → job
+14102628) and pulls the submission timestamp through the API
+(`jobstatus`; the earliest production-stage timestamp). If no time can
+be found the affidavit shows the date alone — Rocky never guesses a
+time — and the date falls back to the notice's own date, subject to
+Hailey's review either way. Style note: the documents-mailed clause
+abbreviates the Violence Against Women Act as **VAWA**.
 
 Working copies of requested packets live in `<affidavit_root>\Outbound\`
 (declined ones move to `Declined\`). The firm return address printed on
@@ -126,12 +131,15 @@ every submission, no rebuild.
 ## Daily visibility: the Multifamily Digest
 
 `rocky.exe --multifamily-digest` (5:30 PM daily; dashboard "Multifamily
-Digest") sends one email covering this process end to end — certified
+Digest") builds one digest covering this process end to end — certified
 mail requested/released/mailed (with costs, approvers, and tracking),
 affidavits sent/filed/declined, the day's Vault additions, and a
 snapshot of everything still waiting on a reply. It subsumes the old
-standalone Vault Digest. Recipients: `multifamily_digest_recipients`.
-Quiet day = no email.
+standalone Vault Digest. Since 2026-08-29 it is created as a DRAFT in
+James's Drafts folder, pre-addressed to the multifamily group (same
+model as the Maple Digest) — James reviews and sends; Rocky no longer
+emails it from rocky@. Recipients: built-in group list, override with
+`multifamily_digest_draft_recipients`. Quiet day = no draft.
 
 ## Commands
 
@@ -144,6 +152,15 @@ Quiet day = no email.
 | `--letterstream --ingest <proof.pdf>` | Run ONE manually downloaded proof through the same pipeline (needs no API at all) |
 | `--letterstream --probe` | Verify LetterStream API auth (accountstatus request; prints raw response + prepay balance) |
 | `--letterstream --status` | Pending affidavits, cursors, config state |
+
+**From the Rocky Dashboard** (see `DASHBOARD.md`): the sidebar's
+**Certified Mail** card shows everything pending (affidavits awaiting
+approval, mailings awaiting release, jobs in the mail) straight from the
+process's state file, and its **Fetch proof** box runs `--fetch` for a
+pasted tracking number. The full sweep is in the Run a Command list
+(group "Mail", schedulable at the suggested 8:00 AM) — though if the
+`--monitor` loop is running, it already sweeps every 10 minutes and a
+daily task is redundant (safe, but skip it).
 
 ## Prerequisites
 

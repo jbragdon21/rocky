@@ -14,6 +14,13 @@ control it from any device:
   than the one running the updater, those lines arrive at OneDrive-sync speed
   (typically seconds).
 - **Pause / Resume Rocky** (the kill switch).
+- **Certified Mail card** — everything the LetterStream process is waiting on,
+  read live from its state file: affidavits awaiting Hailey's YES, mailings
+  awaiting the requester's release, and released jobs still in the mail. Plus
+  a **Fetch proof** box — paste a USPS certified tracking number (or
+  LetterStream doc id) and Rocky pulls that mailing's proof and starts the
+  affidavit-for-approval flow (the day-to-day discovery path; see
+  `LETTERSTREAM.md`).
 - **Run a command now** — one-click ▶ on any Rocky job.
 - **Scheduling** — 📅 to schedule one job, **⚡ Auto-setup** to install the whole
   recommended daily schedule at once, or **+ New** to set a custom time. Each

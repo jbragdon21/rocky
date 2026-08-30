@@ -264,13 +264,17 @@ _EXTRACT_RULES = """Return ONLY a JSON object with:
       "I sent <tenant> at <address>, via certified mail, ___."):
       the Notice to Pay Rent by July 5, 2026 (the "Termination Date") and
       Notice of Intent to File a Lawsuit dated 5/29/2026, in English and
-      Spanish with Resident Ledger and Violence Against Women Act Notices
-      in English and Spanish
+      Spanish with Resident Ledger and VAWA Notices in English and Spanish
       Start with "the", name each distinct document with its dates, note
-      English/Spanish versions and enclosures. No trailing period.
+      English/Spanish versions and enclosures. Abbreviate the Violence
+      Against Women Act as "VAWA". No trailing period.
   "notice_date": the date of the mailed notice itself as YYYY-MM-DD, or null
   "certified_number": the USPS certified article/tracking number from the
       cover page (digits, spaces ok), or null
+  "letterstream_job_number": the LetterStream job number from the cover
+      page — the digits before the first dot in a reference like
+      "14102628.1.1fc-21", or a bare job number near the addresses — or
+      null
   "confidence": 0.0-1.0 that tenant, address, property, AND
       mailed_documents are all correct
   "reasoning": one short sentence"""
@@ -496,7 +500,8 @@ def process_mailing(
         "tenant_last_first": (extraction.get("tenant_last_first") or "").strip(),
         "address": (extraction.get("address") or "").strip(),
         "property": (extraction.get("property") or "").strip(),
-        "mailed_documents": (extraction.get("mailed_documents") or "").strip(),
+        "mailed_documents": (extraction.get("mailed_documents") or "").strip()
+        .replace("Violence Against Women Act", "VAWA"),
         "notice_date": extraction.get("notice_date"),
         "certified_number": extraction.get("certified_number"),
         "confidence": float(extraction.get("confidence") or 0.0),
@@ -515,6 +520,32 @@ def process_mailing(
         append_activity(paths, {"event": "extraction_incomplete",
                                 "source": source, "fields": fields})
         return False
+
+    # The affidavit's submission time comes from LetterStream's records
+    # (James, 2026-08-26). Rocky-released jobs already carry it (the
+    # communicated-to-LetterStream stamp); website-submitted mailings
+    # look it up by the job number printed on the proof's cover page.
+    # No time found = the affidavit shows the date alone.
+    if not fields.get("mail_time"):
+        job_no = re.sub(r"\D", "",
+                        str(extraction.get("letterstream_job_number") or ""))
+        if job_no:
+            import letterstream
+            ls = letterstream.LetterStreamClient(config, paths["local"])
+            if ls.configured:
+                try:
+                    ls_date, ls_time = letterstream.earliest_datetime_from(
+                        ls.job_status([job_no]))
+                    if ls_time:
+                        fields["mail_time"] = ls_time
+                        if not mailing.get("mail_date") and ls_date:
+                            fields["mail_date"] = ls_date
+                        log.info(f"[affidavits] job {job_no}: submission "
+                                 f"stamp {ls_date} {ls_time} via jobstatus")
+                except letterstream.LetterStreamError as e:
+                    log.info(f"[affidavits] jobstatus lookup for job "
+                             f"{job_no} failed ({e}) — affidavit will "
+                             f"show the date only")
 
     tag = _next_tag(state)
     safe_tenant = _sanitize_filename(fields["tenant_last_first"]

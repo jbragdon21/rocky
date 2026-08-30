@@ -24,7 +24,9 @@
     "pma@bozzuto.com",
     "rprice@bozzuto.com",
     "ccooley@bozzuto.com",
-    "mbarry@bozzuto.com"
+    "mbarry@bozzuto.com",
+    "cesmeir@gallagherllp.com",
+    "sstephey@gallagherllp.com"
   ],
 
   "_maple_updater_comment": "Path to the Maple updater's run-daily-update.ps1 (lives in the Maple OneDrive folder, not in Rocky). The dashboard's 'Maple Updater' button/schedule runs this script. Defaults IN CODE to the production path on the Rocky laptop (rocky profile); set this on machines where the Maple folder mounts elsewhere.",
@@ -50,7 +52,7 @@
   ],
   "remy_digest_mailbox": "rocky@gallagherllp.com",
 
-  "_monitor_comment": "The Monitor (--monitor, 24/7 at boot — separate from --monitor-remy). Every monitor_interval_minutes it runs monitor_commands as subprocesses (own locks/cursors/failure isolation), so certified-mail requests, YES replies, and Vault submissions get handled within minutes. Honors ROCKY STOP. Disable the 8:00 AM letterstream and hourly vault-mail/vault-inbox schedule entries once this runs (overlap is lock-safe, just redundant). Heavier jobs (vault-dropbox, litigation --poll, digests) stay on their own schedules; add a flag here to fold one in without a rebuild.",
+  "_monitor_comment": "The Monitor (--monitor, 24/7 at boot). Every monitor_interval_minutes it runs monitor_commands as subprocesses (own locks/cursors/failure isolation), so certified-mail requests, YES replies, and Vault submissions get handled within minutes. Honors ROCKY STOP. Disable the 8:00 AM letterstream and hourly vault-mail/vault-inbox schedule entries once this runs (overlap is lock-safe, just redundant). Heavier jobs (vault-dropbox, litigation --poll, digests) stay on their own schedules; add a flag here to fold one in without a rebuild.",
   "monitor_interval_minutes": 10,
   "monitor_commands": ["--letterstream", "--vault-mail", "--vault-inbox"],
 
@@ -103,15 +105,14 @@
   "vault_subject_keyword": "vault",
   "vault_backfill_days": 7,
   "vault_confirmation_replies": true,
-  "_vault_property_table_comment": "Property grounding (2026-08-24): classification is grounded against Remy's property list (240 canonical community names) — the list rides in every classify prompt, and returned names snap to canonical spelling with a confidence floor when a tenant is also present. Default location is data\\property_table.csv beside remy_cli_path; set vault_property_table to override; missing file just disables grounding.",
-  "_vault_move_comment": "Processed mail leaves the inbox (2026-08-23): vault-mail submissions move to Inbox\\The Vault in rocky@'s mailbox; James-inbox emails the Vault took documents from move to Inbox\\The Vault in HIS mailbox. Set either key to \"\" to disable. (Same pattern: litigation_processed_folder -> Inbox\\Litigation Updater, letterstream_processed_folder -> Inbox\\Letterstream.)",
+  "_vault_property_table_comment": "Property grounding (2026-08-24): classification is grounded against Remy's property list (240 canonical community names) — the list rides in every classify prompt, and returned names snap to canonical spelling with a confidence floor when a tenant is also present. Default location is data\\property_table.csv beside remy_cli_path; set vault_property_table to override; missing file just disables grounding. Since 2026-08-29 grounding ALSO reads The Vault\\_vault\\property_aliases.json on the share (variant->canonical aliases + supplemental known_properties) — that file, not config, is where property-name teaching lives.",
+  "_vault_move_comment": "Processed mail leaves ROCKY'S inbox only (2026-08-24): vault-mail submissions move to Inbox\\The Vault in rocky@'s mailbox (\"\" disables). James's own inbox is NEVER touched by the Vault sweep — his decision 2026-08-24. (Same pattern: litigation_processed_folder -> Inbox\\Litigation Updater, letterstream_processed_folder -> Inbox\\Letterstream, both in rocky@'s mailbox.)",
   "vault_processed_folder": "The Vault",
-  "vault_inbox_processed_folder": "The Vault",
   "letterstream_processed_folder": "Letterstream",
-  "_multifamily_digest_comment": "Multifamily Digest (--multifamily-digest, 5:30 PM daily — dashboard 'Multifamily Digest'). ONE daily email from rocky@: certified mail sent through LetterStream (requested/released/mailed with costs and approvers), affidavits drafted/filed/declined, the day's Vault additions, and a snapshot of everything still pending. SUBSUMES the standalone Vault Digest — don't schedule both. Quiet day = no email. Recipients fall back to vault_digest_recipients, then user_email.",
-  "multifamily_digest_recipients": ["jbragdon@gallagherllp.com", "PASTE-SHANES-ADDRESS@gallagherllp.com"],
+  "_multifamily_digest_comment": "Multifamily Digest (--multifamily-digest, 5:30 PM daily — dashboard 'Multifamily Digest'). ONE daily DRAFT in James's Drafts folder (multifamily_digest_mailbox, default user_email) pre-addressed to the multifamily group — James reviews and sends, same model as the Maple Digest (changed 2026-08-29; Rocky no longer emails it from rocky@, and the old multifamily_digest_recipients / vault_digest_recipients keys are ignored). Sections: certified mail sent through LetterStream (requested/released/mailed with costs and approvers), affidavits drafted/filed/declined, the day's Vault additions, Remy development, and a snapshot of everything still pending. SUBSUMES the standalone Vault Digest — don't schedule both. Quiet day = no draft. OMIT multifamily_digest_draft_recipients to use the built-in group list (Mondragon, Wenger, Ronan, Brown, Frantzis, Kobylski, O'Mara, Araviakis, Goranin); set it to override.",
+  "multifamily_digest_draft_recipients": [],
   "_multifamily_banner_comment": "Masthead image for the Multifamily Digest email. OMIT the multifamily_digest_banner key to use the bundled Icon\\multifamily_banner.png (the default — no config needed); set it to a path to override (must exist on the machine that runs the digest); set it to \"\" to disable the banner (plain text title instead).",
-  "_vault_digest_comment": "Vault Digest (--vault-digest). SUPERSEDED by the Multifamily Digest (which includes the same Vault section); the command still works for manual use. Recipients also serve as the multifamily digest's fallback list.",
+  "_vault_digest_comment": "Vault Digest (--vault-digest). SUPERSEDED by the Multifamily Digest (which includes the same Vault section); the command still works for manual use.",
   "vault_digest_recipients": ["jbragdon@gallagherllp.com"],
   "_vault_dropbox_comment": "Each entry is one Dropbox login to pull from. Create an app at dropbox.com/developers/apps (scoped access; permissions files.metadata.read + files.content.read + sharing.read), paste app_key/app_secret here, then run 'rocky.exe --vault --dropbox-auth <name>' once to get the refresh_token. folders are paths in that account's own Dropbox ('' = entire accessible root; app-folder apps see only their folder); omit folders entirely for a link-only account. shared_links are shared-FOLDER links from anyone (rlkey and all query params kept intact) — the token just needs to be any authorized Dropbox login, e.g. James's own, so ONE app covers every client's shared link; description feeds the classifier context. max_files_per_run (default 200) throttles big first pulls — cursors/marks hold so the rest arrives on later runs.",
   "vault_dropbox_accounts": [
@@ -213,7 +214,6 @@
   "inbox_cleaner_dir": "C:\\Users\\jbragdon\\OneDrive - gejlaw.com\\Program Files\\Rocky\\Rocky Inboxes",
   "_inbox_observers_comment": "observers: extra people in the user's Teams approval chat (group chat instead of 1:1) who can watch and comment — but ONLY the mailbox owner's replies count as approvals. Omit the key to default to [user_email] (James). Set to [] for a true 1:1.",
   "_inbox_write_via_comment": "write_via: how --execute authenticates. 'app' (default) = application token, needs Mail.ReadWrite (Application) + admin consent, fenced by the Application Access Policy. 'delegated' = rocky@'s own delegated token (Mail.ReadWrite.Shared, already consented), needs only an Exchange Full Access delegation on the target mailbox — the lighter IT ask, chosen for Matt.",
-  "_inbox_james_comment": "James's own process (--inbox-james) runs the whole loop via --cycle (snapshot+analyze+chat+execute, dashboard 'James Inbox' button / 08:00 schedule). conversation_sort:true enables the 'sort with friends' pass — for each message still in the inbox, find where the rest of its conversation is already filed (mailbox-wide; conversationId first, normalized-subject search fallback — the SortByConversation Outlook macro, ported to Graph) and propose moving it there over Teams. Runs live against the CURRENT inbox; skipped when the inbox holds more than conversation_sort_max messages (default 200). cycle_execute:true lets --cycle execute APPROVED cohorts live (rocky@ already has Full Access on James's mailbox, so write_via delegated works with no IT step). observers:[] = true 1:1 Teams chat (James IS the owner). chat_mode 'open' (vs the default 'strict' YES/NO protocol) routes every chat message through a guarded Claude call: it can approve/decline the pending proposal, append standing rules to rules.md, add exclusions/routes to sender_routes.json, and log feature requests to code_changes.md; open-ended requests come back as a concrete [PROPOSAL A####] listing the exact effects, applied only after a YES — mail still moves only via approved cohorts. engineer_draft_reply:true lets the Engineer workup (chat 'engineer ...' or --engineer) put a DRAFT reply in the owner's Drafts (never sends).",
   "inbox_users": {
     "matt": {
       "mailbox": "PASTE-MATTS-MAILBOX@gallagherllp.com",
@@ -224,18 +224,6 @@
       "age_floor_days": 180,
       "big_cluster_min": 150,
       "newsletter_min_count": 50
-    },
-    "james": {
-      "mailbox": "jbragdon@gallagherllp.com",
-      "display_name": "James",
-      "matter_noun": "case",
-      "write_via": "delegated",
-      "observers": [],
-      "conversation_sort": true,
-      "conversation_sort_max": 200,
-      "cycle_execute": true,
-      "chat_mode": "open",
-      "engineer_draft_reply": true
     }
   }
 }

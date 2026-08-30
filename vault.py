@@ -50,6 +50,18 @@ anyone at the firm can grab what they need.
         vault_dropbox_accounts (needs app_key/app_secret already in
         config). Prints the refresh token to paste into config.json.
 
+    python rocky.py --vault --cleanup [--execute] [--force] [--vault-root <path>]
+        Merge fragmented property/tenant folders (alias map + known
+        names + same-person tenant matching), normalize catalog casing,
+        and remove byte-identical duplicate files. Dry-run by default —
+        writes the full plan to _vault\\cleanup_plan.txt for review;
+        --execute applies it (catalog is backed up first).
+
+    python rocky.py --vault --reclassify-review [--limit N] [--dry-run]
+        Re-run classification over the _Needs Review backlog — scanned
+        PDFs now go to Claude as attached pages — and file whatever
+        comes back confident.
+
 Reads use the app-level token (Application Access Policy already covers
 jbragdon@ and rocky@ — no new Graph permission). Confirmation replies go
 out from rocky@ via outbound.send_mail_guarded (internal-only allowlist
@@ -64,7 +76,9 @@ audit trail travels with the documents.
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import io
 import json
 import logging
 import re
@@ -96,6 +110,14 @@ CONFIDENCE_FLOOR = 0.75
 # Per-document text cap in classification prompts.
 DOC_TEXT_CAP = 4000
 BODY_TEXT_CAP = 1500
+
+# Scanned PDFs (no text layer) ride into the classify call as attached
+# PDF pages so Claude can read the scan itself — the 2026-08-17 bulk
+# ingest sent 600+ scans to _Needs Review for want of this. Caps keep a
+# batch of scans from ballooning the request.
+SCAN_PDF_PAGES = 4
+SCAN_PDF_MAX_BYTES = 20 * 1024 * 1024   # bigger source PDFs: name-only
+SCAN_PDF_EXCERPT_MAX = 10 * 1024 * 1024  # excerpt still huge: skip attach
 
 # Dropbox: files bigger than this are skipped (logged), batch size for
 # classification calls, and default per-run file cap per account.
@@ -167,8 +189,13 @@ the whole team can grab what they need.
 # =============================================================================
 
 def get_paths(config: dict, data_dir: Path) -> dict:
-    """Resolve every Vault location from config (with house defaults)."""
-    explicit = (config.get("vault_root") or "").strip()
+    """Resolve every Vault location from config (with house defaults).
+    A CLI --vault-root <path> overrides config — the share mounts under a
+    different local path on each machine (e.g. the dev laptop sees it as
+    a shared-with-me folder), and maintenance commands like --cleanup
+    need to run against it from wherever it's synced."""
+    explicit = (_argv_value("--vault-root")
+                or config.get("vault_root") or "").strip()
     if explicit:
         root = Path(explicit)
     else:
@@ -301,15 +328,27 @@ def _clean_component(value: str) -> str:
     return _sanitize_filename(cleaned)[:80]
 
 
-def _doc_date(meta: dict, fallback_iso: str | None) -> str:
-    """Pick the document date: classifier's if valid, else source date, else today."""
-    for candidate in (meta.get("document_date"), (fallback_iso or "")[:10]):
-        if candidate and re.fullmatch(r"\d{4}-\d{2}-\d{2}", candidate):
-            return candidate
+def _doc_date(meta: dict) -> str | None:
+    """The document's OWN date from the classifier, or None. Never borrows
+    the source timestamp: a Dropbox upload date on a scanned affidavit is
+    not a service date (the 2026-08-17 bulk ingest stamped half the vault
+    2026-08-06 that way, colliding distinct documents into _(2) names)."""
+    candidate = str(meta.get("document_date") or "")
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", candidate):
+        return candidate
+    return None
+
+
+def _ingest_date(fallback_iso: str | None) -> str:
+    """Source date (else today) — only for _Needs Review name prefixes,
+    where it marks when the file arrived, not what the document says."""
+    candidate = (fallback_iso or "")[:10]
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", candidate):
+        return candidate
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
-def _filed_filename(meta: dict, original_name: str, fallback_iso: str | None) -> str:
+def _filed_filename(meta: dict, original_name: str) -> str:
     from rocky import _sanitize_filename  # lazy
     ext = Path(original_name).suffix.lower() or ".pdf"
     doc_type = meta.get("doc_type") or "other"
@@ -319,14 +358,92 @@ def _filed_filename(meta: dict, original_name: str, fallback_iso: str | None) ->
     else:
         label = DOC_TYPE_LABELS.get(doc_type, "Document")
     tenant = _clean_component(meta.get("tenant") or "")
-    date = _doc_date(meta, fallback_iso)
+    date = _doc_date(meta) or "undated"
     return f"{label} - {tenant} - {date}{ext}"
 
 
 def _review_filename(original_name: str, sha256: str, fallback_iso: str | None) -> str:
     from rocky import _sanitize_filename  # lazy
-    date = _doc_date({}, fallback_iso)
+    date = _ingest_date(fallback_iso)
     return f"{date}_{sha256[:8]}_{_sanitize_filename(original_name)[:100]}"
+
+
+def _match_existing_property_folder(root: Path, prop: str) -> str | None:
+    """An existing top-level folder that matches case-insensitively —
+    reuse its exact casing so 'PARC RIVERSIDE' and 'Parc Riverside' never
+    split the index."""
+    if not prop:
+        return None
+    try:
+        for child in root.iterdir():
+            if (child.is_dir() and not child.name.startswith("_")
+                    and child.name.casefold() == prop.casefold()):
+                return child.name
+    except OSError:
+        pass
+    return None
+
+
+def _split_tenant(name: str) -> tuple[str, list[str]] | None:
+    """'Last, First Middle' -> ('last', ['first', 'middle']); None if the
+    name has no comma (corporate tenants stay as-is)."""
+    if "," not in (name or ""):
+        return None
+    last, given = name.split(",", 1)
+    tokens = [t for t in re.split(r"[\s.]+", given.strip()) if t]
+    return re.sub(r"\s+", " ", last.strip()).casefold(), [t.casefold() for t in tokens]
+
+
+def _same_person(a: str, b: str, allow_typo: bool = False) -> bool:
+    """Same last name and compatible given names: equal, an initial of
+    the other ('Holland, D' ~ 'Holland, Deleona'), or one extending the
+    other ('Banks, Calvin' ~ 'Banks, Calvin Abram'). allow_typo also
+    accepts a one-letter slip or short form in the first name
+    ('Timeca'/'Timeka', 'Shantel'/'Shantell') — cleanup-only, too fuzzy
+    for live filing."""
+    pa, pb = _split_tenant(a), _split_tenant(b)
+    if not pa or not pb or pa[0] != pb[0]:
+        return False
+    ga, gb = pa[1], pb[1]
+    if not ga or not gb:
+        return False
+    short, long_ = (ga, gb) if len(ga) <= len(gb) else (gb, ga)
+    if all(s == l or (len(s) == 1 and l.startswith(s))
+           or (len(l) == 1 and s.startswith(l))
+           for s, l in zip(short, long_)):
+        return True
+    if allow_typo:
+        fa, fb = ga[0], gb[0]
+        rest_match = ga[1:] == gb[1:] or not (ga[1:] and gb[1:])
+        if len(fa) >= 4 and len(fb) >= 4 and rest_match:
+            if len(fa) == len(fb) and sum(1 for x, y in zip(fa, fb) if x != y) == 1:
+                return True
+            if abs(len(fa) - len(fb)) <= 2 and (fa.startswith(fb) or fb.startswith(fa)):
+                return True
+    return False
+
+
+def _match_existing_tenant(prop_dir: Path, tenant: str) -> str | None:
+    """Reuse an existing tenant folder when the classified name is the
+    same person (exact case-insensitive, or an initial/extension
+    variant). Two DIFFERENT plausible folders = ambiguous = reuse
+    nothing — a wrong merge is worse than a split."""
+    if not tenant:
+        return None
+    try:
+        existing = [c.name for c in prop_dir.iterdir() if c.is_dir()]
+    except OSError:
+        return None
+    for name in existing:
+        if name.casefold() == tenant.casefold():
+            return name
+    matches = [n for n in existing if _same_person(n, tenant)]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        log.info(f"[vault] tenant {tenant!r} matches multiple existing "
+                 f"folders {matches} — keeping its own folder")
+    return None
 
 
 def file_document(
@@ -356,8 +473,20 @@ def file_document(
 
     confident = bool(prop_raw and tenant_raw and confidence >= CONFIDENCE_FLOOR)
     if confident:
+        # Reuse existing folders rather than forking near-duplicates: an
+        # exact-casing property match, then a same-person tenant match.
+        existing_prop = _match_existing_property_folder(paths["root"], prop)
+        if existing_prop and existing_prop != prop:
+            prop = existing_prop
+            meta = {**meta, "property": existing_prop}
+        existing_tenant = _match_existing_tenant(paths["root"] / prop, tenant)
+        if existing_tenant and existing_tenant != tenant:
+            log.info(f"[vault] tenant folder reuse under {prop!r}: "
+                     f"{tenant!r} -> {existing_tenant!r}")
+            meta = {**meta, "tenant": existing_tenant}
+            tenant = _clean_component(existing_tenant)
         dest_dir = paths["root"] / prop / tenant
-        filename = _filed_filename(meta, original_name, fallback_iso)
+        filename = _filed_filename(meta, original_name)
         disposition = "filed"
     else:
         dest_dir = paths["needs_review"]
@@ -377,7 +506,7 @@ def file_document(
         "doc_type": meta.get("doc_type"),
         "property": meta.get("property"),
         "tenant": meta.get("tenant"),
-        "document_date": _doc_date(meta, fallback_iso),
+        "document_date": _doc_date(meta),
         "confidence": round(confidence, 2),
         "reasoning": meta.get("reasoning"),
         "disposition": disposition,
@@ -405,6 +534,54 @@ def file_document(
 # property_table.csv). Grounds classification: the list rides in the
 # prompt, and returned property names snap to canonical spellings.
 _KNOWN_PROPERTIES: list[str] = []
+
+# Property-name aliases (loaded once per run from the share's
+# _vault\property_aliases.json). Keys are normalized variants, values the
+# canonical folder name. This is the teaching surface for property
+# naming: when a variant fragments a folder, add an alias line — no
+# rebuild needed, every vault run rereads the file.
+_PROPERTY_ALIASES: dict[str, str] = {}
+
+
+def _norm_prop(name: str | None) -> str:
+    return re.sub(r"\s+", " ", (name or "").strip()).casefold()
+
+
+def load_property_aliases(paths: dict) -> tuple[dict[str, str], list[str]]:
+    """Read _vault\\property_aliases.json: {"aliases": {variant:
+    canonical}, "known_properties": [names missing from Remy's table]}.
+    Missing or unparseable file just disables aliasing."""
+    path = paths["meta"] / "property_aliases.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except OSError:
+        return {}, []
+    except ValueError as e:
+        log.warning(f"[vault] {path.name} is not valid JSON ({e}) — "
+                    f"aliases disabled this run")
+        return {}, []
+    aliases = {_norm_prop(k): (v or "").strip()
+               for k, v in (data.get("aliases") or {}).items()
+               if (v or "").strip()}
+    known = [n.strip() for n in (data.get("known_properties") or [])
+             if (n or "").strip()]
+    log.info(f"[vault] property aliases: {len(aliases)} alias(es), "
+             f"{len(known)} supplemental known propert(ies)")
+    return aliases, known
+
+
+def _load_grounding(config: dict, paths: dict) -> None:
+    """Populate _KNOWN_PROPERTIES (Remy table + share supplements + alias
+    canonicals) and _PROPERTY_ALIASES for this run."""
+    _KNOWN_PROPERTIES[:] = load_known_properties(config)
+    aliases, extra_known = load_property_aliases(paths)
+    _PROPERTY_ALIASES.clear()
+    _PROPERTY_ALIASES.update(aliases)
+    have = {_norm_prop(n) for n in _KNOWN_PROPERTIES}
+    for name in list(extra_known) + sorted(set(aliases.values())):
+        if _norm_prop(name) not in have:
+            _KNOWN_PROPERTIES.append(name)
+            have.add(_norm_prop(name))
 
 
 def load_known_properties(config: dict) -> list[str]:
@@ -437,35 +614,65 @@ def load_known_properties(config: dict) -> list[str]:
     return out
 
 
+# Generic words that may legitimately pad a property-name variant
+# ("The Kelvin Apartments" ~ "The Kelvin", "77 H Street NW" ~
+# "77 H Street") without meaning a different community.
+_PROP_STOPWORDS = {"the", "at", "on", "of", "a", "an", "and", "apartment",
+                   "apartments", "apts", "nw", "ne", "sw", "se", "dc"}
+
+
+def _extra_words_generic(raw_l: str, name_l: str) -> bool:
+    """True when raw minus name leaves only stopwords."""
+    leftover = raw_l.replace(name_l, " ")
+    return all(w in _PROP_STOPWORDS
+               for w in re.findall(r"[a-z0-9']+", leftover))
+
+
 def _ground_property(meta: dict) -> dict:
-    """Snap a classified property to its canonical table spelling and,
-    on a strong match with a tenant present, floor the confidence at
-    filing level — a validated property removes the main doubt."""
-    if not _KNOWN_PROPERTIES:
-        return meta
+    """Snap a classified property to its canonical spelling — the alias
+    map first (exact, case-insensitive), then fuzzy against the known
+    list — and, on a match with a tenant present, floor the confidence at
+    filing level: a validated property removes the main doubt."""
     raw = (meta.get("property") or "").strip()
     if not raw:
         return meta
-    from difflib import SequenceMatcher
-    raw_l = raw.lower()
-    best, best_score = None, 0.0
-    for name in _KNOWN_PROPERTIES:
-        name_l = name.lower()
-        if raw_l == name_l:
-            best, best_score = name, 1.0
-            break
-        score = SequenceMatcher(None, raw_l, name_l).ratio()
-        # Containment (either direction) also counts for short-vs-long
-        # variants ("Kelvin" vs "The Kelvin"), Remy-asset style.
-        if len(raw_l) >= 5 and (raw_l in name_l or name_l in raw_l):
-            score = max(score, 0.9)
-        if score > best_score:
-            best, best_score = name, score
-    if best is None or best_score < 0.85:
+    snapped = _PROPERTY_ALIASES.get(_norm_prop(raw))
+    if snapped is None and _KNOWN_PROPERTIES:
+        from difflib import SequenceMatcher
+        raw_l = _norm_prop(raw)
+        best, best_score = None, 0.0
+        containment_hits: set[str] = set()
+        for name in _KNOWN_PROPERTIES:
+            name_l = _norm_prop(name)
+            if raw_l == name_l:
+                best, best_score = name, 1.0
+                break
+            score = SequenceMatcher(None, raw_l, name_l).ratio()
+            # Containment also counts for short-vs-long variants ("Kelvin"
+            # vs "The Kelvin") — but a LONGER raw containing a known name
+            # only matches when its extra words are generic: "Classic @
+            # Modern on M" must never snap to "Modern on M".
+            contained = (len(raw_l) >= 5 and raw_l in name_l) or \
+                (name_l in raw_l and _extra_words_generic(raw_l, name_l))
+            if contained:
+                containment_hits.add(name)
+                score = max(score, 0.9)
+            if score > best_score:
+                best, best_score = name, score
+        if best is not None and best_score >= 0.85:
+            if best_score < 0.95 and len(containment_hits) > 1:
+                log.info(f"[vault] property {raw!r} matches several known "
+                         f"names {sorted(containment_hits)} — not snapping")
+            else:
+                snapped = best
+    if snapped is None:
         return meta
-    if best != raw:
-        log.info(f"[vault] property snapped to canonical: {raw!r} -> {best!r}")
-    meta["property"] = best
+    # A table spelling may itself be aliased (e.g. the three Flats 130
+    # phase entries all collapse to one vault folder).
+    snapped = _PROPERTY_ALIASES.get(_norm_prop(snapped)) or snapped
+    if snapped != raw:
+        log.info(f"[vault] property snapped to canonical: {raw!r} -> {snapped!r}")
+    meta["property"] = snapped
     if ((meta.get("tenant") or "").strip()
             and float(meta.get("confidence") or 0) >= 0.5):
         meta["confidence"] = max(float(meta.get("confidence") or 0), 0.8)
@@ -487,12 +694,56 @@ _CLASSIFY_RULES = """For each document, return an object with:
   "tenant": the resident's name as "Last, First" (null if unknown; for
       multiple residents use the first-listed, e.g. "Smith, John")
   "label": for doc_type "other" only, a 2-5 word label of what it is
-  "document_date": the document's own date as YYYY-MM-DD (lease start or
-      execution date; ledger through-date; affidavit service date), or null
+  "document_date": the document's OWN date as YYYY-MM-DD (lease start or
+      execution date; ledger through-date; affidavit service date; the
+      date printed or stamped on a notice), or null when the document
+      shows none — NEVER today's date and NEVER the file's upload date
   "confidence": 0.0-1.0 that doc_type, property, AND tenant are all right
   "reasoning": one short sentence
 
 Respond with ONLY a JSON array, one object per document, same order."""
+
+
+def _scan_pdf_excerpt(filename: str, content: bytes,
+                      text: str | None) -> bytes | None:
+    """First pages of a text-free PDF, to attach to the classify call so
+    Claude reads the scan itself. Returns None when the file has a text
+    layer (the text path is cheaper) or isn't a workable PDF."""
+    if text and text.strip():
+        return None
+    if not (filename or "").lower().endswith(".pdf") or not content:
+        return None
+    if len(content) > SCAN_PDF_MAX_BYTES:
+        log.info(f"[vault] {filename!r}: scanned PDF too large to attach "
+                 f"({len(content) // (1024 * 1024)} MB) — classifying by "
+                 f"name/path only")
+        return None
+    excerpt = content
+    try:
+        from pypdf import PdfReader, PdfWriter
+        reader = PdfReader(io.BytesIO(content))
+        n_pages = len(reader.pages)
+    except Exception as e:
+        # A PDF pypdf can't even open (truncated scan, no EOF marker)
+        # would 400 the WHOLE classify batch if attached — seen live
+        # 2026-08-29. Classify it by name/path only.
+        log.info(f"[vault] {filename!r}: unreadable as PDF ({e}) — "
+                 f"not attaching, classifying by name/path only")
+        return None
+    try:
+        if n_pages > SCAN_PDF_PAGES:
+            writer = PdfWriter()
+            for page in reader.pages[:SCAN_PDF_PAGES]:
+                writer.add_page(page)
+            buf = io.BytesIO()
+            writer.write(buf)
+            excerpt = buf.getvalue()
+    except Exception as e:
+        log.debug(f"[vault] could not trim {filename!r} to "
+                  f"{SCAN_PDF_PAGES} pages: {e}")
+    if len(excerpt) > SCAN_PDF_EXCERPT_MAX:
+        return None
+    return excerpt
 
 
 def _extract_json_array(text: str) -> list[dict]:
@@ -518,9 +769,11 @@ def classify_documents(
 ) -> list[dict]:
     """
     One Claude call classifying a batch of documents.
-    docs: [{"filename": ..., "text": ... or None}]. Returns one meta dict
-    per doc (aligned by filename, falling back to order). Inputs larger
-    than CLASSIFY_BATCH_MAX are split across multiple calls.
+    docs: [{"filename": ..., "text": ... or None, "pdf_bytes": optional
+    bytes of a text-free scan (see _scan_pdf_excerpt) attached so Claude
+    reads the pages}]. Returns one meta dict per doc (aligned by
+    filename, falling back to order). Inputs larger than
+    CLASSIFY_BATCH_MAX are split across multiple calls.
     """
     if len(docs) > CLASSIFY_BATCH_MAX:
         results: list[dict] = []
@@ -533,8 +786,22 @@ def classify_documents(
     doc_blocks = []
     for d in docs:
         text = (d.get("text") or "").strip()
-        snippet = text[:DOC_TEXT_CAP] if text else "(no text could be extracted)"
+        if text:
+            snippet = text[:DOC_TEXT_CAP]
+        elif d.get("pdf_bytes"):
+            snippet = "(scanned document — its pages are attached below)"
+        else:
+            snippet = "(no text could be extracted)"
         doc_blocks.append(f"--- Document: {d['filename']} ---\n{snippet}")
+
+    scan_note = ""
+    if any(d.get("pdf_bytes") for d in docs):
+        scan_note = (
+            "\nSome documents are scans with no machine-readable text — "
+            "their first pages are attached as PDFs after this message, "
+            "each preceded by its filename. Read the scans themselves to "
+            "classify them and to find their true document dates.\n"
+        )
 
     intent = ""
     if explicit_submission:
@@ -561,10 +828,23 @@ def classify_documents(
         "You are Rocky, a virtual paralegal at Gallagher LLP, filing "
         "documents into \"The Vault\" — a shared library of documents "
         "supporting landlord-tenant filings in VA, DC, and MD.\n\n"
-        f"{context}\n{intent}{known}\n"
+        f"{context}\n{intent}{known}{scan_note}\n"
         f"{_CLASSIFY_RULES}\n\n"
         + "\n\n".join(doc_blocks)
     )
+
+    content: list[dict] = [{"type": "text", "text": prompt}]
+    for d in docs:
+        pdf = d.get("pdf_bytes")
+        if not pdf:
+            continue
+        content.append({"type": "text",
+                        "text": f"Scanned document: {d['filename']}"})
+        content.append({
+            "type": "document",
+            "source": {"type": "base64", "media_type": "application/pdf",
+                       "data": base64.standard_b64encode(pdf).decode("ascii")},
+        })
 
     results: list[dict] | None = None
     for attempt in (1, 2):
@@ -573,7 +853,7 @@ def classify_documents(
             response = client.messages.create(
                 model=CLAUDE_MODEL,
                 max_tokens=CLASSIFY_MAX_TOKENS,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[{"role": "user", "content": content}],
             )
             response_text = response.content[0].text
             results = _extract_json_array(response_text)
@@ -727,11 +1007,13 @@ def scan_inbox_source(
             continue
         counts["messages"] += 1
 
-        docs = [{
-            "filename": a["name"],
-            "text": extract_text_from_attachment(
-                a["name"], a.get("contentType") or "", a["contentBytes"]),
-        } for a in candidates]
+        docs = []
+        for a in candidates:
+            text = extract_text_from_attachment(
+                a["name"], a.get("contentType") or "", a["contentBytes"])
+            docs.append({"filename": a["name"], "text": text,
+                         "pdf_bytes": _scan_pdf_excerpt(
+                             a["name"], a["contentBytes"], text)})
         metas = classify_documents(
             client, docs, _email_context(message, "James's inbox"),
             explicit_submission=False,
@@ -742,7 +1024,6 @@ def scan_inbox_source(
                         "next run")
             break
 
-        took = 0
         for att, meta in zip(candidates, metas):
             if not meta.get("is_vault_document"):
                 log.info(f"[vault] inbox: {att['name']!r} not vault material "
@@ -756,7 +1037,6 @@ def scan_inbox_source(
             sha256 = hashlib.sha256(att["contentBytes"]).hexdigest()
             if sha256 in seen:
                 counts["duplicates"] += 1
-                took += 1  # the vault has it — the email is still consumed
                 append_activity(paths, {"event": "duplicate_skipped",
                                         "source": "inbox",
                                         "original_name": att["name"],
@@ -770,14 +1050,11 @@ def scan_inbox_source(
                 dry_run=dry_run,
             )
             seen.add(sha256)
-            took += 1
             counts["filed" if entry["disposition"] == "filed" else "needs_review"] += 1
 
-        if took and not dry_run:
-            # Only mail the Vault actually took something from leaves
-            # James's inbox — moved LAST (a Graph move changes the id).
-            _file_processed_mail(config, paths, state, mailbox, message,
-                                 "vault_inbox_processed_folder", "The Vault")
+        # NOTE: James's inbox is deliberately left untouched — only
+        # rocky@'s vault-mail submissions get moved to Inbox\The Vault
+        # (his decision 2026-08-24; his own inbox is his workspace).
         _advance_cursor(state, cursor_key, message)
 
     if not dry_run and not messages:
@@ -834,11 +1111,13 @@ def scan_vault_mailbox(
 
         candidates = _candidate_attachments(token, mailbox, message)
         if candidates:
-            docs = [{
-                "filename": a["name"],
-                "text": extract_text_from_attachment(
-                    a["name"], a.get("contentType") or "", a["contentBytes"]),
-            } for a in candidates]
+            docs = []
+            for a in candidates:
+                text = extract_text_from_attachment(
+                    a["name"], a.get("contentType") or "", a["contentBytes"])
+                docs.append({"filename": a["name"], "text": text,
+                             "pdf_bytes": _scan_pdf_excerpt(
+                                 a["name"], a["contentBytes"], text)})
             metas = classify_documents(
                 client, docs,
                 _email_context(message, "Rocky's mailbox as a Vault submission"),
@@ -1281,13 +1560,24 @@ def _classify_and_file_batch(
         return True
     metas = classify_documents(
         client,
-        [{"filename": b["prompt_name"], "text": b["text"]} for b in batch],
+        [{"filename": b["prompt_name"], "text": b["text"],
+          "pdf_bytes": b.get("pdf_bytes")} for b in batch],
         context, explicit_submission=False,
     )
     if any(m.get("classification_failed") for m in metas):
         return False
     for b, meta in zip(batch, metas):
         if not meta.get("is_vault_document"):
+            continue
+        if b["sha256"] in seen:
+            # Identical bytes twice in one run (two client-side copies
+            # downloaded before either was filed) — the download-time
+            # check can't see them, this one can.
+            counts["duplicates"] += 1
+            append_activity(paths, {"event": "duplicate_skipped",
+                                    "source": source_name,
+                                    "original_name": b["file_name"],
+                                    "sha256": b["sha256"]})
             continue
         entry = file_document(
             paths, meta, b["content"], b["file_name"],
@@ -1400,6 +1690,8 @@ def scan_dropbox(
                         fmarks[e.get("path_lower")] = _link_mark(e)
                     continue
                 counts["files"] += 1
+                text = extract_text_from_attachment(
+                    e.get("name") or "", "", content)
                 batch.append({
                     "content": content,
                     "sha256": sha256,
@@ -1407,8 +1699,9 @@ def scan_dropbox(
                     # Include the folder path in the name Claude sees — it
                     # often carries the property/tenant.
                     "prompt_name": e.get("path_display") or e.get("name"),
-                    "text": extract_text_from_attachment(
-                        e.get("name") or "", "", content),
+                    "text": text,
+                    "pdf_bytes": _scan_pdf_excerpt(
+                        e.get("name") or "", content, text),
                     "detail": {"account": name,
                                "path": e.get("path_display"),
                                "server_modified": e.get("server_modified")},
@@ -1497,13 +1790,16 @@ def scan_dropbox(
                         marks[f["rel_path"]] = _link_mark(f)
                     continue
                 counts["files"] += 1
+                text = extract_text_from_attachment(
+                    f["name"] or "", "", content)
                 batch.append({
                     "content": content,
                     "sha256": sha256,
                     "file_name": f["name"],
                     "prompt_name": f["rel_path"],
-                    "text": extract_text_from_attachment(
-                        f["name"] or "", "", content),
+                    "text": text,
+                    "pdf_bytes": _scan_pdf_excerpt(
+                        f["name"] or "", content, text),
                     "detail": {"account": name, "shared_link": lname,
                                "path": f["rel_path"],
                                "server_modified": f["server_modified"]},
@@ -1863,6 +2159,486 @@ def print_status(config: dict, paths: dict) -> None:
 
 
 # =============================================================================
+# Maintenance — folder cleanup & Needs-Review reclassification
+# =============================================================================
+
+def _recent_unfinished_run(paths: dict) -> str | None:
+    """Timestamp of a live vault run started in the last 2h with no
+    run_summary yet — catalog rewrites must not race an active ingest."""
+    try:
+        lines = paths["activity"].read_text(
+            encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    pending: list[str] = []
+    for line in lines[-500:]:
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if ev.get("event") == "run_started" and not ev.get("dry_run"):
+            pending.append(ev.get("ts") or "")
+        elif ev.get("event") == "run_summary" and pending:
+            pending.pop(0)
+    for ts in reversed(pending):
+        try:
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if datetime.now(timezone.utc) - dt < timedelta(hours=2):
+            return ts
+    return None
+
+
+def _rewrite_catalog(paths: dict, updates: dict[int, dict],
+                     drop: set[int]) -> Path:
+    """Back up catalog.jsonl, then atomically rewrite it applying per-index
+    updates/drops (indexes = load_catalog() order). The catalog is
+    append-only in normal operation, so lines appended between read and
+    rewrite sit at the tail and are carried over untouched."""
+    raw = paths["catalog"].read_text(encoding="utf-8").splitlines()
+    backup = paths["meta"] / (
+        f"catalog.backup-{datetime.now():%Y%m%d-%H%M%S}.jsonl")
+    backup.write_text("\n".join(raw) + "\n", encoding="utf-8")
+    out: list[str] = []
+    parsed_i = 0
+    for line in raw:
+        s = line.strip()
+        if not s:
+            continue
+        try:
+            json.loads(s)
+        except ValueError:
+            out.append(line)
+            continue
+        if parsed_i not in drop:
+            out.append(json.dumps(updates[parsed_i], ensure_ascii=False)
+                       if parsed_i in updates else line)
+        parsed_i += 1
+    tmp = paths["catalog"].with_name("catalog.jsonl.tmp")
+    tmp.write_text("\n".join(out) + ("\n" if out else ""), encoding="utf-8")
+    tmp.replace(paths["catalog"])
+    return backup
+
+
+def _cluster_tenants(names: list[str], counts: dict[str, int],
+                     ) -> tuple[dict[str, str], list[list[str]]]:
+    """Group same-person tenant-folder variants. Returns (variant ->
+    canonical, ambiguous clusters left alone). A cluster only merges when
+    EVERY pair matches — 'Smith, J' must not chain 'Smith, John' to
+    'Smith, Jane'."""
+    clusters: list[list[str]] = []
+    for n in sorted(names):
+        for cl in clusters:
+            if any(_same_person(n, m, allow_typo=True) for m in cl):
+                cl.append(n)
+                break
+        else:
+            clusters.append([n])
+
+    def given_len(n: str) -> int:
+        p = _split_tenant(n)
+        return len(" ".join(p[1])) if p else 0
+
+    mapping: dict[str, str] = {}
+    ambiguous: list[list[str]] = []
+    for cl in clusters:
+        if len(cl) < 2:
+            continue
+        if not all(_same_person(a, b, allow_typo=True)
+                   for i, a in enumerate(cl) for b in cl[i + 1:]):
+            ambiguous.append(sorted(cl))
+            continue
+        canonical = max(cl, key=lambda n: (given_len(n), counts.get(n, 0), n))
+        for n in cl:
+            if n != canonical:
+                mapping[n] = canonical
+    return mapping, ambiguous
+
+
+def run_cleanup(paths: dict, execute: bool, force: bool) -> None:
+    """
+    Merge fragmented property/tenant folders and normalize the catalog:
+    alias/known-name property merges ('Alula' -> 'Alula at Bridge
+    District'), catalog casing normalization ('PARC RIVERSIDE' ->
+    'Parc Riverside'), same-person tenant-folder merges ('Holland, D' ->
+    'Holland, Deleona'), and removal of byte-identical duplicate files.
+
+    Default is a DRY-RUN that writes the full plan to
+    _vault\\cleanup_plan.txt for review; --execute applies it (moves
+    files, rewrites the catalog after backing it up, rebuilds the index).
+    Re-runnable: a second pass finds nothing left to do.
+    """
+    from collections import defaultdict
+    from rocky import _dedup_path  # lazy
+
+    root = paths["root"]
+    catalog = load_catalog(paths)
+    filed = [e for e in catalog
+             if not e.get("dry_run") and e.get("disposition") == "filed"]
+
+    doc_counts: dict[str, int] = defaultdict(int)
+    for e in filed:
+        doc_counts[(e.get("property") or "").strip()] += 1
+
+    disk_props = [d.name for d in root.iterdir()
+                  if d.is_dir() and not d.name.startswith("_")]
+
+    # --- property resolution: alias -> known spelling -> preferred casing
+    known_by_norm: dict[str, str] = {}
+    for n in _KNOWN_PROPERTIES:
+        known_by_norm.setdefault(_norm_prop(n), n)
+    names = set(disk_props) | {p for p in doc_counts if p}
+    groups: dict[str, list[str]] = defaultdict(list)
+    for n in names:
+        groups[_norm_prop(n)].append(n)
+    prop_map: dict[str, str] = {}
+    for n in names:
+        canon = _PROPERTY_ALIASES.get(_norm_prop(n)) \
+            or known_by_norm.get(_norm_prop(n))
+        if canon is None:
+            # Casing-only variants: prefer a non-ALL-CAPS spelling, then
+            # the one with the most filed documents.
+            canon = sorted(groups[_norm_prop(n)],
+                           key=lambda g: (g.isupper(),
+                                          -doc_counts.get(g, 0), g))[0]
+        prop_map[n] = canon
+
+    # --- gather tenant folders per canonical property
+    by_canon: dict[str, dict[str, list[Path]]] = defaultdict(dict)
+    for pname in disk_props:
+        for tdir in (root / pname).iterdir():
+            if tdir.is_dir():
+                by_canon[prop_map[pname]].setdefault(tdir.name, []).append(tdir)
+
+    # --- plan: tenant clusters and file moves
+    moves: list[tuple[Path, str, str, str]] = []  # (src, prop, tenant, name)
+    tenant_map: dict[tuple[str, str], str] = {}
+    ambiguous_all: list[tuple[str, list[str]]] = []
+    for canon_prop, tenants in sorted(by_canon.items()):
+        counts_t = {t: sum(1 for d in dirs for f in d.iterdir() if f.is_file())
+                    for t, dirs in tenants.items()}
+        cluster, ambiguous = _cluster_tenants(list(tenants), counts_t)
+        ambiguous_all += [(canon_prop, a) for a in ambiguous]
+        for variant, canonical in cluster.items():
+            tenant_map[(canon_prop, variant)] = canonical
+        for tname, dirs in sorted(tenants.items()):
+            dest_tenant = cluster.get(tname, tname)
+            for d in dirs:
+                if (_norm_prop(d.parent.name) == _norm_prop(canon_prop)
+                        and tname == dest_tenant):
+                    continue
+                for f in sorted(d.iterdir()):
+                    if not f.is_file():
+                        continue
+                    newname = f.name
+                    if dest_tenant != tname:
+                        newname = newname.replace(f" - {tname} - ",
+                                                  f" - {dest_tenant} - ")
+                    moves.append((f, canon_prop, dest_tenant, newname))
+
+    case_renames = sorted(
+        (p, prop_map[p]) for p in disk_props
+        if prop_map[p] != p and _norm_prop(prop_map[p]) == _norm_prop(p))
+    case_map = dict(case_renames)
+
+    # --- plan: byte-identical duplicates (keep the earliest entry)
+    by_sha: dict[str, list[int]] = defaultdict(list)
+    for i, e in enumerate(catalog):
+        if (not e.get("dry_run") and e.get("disposition") == "filed"
+                and e.get("sha256")):
+            by_sha[e["sha256"]].append(i)
+    dup_drop: dict[int, str] = {}
+    for sha, idxs in by_sha.items():
+        if len(idxs) < 2:
+            continue
+        keep_rel = catalog[idxs[0]].get("path") or ""
+        if not keep_rel or not (root / keep_rel).exists():
+            continue
+        for i in idxs[1:]:
+            rel = catalog[i].get("path") or ""
+            if rel and rel != keep_rel and (root / rel).exists():
+                dup_drop[i] = rel
+
+    # Catalog-string-only fixes (casing etc.) for entries whose file
+    # doesn't move.
+    catalog_only = sum(
+        1 for e in filed
+        if prop_map.get((e.get("property") or "").strip(),
+                        (e.get("property") or "").strip())
+        != (e.get("property") or "").strip())
+
+    # --- write the plan
+    now = datetime.now(timezone.utc)
+    plan_lines = [
+        f"The Vault — cleanup plan ({now:%Y-%m-%d %H:%M} UTC)",
+        f"Mode: {'EXECUTE' if execute else 'DRY-RUN (nothing changed)'}",
+        "",
+        f"File moves:               {len(moves)}",
+        f"Property casing renames:  {len(case_renames)}",
+        f"Duplicate files removed:  {len(dup_drop)}",
+        f"Catalog property fixes:   {catalog_only} entr(ies)",
+        f"Ambiguous tenant groups (LEFT ALONE): {len(ambiguous_all)}",
+        "",
+        "== Property merges/renames ==",
+    ]
+    merge_pairs = sorted({(p, c) for p, c in prop_map.items() if p != c})
+    for old, new in merge_pairs:
+        kind = "casing" if _norm_prop(old) == _norm_prop(new) else "MERGE"
+        plan_lines.append(f"  [{kind}] {old}  ->  {new} "
+                          f"({doc_counts.get(old, 0)} catalog doc(s))")
+    plan_lines += ["", "== Tenant folder merges =="]
+    for (cp, variant), canonical in sorted(tenant_map.items()):
+        plan_lines.append(f"  {cp}: {variant}  ->  {canonical}")
+    plan_lines += ["", "== Ambiguous tenant groups (no action) =="]
+    for cp, group in ambiguous_all:
+        plan_lines.append(f"  {cp}: {group}")
+    plan_lines += ["", "== Duplicate files to remove =="]
+    for i, rel in sorted(dup_drop.items()):
+        plan_lines.append(f"  {rel}")
+    plan_lines += ["", "== File moves =="]
+    for f, cp, ct, nm in moves:
+        plan_lines.append(f"  {f.relative_to(root)}  ->  {cp}\\{ct}\\{nm}")
+    plan_path = paths["meta"] / "cleanup_plan.txt"
+    plan_path.write_text("\n".join(plan_lines) + "\n", encoding="utf-8")
+    log.info(f"[vault] cleanup plan: {len(moves)} move(s), "
+             f"{len(case_renames)} casing rename(s), {len(dup_drop)} "
+             f"duplicate(s), {len(ambiguous_all)} ambiguous group(s) — "
+             f"written to {plan_path}")
+    if not execute:
+        log.info("[vault] DRY-RUN — review the plan, then rerun with "
+                 "--cleanup --execute")
+        return
+
+    busy = _recent_unfinished_run(paths)
+    if busy and not force:
+        log.error(f"[vault] cleanup aborted: a vault run started {busy} "
+                  f"has no run_summary yet. Wait for it (or pass --force "
+                  f"if it's a stale crash).")
+        return
+
+    # --- execute: file moves
+    move_map: dict[str, str] = {}
+    source_dirs: set[Path] = set()
+    for f, canon_prop, dest_tenant, newname in moves:
+        src_rel = str(f.relative_to(root))
+        dest_dir = root / canon_prop / dest_tenant
+        try:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest = _dedup_path(dest_dir / newname)
+            f.rename(dest)
+        except OSError as err:
+            log.warning(f"[vault] cleanup: could not move {src_rel}: {err}")
+            continue
+        # Keyed casefolded: catalog paths often differ from disk casing
+        # ('PARC RIVERSIDE\...' vs 'Parc Riverside\...').
+        move_map[src_rel.casefold()] = str(dest.relative_to(root))
+        source_dirs.add(f.parent)
+
+    # --- execute: duplicate removals
+    deleted: set[int] = set()
+    for i, rel in dup_drop.items():
+        target = root / move_map.get(rel.casefold(), rel)
+        try:
+            target.unlink()
+            deleted.add(i)
+            append_activity(paths, {"event": "duplicate_removed",
+                                    "sha256": catalog[i].get("sha256"),
+                                    "path": rel})
+        except OSError as err:
+            log.warning(f"[vault] cleanup: could not delete duplicate "
+                        f"{rel}: {err}")
+
+    # --- execute: property-folder casing renames (two-step — Windows
+    # won't rename a folder to its own name in a different case directly)
+    for old, new in case_renames:
+        src, tmp = root / old, root / (new + ".casefix-tmp")
+        try:
+            src.rename(tmp)
+            tmp.rename(root / new)
+        except OSError as err:
+            log.warning(f"[vault] cleanup: casing rename {old!r} -> "
+                        f"{new!r} failed: {err}")
+
+    # --- execute: remove emptied source folders (never untouched ones)
+    for d in sorted(source_dirs, key=lambda p: -len(str(p))):
+        try:
+            d.rmdir()
+        except OSError:
+            continue
+        try:
+            d.parent.rmdir()
+        except OSError:
+            pass
+
+    # --- execute: catalog rewrite
+    now_iso = now.isoformat()
+    case_map_ci = {k.casefold(): v for k, v in case_map.items()}
+    tenant_map_ci = {(cp, v.casefold()): c for (cp, v), c in tenant_map.items()}
+    updates: dict[int, dict] = {}
+    for i, e in enumerate(catalog):
+        if e.get("dry_run") or i in deleted or e.get("disposition") != "filed":
+            continue
+        new_e = dict(e)
+        changed = False
+        rel = e.get("path") or ""
+        if rel.casefold() in move_map:
+            new_e["path"] = move_map[rel.casefold()]
+            changed = True
+        else:
+            parts = rel.split("\\", 1)
+            if len(parts) == 2 and parts[0].casefold() in case_map_ci:
+                new_e["path"] = case_map_ci[parts[0].casefold()] + "\\" + parts[1]
+                changed = True
+        p = (e.get("property") or "").strip()
+        canon_p = prop_map.get(p, p)
+        if canon_p != p:
+            new_e["property"] = canon_p
+            changed = True
+        t = (e.get("tenant") or "").strip()
+        canon_t = tenant_map_ci.get((canon_p, t.casefold()))
+        if canon_t and canon_t != t:
+            new_e["tenant"] = canon_t
+            changed = True
+        if changed:
+            new_e["cleanup_ts"] = now_iso
+            updates[i] = new_e
+
+    backup = _rewrite_catalog(paths, updates, drop=deleted)
+    append_activity(paths, {"event": "vault_cleanup",
+                            "moves": len(move_map),
+                            "casing_renames": len(case_renames),
+                            "duplicates_removed": len(deleted),
+                            "catalog_updates": len(updates),
+                            "backup": backup.name})
+    rebuild_index(paths)
+    log.info(f"[vault] cleanup complete: {len(move_map)} file(s) moved, "
+             f"{len(deleted)} duplicate(s) removed, {len(updates)} catalog "
+             f"entr(ies) updated (backup: {backup.name})")
+
+
+def run_reclassify_review(client, paths: dict, limit: int | None,
+                          dry_run: bool) -> None:
+    """
+    Re-run classification over the _Needs Review backlog — most of it is
+    scanned PDFs that predate scanned-page support — and file whatever
+    now comes back confident. Updates each refiled entry in place (the
+    catalog is rewritten once, backed up first) and rebuilds the index.
+    Files a human already moved out of _Needs Review are skipped.
+    """
+    from rocky import extract_text_from_attachment, _dedup_path  # lazy
+
+    catalog = load_catalog(paths)
+    targets: list[tuple[int, dict, Path]] = []
+    for idx, e in enumerate(catalog):
+        if e.get("dry_run") or e.get("disposition") != "needs_review":
+            continue
+        rel = e.get("path") or ""
+        file = paths["root"] / rel
+        if rel and file.exists():
+            targets.append((idx, e, file))
+    if limit is not None:
+        targets = targets[:limit]
+    log.info(f"[vault] reclassify-review: retrying {len(targets)} file(s)"
+             f"{' (capped by --limit)' if limit is not None else ''}")
+
+    context = (
+        "These documents were previously placed in the Vault's _Needs "
+        "Review folder because they couldn't be confidently identified. "
+        "They are being re-examined. The filename shown for each is its "
+        "original source path, which often names the property."
+    )
+    updates: dict[int, dict] = {}
+    refiled = 0
+    for start in range(0, len(targets), DROPBOX_CLASSIFY_BATCH):
+        chunk = targets[start:start + DROPBOX_CLASSIFY_BATCH]
+        docs, inputs = [], []
+        for idx, e, file in chunk:
+            try:
+                content = file.read_bytes()
+            except OSError as err:
+                log.warning(f"[vault] could not read {file.name!r}: {err} — "
+                            f"skipping (OneDrive placeholder? run this on "
+                            f"the Rocky laptop)")
+                continue
+            original = e.get("original_name") or file.name
+            detail = e.get("source_detail") or {}
+            prompt_name = detail.get("path") or detail.get("subject") or original
+            text = extract_text_from_attachment(original, "", content)
+            docs.append({"filename": prompt_name, "text": text,
+                         "pdf_bytes": _scan_pdf_excerpt(original, content,
+                                                        text)})
+            inputs.append((idx, e, file, original))
+        if not docs:
+            continue
+        metas = classify_documents(client, docs, context,
+                                   explicit_submission=False)
+        if any(m.get("classification_failed") for m in metas):
+            log.warning("[vault] reclassify-review: classification failed — "
+                        "stopping; what's left retries on the next "
+                        "invocation")
+            break
+        for (idx, e, file, original), meta in zip(inputs, metas):
+            if not meta.get("is_vault_document"):
+                continue
+            meta = dict(meta)
+            prop_raw = (meta.get("property") or "").strip()
+            tenant_raw = (meta.get("tenant") or "").strip()
+            confidence = float(meta.get("confidence") or 0.0)
+            if not (prop_raw and tenant_raw
+                    and confidence >= CONFIDENCE_FLOOR):
+                continue
+            prop = _clean_component(prop_raw)
+            existing_prop = _match_existing_property_folder(paths["root"], prop)
+            if existing_prop:
+                prop = existing_prop
+                meta["property"] = existing_prop
+            tenant = _clean_component(tenant_raw)
+            existing_tenant = _match_existing_tenant(paths["root"] / prop,
+                                                     tenant)
+            if existing_tenant:
+                meta["tenant"] = existing_tenant
+                tenant = _clean_component(existing_tenant)
+            dest_dir = paths["root"] / prop / tenant
+            dest = _dedup_path(dest_dir / _filed_filename(meta, original))
+            if not dry_run:
+                try:
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    file.rename(dest)
+                except OSError as err:
+                    log.warning(f"[vault] could not refile {file.name!r}: "
+                                f"{err}")
+                    continue
+            updates[idx] = {
+                **e,
+                "doc_type": meta.get("doc_type"),
+                "property": meta.get("property"),
+                "tenant": meta.get("tenant"),
+                "document_date": _doc_date(meta),
+                "confidence": round(confidence, 2),
+                "reasoning": meta.get("reasoning"),
+                "disposition": "filed",
+                "path": str(dest.relative_to(paths["root"])),
+                "reclassified_ts": datetime.now(timezone.utc).isoformat(),
+            }
+            refiled += 1
+            append_activity(paths, {"event": "document_refiled",
+                                    "sha256": e.get("sha256"),
+                                    "original_name": original,
+                                    "from": e.get("path"),
+                                    "path": updates[idx]["path"],
+                                    "dry_run": dry_run})
+            log.info(f"[vault] {'DRY-RUN ' if dry_run else ''}refiled: "
+                     f"{original!r} -> {updates[idx]['path']}")
+
+    if updates and not dry_run:
+        _rewrite_catalog(paths, updates, drop=set())
+        rebuild_index(paths)
+    log.info(f"[vault] reclassify-review {'DRY-RUN ' if dry_run else ''}"
+             f"complete: {refiled} of {len(targets)} refiled")
+
+
+# =============================================================================
 # CLI glue
 # =============================================================================
 
@@ -1905,11 +2681,20 @@ def run_cli(config: dict, data_dir: Path,
     # cursors (config vault_backfill_days still only seeds first runs).
     force_window = _argv_value("--backfill-days") is not None
 
+    _load_grounding(config, paths)
+
+    if "--cleanup" in sys.argv:
+        run_cleanup(paths, execute="--execute" in sys.argv,
+                    force="--force" in sys.argv)
+        return
+
     from anthropic import Anthropic  # lazy
     from rocky import acquire_app_token  # lazy
     client = Anthropic(api_key=config["anthropic_api_key"])
 
-    _KNOWN_PROPERTIES[:] = load_known_properties(config)
+    if "--reclassify-review" in sys.argv:
+        run_reclassify_review(client, paths, limit, dry_run)
+        return
 
     seen = known_hashes(load_catalog(paths))
     totals: dict[str, dict] = {}

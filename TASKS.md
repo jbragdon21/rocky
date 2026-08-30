@@ -88,7 +88,6 @@ All done. Rocky laptop is live and running.
 | `--daily-digest [RRID-XXXX] [--hours N]` | 5:00 PM | Generate consolidated case digest (file + email) |
 | `--steve-todo` | 7:30 AM | Steve's daily to-do list from inbox |
 | `--ella-digest [--hours N]` | 5:00 PM | Ella's daily case digest |
-| `--monitor-remy` | 24/7 (via wrapper) | Poll Rocky's inbox for Remy requests |
 | `--pending-llt [--dry-run]` | On demand | Download LLT + contacts from SharePoint, draft status emails by property |
 | `--remy-digest [--date YYYY-MM-DD] [--dry-run]` | 5:30 PM weekdays | Summarize the day's Remy app changes from GitHub, commit the digest, email James + Shane |
 

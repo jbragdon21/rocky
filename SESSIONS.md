@@ -24,15 +24,277 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
-## Session 2026-08-21 — Maple digest: add three Bozzuto CCs
+## Session 2026-08-29 (3) — Vault audit + overhaul: aliases, tenant reuse, honest dates, scanned-PDF vision, folder cleanup
+
+**What changed**
+
+- **Audit findings (the trigger):** the 8/17 bulk ingest (pre-grounding,
+  pre-vision) had fragmented the Vault — 129 property spellings for ~85
+  real properties, 145 same-person tenant-folder variants, half the
+  filed docs (1,254) date-stamped `2026-08-06` (the client's Dropbox
+  upload date, not the document date), 236 `_(n)` collision files, a
+  618-file _Needs Review backlog (scanned PDFs, no text layer), and one
+  intra-batch SHA-dedup miss.
+- **`vault.py` — five fixes:**
+  1. `_vault\property_aliases.json` on the share (NEW teaching file):
+     variant→canonical aliases + supplemental `known_properties`;
+     `_ground_property` checks aliases first, and the containment
+     fuzzy-match no longer lets a longer name snap onto a contained one
+     ("Classic @ Modern on M" ≠ "Modern on M") unless the extra words
+     are generic stopwords.
+  2. Tenant folder reuse at filing: exact case-insensitive property
+     folder reuse + same-person tenant matching (`_same_person`:
+     initials/extensions always; one-letter typos only in cleanup).
+     Ambiguous matches (two plausible folders) reuse nothing.
+  3. Honest dates: `_doc_date` returns the classifier's date or None
+     ("undated" in filenames) — the source-timestamp fallback is gone.
+     Scanned PDFs (no text layer) now ride into the classify call as
+     attached PDF pages (first 4, `_scan_pdf_excerpt`); PDFs pypdf
+     can't open are NOT attached (an invalid PDF 400s the whole batch —
+     hit live).
+  4. Intra-run dedup gap closed: `_classify_and_file_batch` re-checks
+     `seen` at filing time (two identical files in one batch both
+     passed the download-time check — the Williams pair, 6ms apart).
+  5. Maintenance commands: `--vault --cleanup [--execute] [--force]`
+     (merge fragmented folders + casing + exact-dup files; dry-run
+     writes `_vault\cleanup_plan.txt`) and `--vault --reclassify-review
+     [--limit N]` (retry _Needs Review with vision, refile confident
+     results, catalog rewritten once with backup). Both take
+     `--vault-root <path>` (share mounts differently per machine).
+- **Cleanup EXECUTED** (from the dev laptop against the share): 433
+  files merged to canonical folders, 10 casing renames, 1 byte-dup
+  removed, ~700 catalog entries normalized, index rebuilt. Idempotent —
+  re-run finds nothing. Ambiguous groups left alone (listed in the plan
+  file).
+- **Reclassify-review EXECUTED:** 286/300 + 239/332 + final pass —
+  _Needs Review drained from 618 to under ~100, with REAL service dates
+  read off the scans.
+- **Docs:** VAULT.md (aliases, dates, maintenance commands, cleanup
+  record, Dropbox double-coverage note), config.example.json comment,
+  rocky.py help text. New exe built + deployed to OneDrive.
+
+**Decisions made**
+
+- Canonical property names: Remy's table wins, EXCEPT where its
+  stylization loses to established usage via alias ("Insignia on M",
+  "Novel South Capitol", "AME at Meridian Hill", "70 Capitol Yards" for
+  the table's "Seventy1Hundred Capitol Yards").
+- NOT merged (needs a human call): "The Cloisters" vs table's
+  "Cloisters I/II"; "Solstice I/II" vs table's "Solstice - 3500/3534 E
+  Capitol" — distinct phases; add alias lines once James confirms.
+- Typo-level tenant merges (Timeca/Timeka) allowed in cleanup only,
+  never live filing; the canonical spelling was picked by doc count and
+  is worth a skim in `cleanup_plan.txt`.
+
+**Open items**
+
+- **Rocky laptop config.json:** remove the `rad-notices` entry from
+  `shared_links` — the mounted `RAD CASES` folder covers the same tree
+  (same doc arrived via both routes with different bytes; dedup can't
+  see that).
+- Confirm Cloisters/Solstice phase mapping; add aliases.
+- `_Needs Review` residue (~dozens): items Claude still can't
+  confidently place — rerun `--vault --reclassify-review` anytime, or
+  file by hand.
+
+**Watch-outs**
+
+- **Catalog rewrites race OneDrive.** The first `--cleanup --execute`
+  collided with the Rocky laptop's :49 hourly ingest → OneDrive forked
+  `catalog.jsonl` (merged by hand same session; move-map matching also
+  made case-insensitive, the root cause of 22 stale paths). Run
+  maintenance commands right after an hourly ingest, never around :49;
+  an activity-log in-progress check aborts obvious overlaps
+  (`--force` overrides).
+
+**What changed**
+
+- **`rocky.py`:** removed the 24/7 Remy inbox monitor as a runnable process —
+  `run_monitor_remy_cli`, `remy_poll_cycle`, `_deliver_remy_draft`, the
+  `remy_last_check` state helpers/constants, the `--monitor-remy` dispatch,
+  and its docstring/help lines. A retirement comment marks where the section
+  lived. KEPT: `classify_email` + `CLASSIFIER_SYSTEM_PROMPT` and
+  `remy_runner.py` (the headless Remy engine) for a future re-wire.
+- **`dashboard.py`:** dropped the "Monitor Remy" button.
+- **`TASKS.md`:** dropped the `--monitor-remy` row from the schedule table.
+- **`config.example.json` / `BUILD_REFERENCE.md`:** scrubbed/annotated the
+  `--monitor-remy` mentions (the Teams-in-the-loop idea now points at
+  `--monitor` as the host loop).
+
+**Decisions made**
+
+- Retired because it's unused AND structurally stale-prone: a boot-launched
+  forever-process keeps running whatever rocky.exe it started with, so every
+  exe rebuild leaves it on an outdated model of the world. If headless Remy
+  returns, run it as an entry in `monitor_commands` — the monitor launches
+  fresh subprocesses each cycle, so it always runs the current exe.
+- `--vault-inbox` (James's inbox sweep) is already in the monitor defaults —
+  no monitor_commands change needed; question came up this session.
+
+**Open items**
+
+- **Rocky laptop:** delete the `--monitor-remy` Task Scheduler entry (and its
+  wrapper, if any) and kill the running process if one is still up. The stale
+  `state/remy_last_check.json` can be deleted or ignored.
+
+**Watch-outs**
+
+- Old SESSIONS.md entries still mention `--monitor-remy` — historical,
+  left as-is (append-only log).
+
+---
+
+## Session 2026-08-29 (2) — Remove James's Inbox Cleaner process (--inbox-james)
+
+**What changed**
+
+- **`inbox_cleaner.py`:** removed everything that existed only for
+  `--inbox-james` (supersedes the 2026-07-12/13 build entries): the
+  `--cycle` one-shot, the "sort with friends" conversation-sort pass
+  (`propose_conversation_sort` + helpers, the `conversation_sort` cohort
+  kind, its `message_ids`/`target_folder_id` handling in
+  `_cohort_message_ids`/`execute`), open chat mode (`_open_chat_handle`,
+  action proposals, `_apply_route_ops`, code_changes backlog), and the
+  Engineer workup. ~1,070 lines gone (3,784 → 2,718). Matt's strict-
+  protocol machinery is untouched; `load_chat_exclusions`/`_drop_excluded`
+  stay (exclude_senders/exclude_domains in sender_routes.json are now
+  hand-edited only).
+- **`dashboard.py`:** "James Inbox" button removed from `ROCKY_COMMANDS`;
+  comments updated. ("Vault James Inbox" is a different feature —
+  untouched.)
+- **`config.json` / `config.example.json`:** `inbox_users.james` block and
+  `_inbox_james_comment` removed. Matt's block stays.
+- **`rocky.py`:** header docstring + `--help` lose `--cycle`/`--engineer`.
+- **Docs:** `INBOX_CLEANER.md` (James section deleted, removal note at
+  top), `BUILD_REFERENCE.md` ("Sort with friends" + "Open chat +
+  Engineer" paragraphs replaced with a removal note), `VAULT.md`
+  (`--inbox-james` mention dropped).
+
+**Open items**
+
+- On the Rocky laptop: delete the `\Rocky\James Inbox` scheduled task if
+  one was created (none exists on the dev machine), remove the
+  `inbox_users.james` block from `C:\Rocky\config.json`, pull, rebuild
+  the exe.
+- Data left in place on purpose: `Rocky Inboxes\inbox-james\` on the
+  share (rules.md, cohorts, logs, engineer reports, code_changes.md) and
+  `C:\Rocky\inbox_cleaner\james\` + `state\inbox_cleaner_james.json` on
+  the laptop. Delete manually if wanted.
+
+**Watch-outs**
+
+- A stale worktree (`.claude/worktrees/compassionate-goldberg-c55cbf`)
+  holds an older, unrelated "James Inbox" pull/annotate/act experiment
+  that never landed on main — ignore it or prune the worktree.
+
+---
+
+## Session 2026-08-29 — Multifamily Digest: draft into James's Drafts (Maple model)
+
+**What changed**
+
+- **`multifamily_digest.py`:** `--multifamily-digest` no longer emails from
+  rocky@. It now creates a DRAFT in James's Drafts folder (same model as
+  `--maple-digest`), pre-addressed to the multifamily group — James reviews
+  and sends. Default To: list hardcoded as `_DEFAULT_DRAFT_RECIPIENTS`
+  (Mondragon, Wenger, Ronan, Brown, Frantzis, Kobylski, O'Mara, Araviakis,
+  Goranin — set by James 2026-08-29); override with NEW config key
+  `multifamily_digest_draft_recipients`, mailbox with
+  `multifamily_digest_mailbox` (default `user_email`). The old
+  `multifamily_digest_recipients` / `vault_digest_recipients` fallback chain
+  is ignored (new key on purpose — same reasoning as the Maple client-digest
+  keys: a lingering old config must not silently mis-address the draft).
+  Subject dropped the "Rocky — " prefix (it's James's outgoing email now):
+  `Multifamily Digest (Month D, YYYY)`. Quiet day = no draft (unchanged).
+- **`pending_llt.py`:** `create_draft_email()` grew an optional
+  `attachments` param (same `{"name","path","contentId"}` shape as
+  `outbound.send_mail_guarded`) so the digest's inline banner image
+  survives the move to a draft. Inline images get `contentId`/`isInline`.
+- **`dashboard.py`, `config.example.json`, `LETTERSTREAM.md`, `VAULT.md`:**
+  descriptions updated to the draft model.
+
+**Decisions made**
+
+- Token path mirrors `run_maple_digest_cli`: `acquire_token(get_msal_app())`
+  + `audit_token_scopes` — proven in production for drafting into James's
+  mailbox, so no new permissions needed.
+
+**Open items**
+
+- Rebuild the exe and pull on the Rocky laptop for the change to take
+  effect on the scheduled 17:45 run.
+
+**Watch-outs**
+
+- Draft recipients live on a draft in James's mailbox, so the outbound
+  allowlist doesn't gate them — the To: list itself is the safety here.
+
+---
+
+## Session 2026-08-25 — Dashboard: LetterStream (Certified Mail card, fetch box, registry)
+
+**What changed**
+
+- **`dashboard.py`:**
+  - Registry: `letterstream` added (new **"Mail"** group; dry-run capable;
+    📅 default 08:00 but deliberately NOT `recommended` — the `--monitor`
+    loop already sweeps it every 10 min, same reasoning as the hourly
+    vault-mail/vault-inbox jobs, so ⚡ Auto-setup must not install a
+    double-runner). `monitor` also added (group "Other", stays-running,
+    like monitor-remy) so the fast loop can be started from the dashboard.
+  - `letterstream_summary()` reads `<DATA_DIR>\affidavits\state.json`
+    directly (cheap file read, no API calls) and rides along on every
+    `/api/status` poll as a new `letterstream` key: affidavits pending
+    approval, mailings awaiting release, jobs in flight, API-configured.
+  - New `POST /api/letterstream/fetch`: validates a tracking#/doc id
+    (`[A-Za-z0-9._-]{3,64}`, whitespace stripped) and launches
+    `--letterstream --fetch <ref>`. First flag in argv is `--letterstream`,
+    so it shares the letterstream instance lock and the running-now
+    indicator works unchanged. `launch_command`/`command_argv` grew an
+    `extra_args` param for this (never raw user input — callers validate).
+- **`templates/dashboard.html`:** "Certified Mail" sidebar card (three
+  sections with `[AM-####]`/`[CM-####]` tag + who + detail rows; an
+  "API not set up — email fetch only" header note when keys are missing;
+  Fetch-proof input + button, Enter submits). Plain-English mode:
+  `[affidavits]` tag → "Certified mail" process name, plus ~14 rules for
+  the AM/CM lifecycle lines (sent for approval, approved/declined,
+  preauth'd, released with/WITHOUT affidavit, cancelled, not-mailed-yet,
+  mailed, proof-not-ready, tracking failed, API-not-configured, run
+  complete incl. dry-run variant).
+- **Docs:** DASHBOARD.md feature bullet; LETTERSTREAM.md note pointing at
+  the dashboard card/fetch box + the monitor-overlap caveat.
+
+**Decisions made**
+
+- `--probe` / `--status` got no Run buttons: they print to stdout, which
+  the dashboard discards (DEVNULL). The status card *replaces* `--status`;
+  probe stays CLI-only.
+- `--mail <packet.pdf>` / `--ingest <proof.pdf>` not surfaced — they need
+  a file path/upload; the email channels already cover them.
+
+**Watch-outs**
+
+- Ships with the next **dashboard.exe** rebuild/deploy (rocky.py is
+  untouched, so rocky.exe needs no rebuild).
+- The Certified Mail card reads the machine-local state file — on any box
+  other than the Rocky laptop it will just say "Nothing waiting."
+- Verified locally end-to-end with a seeded sample state.json (card
+  rendering, empty state, fetch validation 400 + toast, plain-English
+  replacements incl. the `$$$4` cost escape); the sample file was removed
+  after testing.
+
+---
+
+## Session 2026-08-29 — Maple digest: add five CCs (Bozzuto + Gallagher)
 
 **What changed**
 
 - **`rocky.py` (`_DEFAULT_MAPLE_CLIENT_DIGEST_CC`) + `config.example.json`:**
-  added rprice@bozzuto.com, ccooley@bozzuto.com, mbarry@bozzuto.com to the
-  Maple client digest CC list (per James). pma@bozzuto.com stays first and
-  remains load-bearing (reply-all routing into rocky@'s watched folder); the
-  three individuals are courtesy copies.
+  added rprice@bozzuto.com, ccooley@bozzuto.com, mbarry@bozzuto.com,
+  cesmeir@gallagherllp.com, sstephey@gallagherllp.com to the Maple client
+  digest CC list (per James). pma@bozzuto.com stays first and remains
+  load-bearing (reply-all routing into rocky@'s watched folder); the five
+  individuals are courtesy copies.
 
 **Watch-outs**
 
@@ -101,6 +363,32 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 - Rocky's daily run only offers TOP-LEVEL subfolders as filing targets —
   nested targets (Eden's pleadings sub-cases) rely on the CLAUDE.md prose and
   a project session, not the daily run.
+
+## Session 2026-08-26 — Affidavit format: submission time via API + VAWA abbreviation
+
+- **Submission time on the affidavit** (Garo exemplar: "That on
+  7/22/2026 at 4:27 p.m., ..."). James first said pull it from the
+  proof, then corrected mid-build: **through the API**. Source order:
+  (1) Rocky-released jobs already carry the communicated-to-LetterStream
+  stamp (unchanged, takes precedence, no lookup); (2) website-submitted
+  mailings: extraction now pulls the LetterStream job number off the
+  proof cover ("14102628.1.1fc-21" -> 14102628) and process_mailing
+  calls `jobstatus` — `letterstream.earliest_datetime_from` scans the
+  response for timestamps (both ISO and M/D/YYYY h:mm am forms) and
+  takes the EARLIEST as the submission stamp; (3) no job number / no
+  configured API / lookup fails -> affidavit shows the date alone
+  (never a guessed time).
+- **CALIBRATION CAVEAT:** the jobstatus response shape is undocumented
+  and unverified live — first real ingest logs it raw
+  (letterstream_raw.jsonl); if its earliest timestamp turns out not to
+  be the submission stamp, adjust earliest_datetime_from. Hailey
+  reviews every affidavit meanwhile.
+- **VAWA:** "Violence Against Women Act" is abbreviated "VAWA" in the
+  documents-mailed clause — prompt example/instruction updated plus a
+  deterministic post-replace so it holds even if Claude spells it out.
+- Tests: timestamp parsing (both forms, earliest wins), jobstatus
+  lookup wiring, VAWA replace, rendered affidavit matches the Garo
+  exemplar sentence, release-stamp precedence (no lookup on API jobs).
 
 ## Session 2026-08-24 — The Monitor: fast loop for letterstream + vault mail
 
@@ -981,6 +1269,12 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
   recommended). James must add Shane to multifamily_digest_recipients
   and recreate both scheduled tasks. Verified: scratchpad
   test_mf_remy.py, 7 checks.
+- **(2026-08-24) James-inbox move REMOVED (supersedes part of the
+  2026-08-23 "processed mail leaves the inbox" entry).** James: the
+  move-to-Inbox\The Vault behavior should run ONLY on rocky@'s inbox,
+  never his own. scan_inbox_source no longer moves anything (config key
+  vault_inbox_processed_folder retired); vault-mail /
+  litigation / letterstream moves (all rocky@) unchanged.
 - **(2026-08-24) Property grounding from Remy's table.** Five Kelvin
   lease/ledger PDFs (forwarded by Sarah Wenger, subject "FW: The Kelvin
   | July Suit List") landed in _Needs Review because the classifier
