@@ -89,7 +89,7 @@ All done. Rocky laptop is live and running.
 | `--steve-todo` | 7:30 AM | Steve's daily to-do list from inbox |
 | `--ella-digest [--hours N]` | 5:00 PM | Ella's daily case digest |
 | `--pending-llt [--dry-run]` | On demand | Download LLT + contacts from SharePoint, draft status emails by property |
-| `--remy-digest [--date YYYY-MM-DD] [--dry-run]` | 5:30 PM weekdays | Summarize the day's Remy app changes from GitHub, commit the digest, email James + Shane |
+| `--remy-digest [--date YYYY-MM-DD] [--dry-run]` | None (manual only) | Summarize the day's Remy app changes from GitHub, commit the digest — generated in-process by `--multifamily-digest` since 2026-08-30 |
 
 ---
 
@@ -108,11 +108,20 @@ All done. Rocky laptop is live and running.
 - [x] `remy_digest.py` — reads jbragdon21/remy over the GitHub API, writes the
       plain-English digest via Claude, commits it to `digest/`, emails it
 - [x] `--remy-digest` wired into `rocky.py`, dashboard registry, and the build
-- [ ] Mint a fine-grained GitHub PAT: repo `jbragdon21/remy`, **Contents: Read
+- [x] Subsumed into the Multifamily Digest (2026-08-30): `--multifamily-digest`
+      generates the Remy digest in-process and embeds it — no separate
+      scheduled task needed (Shane is in the multifamily draft recipients)
+- [x] Mint a fine-grained GitHub PAT: repo `jbragdon21/remy`, **Contents: Read
       and write**, long expiration → `remy_github_token` in config.json
-- [ ] Add Shane's email address to `remy_digest_recipients`
-- [ ] Rebuild/deploy `rocky.exe`, add the 5:30 PM weekday scheduled task
-- [ ] Verify with `--remy-digest --dry-run`, then a live run
+      (done 2026-08-30)
+- [x] Set `remy_activity_dir` in the Rocky laptop config.json — the share
+      mounts there as "James D. Bragdon's files - Program Files", which
+      auto-detect misses (done 2026-08-30)
+- [ ] Rebuild/deploy `rocky.exe`
+- [x] Verify with `--remy-digest --dry-run` — clean 2026-08-30: GitHub +
+      activity folder both read (4 commits, 3 notes)
+- [ ] Live `--multifamily-digest`, confirm the embedded Remy section and the
+      `digest/` commit to GitHub
 - [ ] After a clean live run: delete the `remy-daily-digest` Claude Code
       scheduled task on the dev laptop and update `digest/README.md` +
       `digest/ROCKY.md` in the REMY repo (both still describe the old

@@ -121,7 +121,10 @@ ROCKY_COMMANDS = [
     # install a daily task that double-runs beside a deployed monitor.
     # Overlap is safe (instance lock) — just redundant.
     {"flag": "letterstream",  "label": "LetterStream",    "group": "Mail",  "dry_run": True,  "desc": "Certified mail sweep — requests, releases, tracking, affidavits & reminders", "sched_time": "08:00"},
-    {"flag": "remy-digest",   "label": "Remy Digest",     "group": "Other", "dry_run": True,  "args": ["--no-email"], "desc": "Write the day's Remy digest to GitHub + disk (the Multifamily Digest emails it)", "sched_time": "17:15", "recommended": True},
+    # No schedule slot: since 2026-08-30 the Multifamily Digest generates
+    # the Remy digest in-process before assembling — this button is for
+    # manual/off-cycle runs only.
+    {"flag": "remy-digest",   "label": "Remy Digest",     "group": "Other", "dry_run": True,  "args": ["--no-email"], "desc": "Write the day's Remy digest to GitHub + disk (manual — the Multifamily Digest generates and emails it daily)"},
     {"flag": "vault-dropbox", "label": "Vault Dropbox",   "group": "Vault", "dry_run": True,  "desc": "Pull new documents from the client Dropbox sources",        "sched_freq": "HOURLY", "sched_interval": 1},
     {"flag": "vault-mail",    "label": "Vault Rocky Inbox", "group": "Vault", "dry_run": True, "desc": "File documents emailed to rocky@ with 'Vault' in the subject", "sched_freq": "HOURLY", "sched_interval": 1},
     {"flag": "vault-inbox",   "label": "Vault James Inbox", "group": "Vault", "dry_run": True, "desc": "Sweep James's inbox for leases, ledgers & affidavits",      "sched_freq": "HOURLY", "sched_interval": 1},

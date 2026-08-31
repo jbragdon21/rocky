@@ -18,12 +18,13 @@ processes, in four sections (empty sections are omitted):
     THE VAULT        — the day's Vault additions (same content the
                        standalone Vault Digest showed — this digest
                        SUBSUMES it; don't schedule both).
-    REMY             — the day's Remy software-development digest, read
-                       from the local copy --remy-digest wrote (schedule
-                       remy-digest EARLIER, e.g. 17:15 with --no-email;
-                       Shane is in the default draft recipients — this
-                       digest subsumes the standalone Remy digest email;
-                       the GitHub digest/ archive commit still happens).
+    REMY             — the day's Remy software-development digest,
+                       GENERATED IN-PROCESS right before assembly
+                       (2026-08-30: fully subsumed — there is no
+                       separate --remy-digest scheduled task anymore;
+                       the GitHub digest/ archive commit still happens
+                       each run, and Shane is in the default draft
+                       recipients).
     STILL PENDING    — snapshot of everything awaiting a human: mailings
                        awaiting a release YES, mailings in flight,
                        affidavits awaiting approval.
@@ -72,7 +73,6 @@ _DEFAULT_DRAFT_RECIPIENTS = [
     "pgoranin@gallagherllp.com",     # Paul O. Goranin
 ]
 
-_STYLE_H3 = "margin:18px 0 6px 0;"
 _STYLE_UL = "margin:0;padding-left:20px;font-size:13px;"
 _STYLE_LI = "margin:2px 0;"
 _MUTED = "color:#666;"
@@ -133,9 +133,14 @@ def _ul(items: list[str]) -> str:
     return f"<ul style='{_STYLE_UL}'>{lis}</ul>"
 
 
-def _h3(title: str, count: int | None = None) -> str:
+def _section(title: str, blurb: str, count: int | None = None) -> str:
+    """One consistent section header: a 16px title (with item count)
+    over a muted one-line explanation of what the section shows."""
     suffix = f" ({count})" if count is not None else ""
-    return f"<h3 style='{_STYLE_H3}'>{escape(title)}{suffix}</h3>"
+    return (f"<h2 style='margin:22px 0 2px 0;font-size:16px;'>"
+            f"{escape(title)}{suffix}</h2>"
+            f"<p style='margin:0 0 6px 0;font-size:12px;{_MUTED}'>"
+            f"{escape(blurb)}</p>")
 
 
 def _muted(text: str) -> str:
@@ -184,7 +189,12 @@ def certified_mail_section(events: list[dict], state: dict) -> str:
                                   f"{str(e.get('reason') or '')[:120]}"))
     if not items:
         return ""
-    return _h3("Certified mail (LetterStream)", len(items)) + _ul(items)
+    return _section(
+        "Certified Mail",
+        "Today's certified mailings through LetterStream — new requests "
+        "with quoted costs, releases (the step that bills), and items "
+        "confirmed mailed with tracking numbers.",
+        len(items)) + _ul(items)
 
 
 def affidavits_section(events: list[dict]) -> str:
@@ -217,7 +227,11 @@ def affidavits_section(events: list[dict]) -> str:
                          f"({e.get('proposed')} affidavit(s) proposed)"))
     if not items:
         return ""
-    return _h3("Affidavits", len(items)) + _ul(items)
+    return _section(
+        "Certified Mailing Affidavits",
+        "Affidavits Rocky drafted from LetterStream proofs of mailing — "
+        "sent for approval, approved and filed in The Vault, or declined.",
+        len(items)) + _ul(items)
 
 
 def vault_section(config: dict, data_dir: Path, since: datetime) -> str:
@@ -237,15 +251,44 @@ def vault_section(config: dict, data_dir: Path, since: datetime) -> str:
     review = [e for e in added if e.get("disposition") == "needs_review"]
     if not filed and not review:
         return ""
-    return (f"<h2 style='margin:22px 0 4px 0;font-size:16px;'>The Vault</h2>"
-            + vault.digest_body_html(filed, review))
+    return _section(
+        "The Vault",
+        "New documents filed in the shared Vault library — leases, "
+        "ledgers, affidavits of service, notices — plus anything Rocky "
+        "couldn't confidently place (held in _Needs Review).",
+        len(filed) + len(review)) + vault.digest_body_html(filed, review)
+
+
+def generate_remy_digest(config: dict, data_dir: Path,
+                         dry_run: bool) -> None:
+    """Write today's Remy digest before assembly (fully subsumed
+    2026-08-30 — there is no separate --remy-digest scheduled task).
+
+    remy_digest() never raises, skips quiet days (no commits, no
+    session notes -> nothing written), and is idempotent (a digest
+    already written today, e.g. by a manual --remy-digest run, is left
+    alone). The guard here means any failure just costs the Remy
+    section — never the multifamily draft."""
+    if dry_run:  # dry runs never call Claude or touch GitHub
+        return
+    try:
+        import remy_digest
+        from anthropic import Anthropic
+        client = Anthropic(api_key=config["anthropic_api_key"])
+        remy_digest.remy_digest(
+            client, None, config, data_dir,
+            datetime.now().strftime("%Y-%m-%d"),
+            push=True, email=False)
+    except Exception as e:
+        log.warning(f"[mf-digest] Remy digest generation failed ({e}) — "
+                    f"continuing without a fresh Remy section")
 
 
 def remy_section(data_dir: Path, since: datetime) -> str:
-    """The day's Remy development digest, if --remy-digest wrote one.
+    """The day's Remy development digest, if one was written.
 
-    Reads the local copy --remy-digest keeps under data_dir\\remy_digests\\
-    (schedule remy-digest BEFORE this digest — e.g. 17:15 vs 17:45).
+    Reads the local copy under data_dir\\remy_digests\\ that
+    generate_remy_digest() (or a manual --remy-digest run) wrote.
     Strictly newer than the window-start DATE, so yesterday's digest never
     repeats in today's email."""
     import remy_digest
@@ -278,9 +321,10 @@ def remy_section(data_dir: Path, since: datetime) -> str:
         fragments.append(remy_digest.digest_fragment_html(md))
     if not fragments:
         return ""
-    return ("<h2 style='margin:22px 0 4px 0;font-size:16px;'>Remy — "
-            "software development</h2>"
-            + "\n".join(fragments))
+    return _section(
+        "Remy — Software Development",
+        "A plain-English summary of today's changes to the Remy "
+        "document-generation app.") + "\n".join(fragments)
 
 
 def pending_section(state: dict) -> str:
@@ -309,7 +353,12 @@ def pending_section(state: dict) -> str:
             + _muted(f"sent {(e.get('created') or '')[:10]}"))
     if not items:
         return ""
-    return _h3("Still pending", len(items)) + _ul(items)
+    return _section(
+        "Still Pending",
+        "Waiting on a person — mailings that need a release YES, mail "
+        "in transit, and affidavits awaiting approval. Nothing moves "
+        "on these until someone replies.",
+        len(items)) + _ul(items)
 
 
 # =============================================================================
@@ -384,6 +433,7 @@ def run_cli(config: dict, data_dir: Path) -> None:
     hours = int(hours_raw) if hours_raw else 24
     dry_run = "--dry-run" in sys.argv
 
+    generate_remy_digest(config, data_dir, dry_run)
     html_body, attachments = build_digest(config, data_dir, hours)
     if html_body is None:
         log.info(f"[mf-digest] nothing happened in the last {hours}h — "

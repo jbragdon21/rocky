@@ -24,6 +24,48 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-08-30 — Remy digest fully subsumed into the Multifamily Digest
+
+**What changed**
+
+- **`multifamily_digest.py`:** new `generate_remy_digest()` runs at the top
+  of `run_cli` (before assembly, skipped on --dry-run): calls
+  `remy_digest.remy_digest(..., push=True, email=False)` in-process, wrapped
+  in a try/except so a GitHub/Claude failure only costs the Remy section,
+  never the multifamily draft. `remy_section` then reads the local copy as
+  before. The GitHub digest/ archive commit still happens every run.
+- **`dashboard.py`:** remy-digest registry entry loses `sched_time` 17:15 +
+  `recommended` — auto-setup no longer creates a Remy Digest task; the
+  button stays for manual runs (still with --no-email).
+- **`config.example.json` / `TASKS.md`:** comments/schedule table updated —
+  no separate --remy-digest task since 2026-08-30.
+- **`multifamily_digest.py` — section headers (same session):** new
+  `_section(title, blurb, count)` helper replaces `_h3` and the raw
+  Vault/Remy `<h2>`s — every section now renders a consistent 16px
+  heading with an item count plus a muted one-line explainer of what
+  the section shows. Titles clarified ("Certified Mail", "Certified
+  Mailing Affidavits", "Remy — Software Development", "Still Pending");
+  section contents unchanged; Vault section gained a count.
+
+**Decisions made**
+
+- Generation moved in-process (not a monitor entry) because it's a daily
+  job, `remy_digest()` never raises + is idempotent + skips quiet days, and
+  the guard preserves the failure-isolation principle without a subprocess.
+- Runs DAILY now (was weekdays 17:15) — harmless: quiet weekend days write
+  nothing, and the last-digest-date window means Monday still covers the
+  weekend either way.
+
+**Open items**
+
+- Server (Rocky laptop): do NOT create a "Rocky\Remy Digest" scheduled task
+  (this session's server audit found none exists — nothing to delete).
+- James: mint the `remy_github_token` PAT → C:\Rocky\config.json (digest
+  degrades gracefully to activity-folder-only without it).
+- Rebuild/deploy rocky.exe (+ dashboard.exe for the registry change).
+
+---
+
 ## Session 2026-08-29 (3) — Vault audit + overhaul: aliases, tenant reuse, honest dates, scanned-PDF vision, folder cleanup
 
 **What changed**

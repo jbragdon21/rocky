@@ -43,7 +43,7 @@
     "caraviakis@gallagherllp.com"
   ],
 
-  "_remy_digest_comment": "Remy digest (--remy-digest, 5:15 PM weekdays, WITH --no-email since 2026-08-23 — the Multifamily Digest at 5:45 embeds the day's Remy digest, so add Shane to multifamily_digest_recipients; the GitHub digest/ commit and local copy still happen every run). Rocky reads the Remy repo over the GitHub API, summarizes the day's code commits and session notes in plain English, and commits digest/YYYY-MM-DD.md back to the repo. remy_github_token is a fine-grained PAT scoped to jbragdon21/remy with 'Contents: Read and write' — read-only cannot update the on-GitHub archive. remy_digest_recipients only matters for manual runs without --no-email; must be firm addresses. remy_digest_mailbox defaults to rocky_email.",
+  "_remy_digest_comment": "Remy digest (--remy-digest — NO scheduled task since 2026-08-30: the Multifamily Digest generates it in-process at its 5:45 PM run and embeds it; the command remains for manual/off-cycle runs). Rocky reads the Remy repo over the GitHub API, summarizes the day's code commits and session notes in plain English, and commits digest/YYYY-MM-DD.md back to the repo. remy_github_token is a fine-grained PAT scoped to jbragdon21/remy with 'Contents: Read and write' — read-only cannot update the on-GitHub archive (no token = digest still builds from the OneDrive activity folder, just without commit history or the GitHub archive). remy_digest_recipients only matters for manual runs without --no-email; must be firm addresses. remy_digest_mailbox defaults to rocky_email.",
   "remy_github_token": "",
   "remy_github_repo": "jbragdon21/remy",
   "remy_github_branch": "main",
