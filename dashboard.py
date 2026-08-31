@@ -90,11 +90,12 @@ def load_config() -> dict:
 #                  (True only for commands with a *documented* run time)
 # Documented times come from rocky.py's header docstring + BUILD_REFERENCE.
 #
-# The "Maple" group is the daily Maple loop, in run order:
-#   maple-pma-activity (15:30, feed export) -> maple-updater (~16:00,
+# The "Maple" group is the daily Maple loop, in run order (times below are
+# the PRODUCTION schedule verified on the Rocky laptop 2026-08-30):
+#   maple-pma-activity (17:00, feed export) -> maple-updater (17:10,
 #   run-daily-update.ps1 — the Maple repo's own script, launched here as an
 #   *external* command; writes HubSpot + the outbox digest) -> maple-digest
-#   (19:00, drafts the outbox digest into James's Drafts for him to send).
+#   (17:40, drafts the outbox digest into James's Drafts for him to send).
 #
 # External commands (external=True) are not rocky.py flags: they run their
 # own program (argv from external_argv()), have no rocky lock file, and are
@@ -109,9 +110,9 @@ ROCKY_COMMANDS = [
     {"flag": "steve-todo",    "label": "Steve To-Do",     "group": "Inbox", "dry_run": False, "desc": "Build Steve's morning to-do list from his email",       "sched_time": "07:30", "recommended": True},
     {"flag": "ella-digest",   "label": "Ella Digest",     "group": "Inbox", "dry_run": False, "desc": "Write Ella's daily summary of her case emails",         "sched_time": "17:00", "recommended": True},
     {"flag": "pending-llt",   "label": "Pending LLT",     "group": "Inbox", "dry_run": True,  "desc": "Draft status-update emails for landlord-tenant matters"},
-    {"flag": "maple-pma-activity", "label": "Maple PMA Activity", "group": "Maple", "dry_run": False, "desc": "Step 1 — collect the day's PMA emails for Maple", "sched_time": "15:30", "recommended": True},
-    {"flag": "maple-updater", "label": "Maple Updater",   "group": "Maple", "dry_run": False, "desc": "Step 2 — Maple updates HubSpot and writes the client update", "sched_time": "16:00", "external": True},
-    {"flag": "maple-digest",  "label": "Maple Digest",    "group": "Maple", "dry_run": True,  "desc": "Step 3 — put the client update in James's Drafts to send", "sched_time": "19:00", "recommended": True},
+    {"flag": "maple-pma-activity", "label": "Maple PMA Activity", "group": "Maple", "dry_run": False, "desc": "Step 1 — collect the day's PMA emails for Maple", "sched_time": "17:00", "recommended": True},
+    {"flag": "maple-updater", "label": "Maple Updater",   "group": "Maple", "dry_run": False, "desc": "Step 2 — Maple updates HubSpot and writes the client update", "sched_time": "17:10", "external": True},
+    {"flag": "maple-digest",  "label": "Maple Digest",    "group": "Maple", "dry_run": True,  "desc": "Step 3 — put the client update in James's Drafts to send", "sched_time": "17:40", "recommended": True},
     {"flag": "litigation",    "label": "Litigation Updater", "group": "Litigation", "dry_run": True, "args": ["--poll"], "desc": "Check for Bozzuto legal notices & claim requests, propose over Teams", "sched_time": "10:00"},
     {"flag": "litigation-digest", "label": "Litigation Digest", "group": "Litigation", "dry_run": True, "desc": "Draft the day's claims activity into James's Drafts", "sched_time": "18:30"},
     {"flag": "litigation-learn", "label": "Litigation Learn", "group": "Litigation", "dry_run": False, "desc": "Fold the week's Teams feedback into the litigation brain"},

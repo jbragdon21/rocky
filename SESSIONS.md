@@ -56,6 +56,16 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
   nothing, and the last-digest-date window means Monday still covers the
   weekend either way.
 
+**Maple production schedule recorded (same session):** the real Task
+Scheduler times on the Rocky laptop are PMA Activity **17:00** → Maple
+Updater **17:10** → Maple Digest **17:40** (not the documented
+15:30/16:00/19:00 — James confirmed the actual times are right).
+`dashboard.py` registry sched_times + comments and the
+config.example.json Maple comment updated to match. NOTE: the Maple
+Updater's LastResult that day was 0xFFFD0000 (nonzero) while PMA/Digest
+were 0 — worth a glance at the Maple `logs\scheduled_run_*.log` if
+digests look thin.
+
 **Open items**
 
 - Server (Rocky laptop): do NOT create a "Rocky\Remy Digest" scheduled task
