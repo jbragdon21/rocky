@@ -164,7 +164,7 @@ CLAUDE_MAX_TOKENS = 1024
 
 # Case index and cases root — resolved after config is loaded.
 # Set by _init_cases_paths() at startup; defaults below are for James's dev laptop.
-_DEFAULT_CASES_ROOT = r"C:\Users\jbragdon\OneDrive\OneDrive - gejlaw.com\Rocky Cases"
+_DEFAULT_CASES_ROOT = r"C:\Users\jbragdon\OneDrive - gejlaw.com\Rocky Cases"
 CASE_INDEX_PATH: Path = Path(_DEFAULT_CASES_ROOT) / "Rocky Case Index.xlsx"
 ROCKY_CASES_ROOT: Path = Path(_DEFAULT_CASES_ROOT)
 

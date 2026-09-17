@@ -9,7 +9,7 @@
   "anthropic_api_key": "sk-ant-PASTE-YOUR-ANTHROPIC-KEY-HERE",
 
   "_cases_root_comment": "Path to the Rocky Cases folder on OneDrive. Omit to use the default (James's dev laptop path).",
-  "cases_root": "C:\\Users\\jbragdon\\OneDrive\\OneDrive - gejlaw.com\\Rocky Cases",
+  "cases_root": "C:\\Users\\jbragdon\\OneDrive - gejlaw.com\\Rocky Cases",
 
   "_maple_digest_comment": "Maple digest (--maple-digest, 5:40 PM in production — after the Maple Updater's 5:10 PM run wrote the outbox file; PMA Activity feeds it at 5:00 PM. Times verified on the Rocky laptop 2026-08-30). Takes the updater's outbox\\client_digest_YYYY-MM-DD.html and creates a DRAFT in maple_client_digest_mailbox's Drafts folder addressed to maple_client_digest_recipients (external addresses allowed — nothing is sent; James reviews and sends). The cc list is load-bearing: pma@bozzuto.com routes Beth's reply-all back into rocky@'s watched 'Inbox\\PMA emails' folder, which is how typed answers reach the feed. Defaults IN CODE to the production outbox path, jbragdon@, and the Bozzuto+Gallagher lists set 2026-07-04. (Keys keep the maple_client_digest_ prefix: the retired internal digest used maple_digest_recipients for a firm-internal list.)",
   "maple_outbox_dir": "C:\\Users\\jbragdon\\OneDrive - gejlaw.com\\Program Files\\Maple\\Maple updater agent\\outbox",
@@ -35,7 +35,7 @@
   "_remy_comment": "Remy invocation paths. remy_cli_path is where remy_cli.py lives on disk. remy_outputs_path is where generated drafts get written.",
   "enable_remy_invocation": false,
   "remy_cli_path": "C:\\Users\\jbragdon\\Desktop\\REMY\\remy_cli.py",
-  "remy_outputs_path": "C:\\Users\\jbragdon\\OneDrive\\OneDrive - gejlaw.com\\Remy Outputs",
+  "remy_outputs_path": "C:\\Users\\jbragdon\\OneDrive - gejlaw.com\\Remy Outputs",
 
   "_remy_delivery_comment": "Email addresses that receive Remy draft delivery after generation.",
   "remy_delivery_recipients": [
@@ -67,7 +67,7 @@
   "sharepoint_site_path": "/sites/MultifamilyHousing",
   "llt_file_path": "General/PENDING LLT MATTERS.XLSX",
   "contacts_file_path": "General/BMC Contacts.xlsx",
-  "templates_path": "C:\\Users\\jbragdon\\OneDrive\\OneDrive - gejlaw.com\\Program Files\\Rocky\\Rocky reference files\\templates",
+  "templates_path": "C:\\Users\\jbragdon\\OneDrive - gejlaw.com\\Program Files\\Rocky\\Rocky reference files\\templates",
 
   "_pma_comment": "PMA NegotiationWatch. HubSpot writes are ASLEEP by default and require TWO affirmative switches: pma_hubspot_enabled:true here (master) AND running 'rocky.exe --pma-arm' (runtime arm flag). Either one absent = writes off. During the observe week leave both off: Rocky polls, classifies, and LOGS proposed updates only. '--pma-sleep' disarms.",
   "_pma_mailbox_comment": "pmateam@ is a Microsoft 365 Group (not a readable mailbox), so it forwards to rocky@. Rocky polls its OWN inbox and keeps only mail addressed (To/Cc) to pma_recipient_filter.",
@@ -83,7 +83,7 @@
   ],
   "pma_backfill_days": 60,
   "_pma_corpus_comment": "Knowledge corpus. Rocky saves every pmateam email + draft into per-deal folders under pma_team_root and synthesizes briefs daily via --pma-knowledge. Omit pma_team_root to default to a 'PMA Team' folder beside Rocky Cases on OneDrive.",
-  "pma_team_root": "C:\\Users\\jbragdon\\OneDrive\\OneDrive - gejlaw.com\\PMA Team",
+  "pma_team_root": "C:\\Users\\jbragdon\\OneDrive - gejlaw.com\\PMA Team",
   "pma_archive_enabled": true,
   "pma_hubspot_enabled": false,
   "hubspot_token": "PASTE-HUBSPOT-PRIVATE-APP-TOKEN-HERE-AT-GO-LIVE",
@@ -94,7 +94,7 @@
   "_pma_activity_comment": "PMA Activity exporter (--pma-activity, once daily). Rocky pulls new emails from pma_activity_folder in pma_activity_mailbox and appends each (full body + extracted attachment text) as one JSONL line to pma_activity_feed.jsonl in maple_activity_dir, for the Maple Updater Agent to read. No classification/HubSpot/email. First run with no cursor backfills pma_activity_backfill_days. maple_activity_dir defaults IN CODE to the Rocky-laptop production path (under the rocky profile, same base as maple_logs_dir); override it here only on other machines (e.g. this dev-laptop value, under the jbragdon profile). rocky@ needs EDIT (not view-only) share access to the Maple updater agent folder to write the feed.",
   "pma_activity_mailbox": "rocky@gallagherllp.com",
   "pma_activity_folder": "Inbox\\PMA emails",
-  "maple_activity_dir": "C:\\Users\\jbragdon\\OneDrive\\OneDrive - gejlaw.com\\Program Files\\Maple\\Maple updater agent\\PMA Activity",
+  "maple_activity_dir": "C:\\Users\\jbragdon\\OneDrive - gejlaw.com\\Program Files\\Maple\\Maple updater agent\\PMA Activity",
   "pma_activity_backfill_days": 30,
   "pma_activity_extract_attachments": true,
 

@@ -145,7 +145,7 @@ def user_paths(config: dict, data_dir: Path, user_key: str) -> dict:
     else:
         cases_root = Path(config.get(
             "cases_root",
-            r"C:\Users\jbragdon\OneDrive\OneDrive - gejlaw.com\Rocky Cases"))
+            r"C:\Users\jbragdon\OneDrive - gejlaw.com\Rocky Cases"))
         share_root = cases_root.parent / "Rocky Inboxes"
     share = share_root / f"inbox-{user_key}"
     local = data_dir / "inbox_cleaner" / user_key

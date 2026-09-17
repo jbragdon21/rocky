@@ -70,7 +70,7 @@ Rocky's config and runtime state live locally at `C:\Rocky` — not on OneDrive.
     ],
     "enable_remy_invocation": true,
     "remy_cli_path": "C:\\Users\\jbragdon\\Desktop\\REMY\\remy_cli.py",
-    "remy_outputs_path": "C:\\Users\\jbragdon\\OneDrive\\OneDrive - gejlaw.com\\Remy Outputs",
+    "remy_outputs_path": "C:\\Users\\jbragdon\\OneDrive - gejlaw.com\\Remy Outputs",
     "remy_python_path": "python"
 }
 ```
@@ -84,7 +84,7 @@ Rocky authenticates as `rocky@gallagherllp.com` using device code flow (a one-ti
 1. Open a command prompt
 2. Run:
    ```
-   "C:\Users\jbragdon\OneDrive\OneDrive - gejlaw.com\Program Files\rocky.exe"
+   "C:\Users\jbragdon\OneDrive - gejlaw.com\Program Files\rocky.exe"
    ```
 3. Rocky will print a message like:
    ```
@@ -105,9 +105,9 @@ Create three Task Scheduler entries:
 - **Name:** Rocky Daily Cases
 - **Trigger:** Daily at 4:00 PM
 - **Action:** Start a program
-  - Program: `"C:\Users\jbragdon\OneDrive\OneDrive - gejlaw.com\Program Files\rocky.exe"`
+  - Program: `"C:\Users\jbragdon\OneDrive - gejlaw.com\Program Files\rocky.exe"`
   - Arguments: `--daily-cases`
-  - Start in: `"C:\Users\jbragdon\OneDrive\OneDrive - gejlaw.com\Program Files"`
+  - Start in: `"C:\Users\jbragdon\OneDrive - gejlaw.com\Program Files"`
 - **Settings:**
   - Run whether user is logged on or not
   - Stop the task if it runs longer than 1 hour
@@ -117,9 +117,9 @@ Create three Task Scheduler entries:
 - **Name:** Rocky Daily Run
 - **Trigger:** Daily at 4:30 PM
 - **Action:** Start a program
-  - Program: `"C:\Users\jbragdon\OneDrive\OneDrive - gejlaw.com\Program Files\rocky.exe"`
+  - Program: `"C:\Users\jbragdon\OneDrive - gejlaw.com\Program Files\rocky.exe"`
   - Arguments: `--daily-run`
-  - Start in: `"C:\Users\jbragdon\OneDrive\OneDrive - gejlaw.com\Program Files"`
+  - Start in: `"C:\Users\jbragdon\OneDrive - gejlaw.com\Program Files"`
 - **Settings:**
   - Run whether user is logged on or not
   - Stop the task if it runs longer than 1 hour
@@ -129,9 +129,9 @@ Create three Task Scheduler entries:
 - **Name:** Rocky Daily Digest
 - **Trigger:** Daily at 5:00 PM
 - **Action:** Start a program
-  - Program: `"C:\Users\jbragdon\OneDrive\OneDrive - gejlaw.com\Program Files\rocky.exe"`
+  - Program: `"C:\Users\jbragdon\OneDrive - gejlaw.com\Program Files\rocky.exe"`
   - Arguments: `--daily-digest`
-  - Start in: `"C:\Users\jbragdon\OneDrive\OneDrive - gejlaw.com\Program Files"`
+  - Start in: `"C:\Users\jbragdon\OneDrive - gejlaw.com\Program Files"`
 - **Settings:**
   - Run whether user is logged on or not
   - Stop the task if it runs longer than 1 hour
