@@ -7,7 +7,9 @@ mailings without affidavits. Module/file names keep the old name; the
 CLI is --letterstream with --affidavits as a working legacy alias.)
 
 The firm mails notices by certified mail through LetterStream. For each
-mailing, a Certified Mailing Affidavit (affirmed by Hailey Mondragon, the
+mailing, a Certified Mailing Affidavit (affirmed by whoever did the
+mailing — anyone who submits a request is the affiant and approver of
+the resulting affidavit; the configured default is Hailey Mondragon, the
 Legal Administrative Assistant) plus LetterStream's proof-of-mailing PDF
 must end up in The Vault. This process automates the loop:
 
@@ -19,7 +21,8 @@ must end up in The Vault. This process automates the loop:
            emailing rocky@ with "proof of mailing" in the subject
            (affidavit_subject_keyword) and the proof PDF(s) from the
            LetterStream job page attached; each becomes an affidavit sent
-           for approval, with a confirmation reply to the submitter.
+           back to the SUBMITTER for approval (they are the affiant),
+           with a confirmation reply to the submitter.
            This email channel is the primary discovery path: LetterStream
            confirmed (2026-08-16) their API can neither list nor serve
            proofs for website-submitted jobs.
@@ -30,8 +33,11 @@ must end up in The Vault. This process automates the loop:
         3. For each new mailing: Claude-extract the tenant / address /
            property / documents-mailed description from the proof,
            render the affidavit .docx from the firm's template, and email
-           it with the proof to the approver (affidavit_approver, Hailey)
-           for a YES/NO reply.
+           it with the proof for a YES/NO reply. The approver (and the
+           affiant named on the affidavit) is whoever submitted the
+           request; mailings with no known submitter (API pull, --ingest,
+           --fetch) go to the configured default (affidavit_approver,
+           Hailey).
         4. Track mailings Rocky submitted through the API (see below):
            once USPS accepts one, pull its proof of mailing and feed the
            affidavit pipeline automatically.
@@ -51,8 +57,8 @@ must end up in The Vault. This process automates the loop:
         reply YES — that is the release step that bills the prepay
         account (mail_max_cost caps the quote, default $50). Rocky then
         tracks the job each morning; when USPS accepts it, the proof is
-        pulled via the API and the affidavit goes to Hailey — zero manual
-        steps from YES to vaulted affidavit.
+        pulled via the API and the affidavit goes back to the requester
+        for approval — zero manual steps from YES to vaulted affidavit.
 
     python rocky.py --letterstream --mail <packet.pdf> [--dry-run]
         The same outbound request from the command line (requester =
@@ -77,13 +83,17 @@ must end up in The Vault. This process automates the loop:
     python rocky.py --letterstream --status
         Pending affidavits, cursors, and LetterStream configuration state.
 
-Approval semantics: the affidavit emailed to Hailey already bears her
-conformed /s/ signature and the preparation date — her YES reply is the
-recorded authorization for that exact document, and the files vaulted are
-byte-for-byte the files she approved. Rocky never signs on anyone's
-behalf without that reply. Below the extraction-confidence floor the
-email is flagged so she knows to check every field (a human approves
-every affidavit either way; nothing is vaulted automatically).
+Approval semantics: each affidavit is emailed to its own affiant — the
+person who submitted the request (default: affidavit_approver, Hailey) —
+already bearing THEIR conformed /s/ signature and the preparation date.
+Their YES reply (or James's) is the recorded authorization for that
+exact document, and the files vaulted are byte-for-byte the files they
+approved. Rocky never signs on anyone's behalf without that reply.
+Below the extraction-confidence floor the email is flagged so they know
+to check every field (a human approves every affidavit either way;
+nothing is vaulted automatically). Per-person titles for the signature
+block come from affidavit_affiant_titles ({email: title}), defaulting
+to affidavit_affiant_title.
 
 Vault destinations (via vault.py's normal filing machinery, so both
 documents appear in Vault Index.xlsx):
@@ -148,7 +158,7 @@ _YES_WORDS = ("yes", "approved", "approve", "ok", "okay", "confirmed",
 _NO_WORDS = ("no", "declined", "decline", "reject", "rejected", "wrong",
              "hold", "stop", "do not")
 
-_DEFAULT_CASES_ROOT = r"C:\Users\jbragdon\OneDrive\OneDrive - gejlaw.com\Rocky Cases"
+_DEFAULT_CASES_ROOT = r"C:\Users\jbragdon\OneDrive - gejlaw.com\Rocky Cases"
 
 
 # =============================================================================
@@ -215,7 +225,9 @@ def _next_mail_tag(state: dict) -> str:
 
 
 def _approvers(config: dict) -> list[str]:
-    """Addresses whose YES/NO replies decide an affidavit."""
+    """Fallback addresses whose YES/NO replies decide an affidavit that
+    has no recorded submitter (API pulls, --ingest, --fetch, and pending
+    entries created before per-submitter approval)."""
     out = []
     approver = (config.get("affidavit_approver") or "").strip().lower()
     if approver and "PASTE" not in approver.upper():
@@ -224,6 +236,41 @@ def _approvers(config: dict) -> list[str]:
     if james and james not in out:
         out.append(james)
     return out
+
+
+def _requester_identity(config: dict, mailing: dict) -> tuple[str, str]:
+    """(email, display name) of the person who requested this affidavit —
+    they become its approver and affiant. ("", "") when the mailing has
+    no known requester (API pull, --ingest, --fetch); those keep the
+    configured affidavit_approver."""
+    email = (mailing.get("requester") or "").strip().lower()
+    if not email:
+        return "", ""
+    name = (mailing.get("requester_name") or "").strip()
+    if "," in name:  # Exchange "Last, First" display names
+        last, _, first = name.partition(",")
+        name = f"{first.strip()} {last.strip()}".strip()
+    if not name:
+        if email == (config.get("affidavit_approver") or "").strip().lower():
+            name = config.get("affidavit_affiant_name") or "Hailey Mondragon"
+        elif email == (config.get("user_email") or "").strip().lower():
+            name = config.get("user_display_name") or "James Bragdon"
+        else:
+            # Last resort: guess from the address; the approval email
+            # tells the approver to check the name on the affidavit.
+            name = " ".join(w.capitalize() for w in
+                            re.split(r"[._\-]+", email.split("@")[0]) if w)
+    return email, name
+
+
+def _affiant_title(config: dict, email: str) -> str:
+    """The affiant's title line: per-person override from
+    affidavit_affiant_titles ({email: title}), else the configured
+    default."""
+    titles = {str(k).strip().lower(): v for k, v in
+              (config.get("affidavit_affiant_titles") or {}).items()}
+    return (titles.get(email) or config.get("affidavit_affiant_title")
+            or "Legal Administrative Assistant")
 
 
 # =============================================================================
@@ -423,8 +470,10 @@ def build_affidavit_docx(fields: dict, config: dict, out_path: Path) -> None:
     """
     from docx import Document
 
-    affiant = config.get("affidavit_affiant_name") or "Hailey Mondragon"
-    title = (config.get("affidavit_affiant_title")
+    affiant = (fields.get("affiant")
+               or config.get("affidavit_affiant_name") or "Hailey Mondragon")
+    title = (fields.get("affiant_title")
+             or config.get("affidavit_affiant_title")
              or "Legal Administrative Assistant")
     when = _pretty_date(fields.get("mail_date"))
     if fields.get("mail_time"):
@@ -547,6 +596,13 @@ def process_mailing(
                              f"{job_no} failed ({e}) — affidavit will "
                              f"show the date only")
 
+    # Whoever submitted the request is the affiant and the approver;
+    # mailings with no known requester keep the configured approver.
+    approver, approver_name = _requester_identity(config, mailing)
+    if approver:
+        fields["affiant"] = approver_name
+        fields["affiant_title"] = _affiant_title(config, approver)
+
     tag = _next_tag(state)
     safe_tenant = _sanitize_filename(fields["tenant_last_first"]
                                      or fields["tenant"])[:60]
@@ -569,6 +625,8 @@ def process_mailing(
     pending = {
         "tag": tag,
         "fields": fields,
+        "approver": approver or None,
+        "approver_name": approver_name or None,
         "docx": str(docx_path),
         "proof": str(proof_path),
         "proof_sha256": hashlib.sha256(proof_bytes).hexdigest(),
@@ -601,11 +659,18 @@ def _send_approval_email(config: dict, pending: dict, reminder: bool) -> bool:
     import outbound
     from rocky import acquire_token, get_msal_app  # lazy
 
-    approver = (config.get("affidavit_approver") or "").strip()
-    if not approver or "PASTE" in approver.upper():
-        log.error("[affidavits] affidavit_approver not configured — "
-                  "cannot send approval email")
-        return False
+    # The submitter approves their own affidavit; entries without one
+    # (API pulls, --ingest, --fetch) go to the configured approver.
+    approver = (pending.get("approver") or "").strip()
+    if approver:
+        first = ((pending.get("approver_name") or "").split() or [approver])[0]
+    else:
+        approver = (config.get("affidavit_approver") or "").strip()
+        if not approver or "PASTE" in approver.upper():
+            log.error("[affidavits] affidavit_approver not configured — "
+                      "cannot send approval email")
+            return False
+        first = config.get("affidavit_approver_first_name") or "Hailey"
 
     fields = pending["fields"]
     tag = pending["tag"]
@@ -614,7 +679,7 @@ def _send_approval_email(config: dict, pending: dict, reminder: bool) -> bool:
         when += f" at {fields['mail_time']}"
 
     lines = [
-        f"Hi {(config.get('affidavit_approver_first_name') or 'Hailey')},",
+        f"Hi {first},",
         "",
         ("Reminder — this one is still waiting for your reply. "
          if reminder else "")
@@ -637,10 +702,11 @@ def _send_approval_email(config: dict, pending: dict, reminder: bool) -> bool:
             "",
         ]
     lines += [
-        "Review the attached affidavit. If it is correct, reply YES and "
-        "Rocky will file the affidavit and the proof of mailing in The "
-        "Vault under the property and tenant. Your reply is the record "
-        "authorizing the /s/ signature on this exact document.",
+        "Review the attached affidavit — including your name and title in "
+        "the signature block. If it is correct, reply YES and Rocky will "
+        "file the affidavit and the proof of mailing in The Vault under "
+        "the property and tenant. Your reply is the record authorizing "
+        "the /s/ signature on this exact document.",
         "",
         "If anything is wrong, reply NO with a note and Rocky will set it "
         "aside and flag it for James.",
@@ -654,7 +720,8 @@ def _send_approval_email(config: dict, pending: dict, reminder: bool) -> bool:
             token=token,
             sender_mailbox=config.get("rocky_email", "rocky@gallagherllp.com"),
             to=[approver],
-            cc=[a for a in (config.get("affidavit_cc") or []) if a],
+            cc=[a for a in (config.get("affidavit_cc") or [])
+                if a and a.lower() != approver.lower()],
             subject=(("Reminder: " if reminder else "")
                      + f"Certified Mailing Affidavit for approval [{tag}] — "
                        f"{fields.get('tenant')}"),
@@ -725,7 +792,7 @@ def extract_mail_request(client, doc_text: str, body_text: str) -> dict | None:
 def handle_mail_request(
     client, config: dict, paths: dict, state: dict,
     pdf_bytes: bytes, filename: str, body_text: str, requester: str,
-    dry_run: bool,
+    dry_run: bool, requester_name: str = "",
 ):
     """
     One certified-mail request -> LetterStream PREAUTH (nothing printed
@@ -832,6 +899,7 @@ def handle_mail_request(
     entry = {
         "tag": tag,
         "requester": requester.lower(),
+        "requester_name": requester_name or None,
         "recipient": req,
         "label": label,
         "job_name": job_name,
@@ -1084,6 +1152,10 @@ def poll_in_flight(client, config: dict, paths: dict, state: dict,
 
         mailing = {
             "job_id": str(ref),
+            # The certified-mail requester approves (and signs) the
+            # affidavit for the mailing they requested.
+            "requester": entry.get("requester"),
+            "requester_name": entry.get("requester_name"),
             "tracking": digits if len(digits) >= 20 else str(ref),
             # Firm policy: the affidavit speaks as of when the mailing
             # was communicated to LetterStream (the release), not when
@@ -1323,6 +1395,7 @@ def poll_approvals(client, config: dict, paths: dict, state: dict,
     messages = vault.fetch_inbox_messages(token, mailbox, since,
                                           attachments_only=False)
     approvers = _approvers(config)
+    james = (config.get("user_email") or "").strip().lower()
     vaulted_any = False
 
     mail_keyword = (config.get("mail_request_keyword")
@@ -1368,9 +1441,15 @@ def poll_approvals(client, config: dict, paths: dict, state: dict,
                 log.info(f"[affidavits] reply for {tag} but it isn't "
                          f"pending — ignored")
                 continue
-            if sender not in approvers:
-                log.info(f"[affidavits] reply to {tag} from non-approver "
-                         f"{sender} — ignored")
+            # The submitter approves their own affidavit (James always
+            # can); entries without a recorded submitter fall back to
+            # the configured approver list.
+            entry_approver = (entry.get("approver") or "").strip().lower()
+            allowed = ({entry_approver, james} - {""}) if entry_approver \
+                else set(approvers)
+            if sender not in allowed:
+                log.info(f"[affidavits] reply to {tag} from {sender}, who "
+                         f"is neither its approver nor James — ignored")
                 continue
             if dry_run:
                 log.info(f"[affidavits] DRY-RUN: would record "
@@ -1392,7 +1471,6 @@ def poll_approvals(client, config: dict, paths: dict, state: dict,
                 _reply_unclear(config, entry, sender)
 
         mail_pending = state.get("mail_pending") or {}
-        james = (config.get("user_email") or "").strip().lower()
         for tag in sorted(cm_tags):
             entry = mail_pending.get(tag)
             if entry is None:
@@ -1450,8 +1528,9 @@ def _handle_proof_submission(
     """
     from rocky import fetch_attachments  # lazy
 
-    sender = (((message.get("from") or {}).get("emailAddress") or {})
-              .get("address") or "").lower()
+    sender_info = (message.get("from") or {}).get("emailAddress") or {}
+    sender = (sender_info.get("address") or "").lower()
+    sender_name = (sender_info.get("name") or "").strip()
     if not sender.endswith("@gallagherllp.com"):
         log.info(f"[affidavits] proof-of-mailing email from non-firm "
                  f"sender {sender} — ignored")
@@ -1475,12 +1554,14 @@ def _handle_proof_submission(
             continue
         result = process_mailing(
             client, config, paths, state, att["contentBytes"],
-            mailing={"job_id": None}, source=f"mail:{sender}:{name}",
-            dry_run=dry_run)
+            mailing={"job_id": None, "requester": sender,
+                     "requester_name": sender_name},
+            source=f"mail:{sender}:{name}", dry_run=dry_run)
         if result and not dry_run:
             state.setdefault("processed_sha", []).append(sha)
-            lines.append(f"  {name}: affidavit [{result}] sent to "
-                         f"{config.get('affidavit_approver')} for approval.")
+            lines.append(f"  {name}: affidavit [{result}] sent to you "
+                         f"for approval — it bears your /s/ signature, "
+                         f"and your YES reply authorizes it.")
             proposed += 1
         elif result:
             proposed += 1
@@ -1512,8 +1593,8 @@ def _handle_mail_request_email(
     packet to mail). Returns how many requests were preauth'd."""
     from rocky import fetch_attachments  # lazy
 
-    sender = (((message.get("from") or {}).get("emailAddress") or {})
-              .get("address") or "").lower()
+    sender_info = (message.get("from") or {}).get("emailAddress") or {}
+    sender = (sender_info.get("address") or "").lower()
     if not sender.endswith("@gallagherllp.com"):
         log.info(f"[affidavits] certified-mail request from non-firm "
                  f"sender {sender} — ignored")
@@ -1538,7 +1619,8 @@ def _handle_mail_request_email(
         or message.get("bodyPreview") or ""
     result = handle_mail_request(
         client, config, paths, state, pdfs[0]["contentBytes"],
-        pdfs[0].get("name") or "document.pdf", body, sender, dry_run)
+        pdfs[0].get("name") or "document.pdf", body, sender, dry_run,
+        requester_name=(sender_info.get("name") or "").strip())
     return 1 if result else 0
 
 
@@ -1560,7 +1642,8 @@ def _finalize_approval(config: dict, paths: dict, state: dict,
                   f"flagging for James")
         _notify_james(config, f"Rocky — affidavit {tag} approved but its "
                               f"pending files are missing",
-                      f"Hailey approved [{tag}] ({fields.get('tenant')}) but "
+                      f"{approved_by} approved [{tag}] "
+                      f"({fields.get('tenant')}) but "
                       f"the pending files are gone from\n{paths['pending']}\n"
                       f"Nothing was vaulted. Please investigate.")
         return False
@@ -1743,7 +1826,8 @@ def print_status(config: dict, paths: dict) -> None:
           + ("configured" if ls.configured else
              "NOT CONFIGURED — set letterstream_api_id/letterstream_api_key "
              "(see LETTERSTREAM.md)"))
-    print(f"  Approver:          {config.get('affidavit_approver') or '(unset)'}")
+    print(f"  Default approver:  {config.get('affidavit_approver') or '(unset)'}"
+          f" (submitters approve their own)")
     print(f"  Jobs processed:    {len(state.get('processed_jobs') or {})}")
     print(f"  Approval cursor:   "
           f"{state.get('approval_cursor') or '(none — will backfill)'}")
@@ -1753,7 +1837,9 @@ def print_status(config: dict, paths: dict) -> None:
         print(f"    [{tag}] {f.get('tenant')} — "
               f"{f.get('property') or '?'}, mailed "
               f"{_pretty_date(f.get('mail_date'))}, sent "
-              f"{(entry.get('created') or '')[:10]}")
+              f"{(entry.get('created') or '')[:10]}"
+              + (f", awaiting {entry['approver']}"
+                 if entry.get("approver") else ""))
     mail_pending = state.get("mail_pending") or {}
     in_flight = state.get("in_flight") or {}
     print(f"  Mailings awaiting release: {len(mail_pending)}")

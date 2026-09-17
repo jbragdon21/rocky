@@ -7,8 +7,11 @@ schedule 8:00 AM daily). Built 2026-08-06.
 
 The firm sends notices by certified mail through
 [LetterStream](https://www.letterstream.com). Each mailing needs an
-**Affidavit of Certified Mailing** — affirmed by Hailey Mondragon, the
-Legal Administrative Assistant — filed together with LetterStream's
+**Affidavit of Certified Mailing** — affirmed by whoever did the
+mailing: **anyone who submits a request is the affiant and approver of
+the resulting affidavit** (2026-08-31; the configured default for
+mailings with no known submitter is Hailey Mondragon, the Legal
+Administrative Assistant) — filed together with LetterStream's
 **proof of mailing** PDF. Rocky closes that loop:
 
 1. **Discover** — the team's channel (primary): after mailing through
@@ -38,12 +41,18 @@ Legal Administrative Assistant — filed together with LetterStream's
    `{{AFFIANT}}`, `{{AFFIANT_TITLE}}`, `{{SIGN_DATE}}`. (Delete the
    share copy to re-seed the bundled default. The bundled source is
    `_templates/affidavit_template.docx` in the repo.)
-3. **Approve** — Rocky emails the affidavit + proof from rocky@ to
-   `affidavit_approver` (Hailey), tagged `[AM-####]`. Her **YES** reply is
-   the recorded authorization for that exact document. **NO** (with a
-   note) sets it aside in `Declined\` and emails James the note. An
-   unrecognized reply gets a polite "reply YES or NO" nudge. Unanswered
-   items are re-sent every `affidavit_reminder_days` (default 3).
+3. **Approve** — Rocky emails the affidavit + proof from rocky@ back to
+   **the submitter** (who is also the affiant named on the document;
+   `affidavit_approver` — Hailey — for API/CLI mailings with no known
+   submitter), tagged `[AM-####]`. Only that person's **YES** reply (or
+   James's) is the recorded authorization for that exact document; the
+   email tells them to check their name and title in the signature
+   block. Per-person titles come from `affidavit_affiant_titles`
+   (`{email: title}`), defaulting to `affidavit_affiant_title`. **NO**
+   (with a note) sets it aside in `Declined\` and emails James the note.
+   An unrecognized reply gets a polite "reply YES or NO" nudge.
+   Unanswered items are re-sent every `affidavit_reminder_days`
+   (default 3).
 4. **File** — on YES, Rocky files the affidavit (PDF via Word when
    available, else the `.docx`) and the proof of mailing into **The
    Vault** through the Vault's normal machinery, so both appear in
@@ -85,12 +94,13 @@ submitting, the entire chain runs itself:
    answers **whether to prepare the Certified Mailing Affidavit**: a
    plain YES (or "Yes, with affidavit") queues it; "Yes, no affidavit"
    releases without one. Ambiguous phrasing defaults to WITH affidavit
-   (the safe direction — Hailey can still decline it at signing).
+   (the safe direction — the requester can still decline it at signing).
 4. **Track → affidavit** — each morning run polls the in-flight jobs.
    Once USPS accepts one, Rocky pulls the proof of mailing via the API
-   and the normal affidavit flow takes over (affidavit → Hailey → YES →
-   Vault). Zero manual steps between the release YES and the vaulted
-   affidavit. No-affidavit jobs are just tracked to completion.
+   and the normal affidavit flow takes over (affidavit → the requester
+   as affiant → YES → Vault). Zero manual steps between the release YES
+   and the vaulted affidavit. No-affidavit jobs are just tracked to
+   completion.
 
 **Mailing date/time policy (2026-08-17, time source refined
 2026-08-26):** the affidavit swears to the date and time the mailing
@@ -173,11 +183,14 @@ daily task is redundant (safe, but skip it).
    portal, along with the API ID/key.
 2. **Config** (`config.json` on the Rocky laptop):
    - `letterstream_api_id` / `letterstream_api_key`
-   - `affidavit_approver` — Hailey's firm email (approvals only count
-     from this address or James's)
+   - `affidavit_approver` — Hailey's firm email, the DEFAULT approver
+     for mailings with no known submitter; email-submitted requests are
+     approved by their own submitter (or James) instead
    - optional: `affidavit_root`, `affidavit_cc`, `affidavit_affiant_name`
-     / `_title`, `affidavit_reminder_days`, `affidavit_backfill_days`,
-     `affidavit_pdf`
+     / `_title`, `affidavit_affiant_titles` (`{email: title}` overrides
+     for the signature block), `affidavit_reminder_days`,
+     `affidavit_backfill_days`, `affidavit_pdf`, `user_display_name`
+     (James's name on affidavits he requests from the CLI)
 3. **Share folder** — default `<cases_root parent>\Mailing Affidavits`
    (created on first run: `Pending\`, `Approved\`, `Declined\`,
    `_affidavits\activity.jsonl`). Pin "Always keep on this device" on
@@ -227,13 +240,16 @@ never creates or modifies mail jobs). The extraction, generation,
 approval, and vault steps are independent of all this and already
 tested end-to-end via `--ingest`.
 
-## Approval semantics (why the /s/ is applied before her YES)
+## Approval semantics (why the /s/ is applied before the YES)
 
-The affidavit emailed to Hailey already bears her conformed `/s/`
-signature and its preparation date, and the approval email says so
-explicitly. That way her YES approves the *exact bytes* that get filed —
-nothing is altered after she approves. Rocky records who approved, when,
-and from what address in the activity log and in the Vault catalog entry
+Each affidavit is emailed to its own affiant — the person who submitted
+the request — already bearing *their* conformed `/s/` signature and its
+preparation date, and the approval email says so explicitly. That way
+their YES approves the *exact bytes* that get filed — nothing is altered
+after they approve — and nobody's signature is ever authorized by
+someone else's reply (James, as supervising attorney, can also approve
+or decline any affidavit). Rocky records who approved, when, and from
+what address in the activity log and in the Vault catalog entry
 (`approved by <address> via [AM-####] email reply`). Declines never file
 anything.
 
