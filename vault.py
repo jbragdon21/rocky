@@ -62,6 +62,13 @@ anyone at the firm can grab what they need.
         PDFs now go to Claude as attached pages — and file whatever
         comes back confident.
 
+    python rocky.py --vault --ingest-folder <path> [--recursive]
+                    [--match <substr>] [--types lease,ledger,...]
+                    [--limit N] [--dry-run]
+        One-shot ingest of a local folder: classify eligible files and
+        COPY vault documents into place (originals untouched; SHA dedup
+        makes re-runs and chunked --limit runs harmless).
+
 Reads use the app-level token (Application Access Policy already covers
 jbragdon@ and rocky@ — no new Graph permission). Confirmation replies go
 out from rocky@ via outbound.send_mail_guarded (internal-only allowlist
@@ -145,7 +152,7 @@ DOC_TYPE_LABELS = {
 # vault-mail submissions and curated Dropbox folders accept everything.
 INBOX_DOC_TYPES = {"lease", "ledger", "affidavit_of_service"}
 
-_DEFAULT_CASES_ROOT = r"C:\Users\jbragdon\OneDrive\OneDrive - gejlaw.com\Rocky Cases"
+_DEFAULT_CASES_ROOT = r"C:\Users\jbragdon\OneDrive - gejlaw.com\Rocky Cases"
 
 VAULT_README = """# The Vault
 
@@ -584,10 +591,20 @@ def _load_grounding(config: dict, paths: dict) -> None:
             have.add(_norm_prop(name))
 
 
+# One line per property — "Name — legal entity — street address" — for
+# the classify prompt. Leases usually show the LANDLORD ENTITY and the
+# premises address, not the community brand; this maps them (added
+# 2026-09-03 after a folder ingest sent obvious leases to _Needs Review
+# for want of a community name).
+_KNOWN_PROPERTY_LINES: list[str] = []
+
+
 def load_known_properties(config: dict) -> list[str]:
     """Property names from Remy's property table. Default location is
     data\\property_table.csv beside remy_cli_path; override with
-    vault_property_table. Missing file = empty list (grounding off)."""
+    vault_property_table. Missing file = empty list (grounding off).
+    Also fills _KNOWN_PROPERTY_LINES with name/entity/address rows for
+    the classify prompt."""
     import csv
     explicit = (config.get("vault_property_table") or "").strip()
     if explicit:
@@ -601,14 +618,27 @@ def load_known_properties(config: dict) -> list[str]:
         log.info(f"[vault] property table not found at {path} — "
                  f"classification runs ungrounded")
         return []
+    names: list[str] = []
+    lines: list[str] = []
     try:
         with open(path, "r", newline="", encoding="utf-8-sig") as f:
-            names = [(r.get("Property Name") or "").strip()
-                     for r in csv.DictReader(f)]
+            for r in csv.DictReader(f):
+                name = (r.get("Property Name") or "").strip()
+                if not name:
+                    continue
+                names.append(name)
+                entity = (r.get("Legal Entity Name") or "").strip()
+                addr = " ".join(x for x in (
+                    (r.get("Street Address") or "").strip(),
+                    (r.get("City") or "").strip(),
+                    (r.get("State") or "").strip()) if x)
+                extras = " — ".join(x for x in (entity, addr) if x)
+                lines.append(f"{name}" + (f" — {extras}" if extras else ""))
     except (OSError, csv.Error) as e:
         log.warning(f"[vault] could not read property table {path}: {e}")
         return []
-    out = sorted({n for n in names if n})
+    _KNOWN_PROPERTY_LINES[:] = sorted(set(lines))
+    out = sorted(set(names))
     log.info(f"[vault] property grounding: {len(out)} known properties "
              f"loaded from {path.name}")
     return out
@@ -698,20 +728,75 @@ _CLASSIFY_RULES = """For each document, return an object with:
       execution date; ledger through-date; affidavit service date; the
       date printed or stamped on a notice), or null when the document
       shows none — NEVER today's date and NEVER the file's upload date
-  "confidence": 0.0-1.0 that doc_type, property, AND tenant are all right
+  "confidence": 0.0-1.0 that doc_type, property, AND tenant are all right.
+      If the text reads as an UNFILLED form template (blank tenant/
+      premises/date lines), the document is usually an EXECUTED copy
+      whose filled values failed to extract — keep is_vault_document
+      true with the form's doc_type, do NOT guess the values from the
+      filename, and return LOW confidence (below 0.7) so the pages get
+      re-read
   "reasoning": one short sentence
 
 Respond with ONLY a JSON array, one object per document, same order."""
 
 
-def _scan_pdf_excerpt(filename: str, content: bytes,
-                      text: str | None) -> bytes | None:
+def _pdf_form_text(content: bytes) -> str | None:
+    """Filled AcroForm field values from a PDF. NAA-style form leases
+    carry the parties/premises/dates in form FIELDS, not the page text
+    stream — extract_text alone shows a blank template (seen live
+    2026-09-03: executed leases classified as empty forms)."""
+    try:
+        from pypdf import PdfReader
+        fields = PdfReader(io.BytesIO(content)).get_fields()
+    except Exception:
+        return None
+    if not fields:
+        return None
+    lines = []
+    for name, f in fields.items():
+        v = f.get("/V")
+        if v in (None, ""):
+            continue
+        v = str(v).strip()
+        if not v or v.startswith("/"):  # checkbox states are noise
+            continue
+        lines.append(f"{name}: {v}")
+    if not lines:
+        return None
+    return "FILLED FORM FIELD VALUES:\n" + "\n".join(lines)
+
+
+def _doc_text(filename: str, content_type: str,
+              content: bytes | None) -> str | None:
+    """Vault-wide text extraction: page text plus, for PDFs, filled form
+    field values PREPENDED so the classify snippet cap can't truncate
+    the parties/premises out of a form lease."""
+    from rocky import extract_text_from_attachment  # lazy
+    text = extract_text_from_attachment(filename, content_type, content)
+    if content and (filename or "").lower().endswith(".pdf"):
+        form = _pdf_form_text(content)
+        if form:
+            text = form[:3000] + "\n\n" + (text or "")
+    return text
+
+
+def scan_pdf_excerpt(filename: str, content: bytes,
+                     text: str | None, pages: int | None = None) -> bytes | None:
     """First pages of a text-free PDF, to attach to the classify call so
     Claude reads the scan itself. Returns None when the file has a text
-    layer (the text path is cheaper) or isn't a workable PDF."""
+    layer (the text path is cheaper) or isn't a workable PDF.
+
+    Public because the Litigation Updater needs the same thing (a scanned
+    complaint is the normal case there, not the exception) — one scan
+    path, not two. It passes a larger `pages` than the Vault's 4: the
+    Vault only has to recognize a document, while a claims entry needs
+    the allegations, which run well past the caption page.
+    """
+    pages = pages or SCAN_PDF_PAGES
     if text and text.strip():
         return None
-    if not (filename or "").lower().endswith(".pdf") or not content:
+    if not content or not ((filename or "").lower().endswith(".pdf")
+                           or content[:5].startswith(b"%PDF")):
         return None
     if len(content) > SCAN_PDF_MAX_BYTES:
         log.info(f"[vault] {filename!r}: scanned PDF too large to attach "
@@ -731,16 +816,16 @@ def _scan_pdf_excerpt(filename: str, content: bytes,
                  f"not attaching, classifying by name/path only")
         return None
     try:
-        if n_pages > SCAN_PDF_PAGES:
+        if n_pages > pages:
             writer = PdfWriter()
-            for page in reader.pages[:SCAN_PDF_PAGES]:
+            for page in reader.pages[:pages]:
                 writer.add_page(page)
             buf = io.BytesIO()
             writer.write(buf)
             excerpt = buf.getvalue()
     except Exception as e:
         log.debug(f"[vault] could not trim {filename!r} to "
-                  f"{SCAN_PDF_PAGES} pages: {e}")
+                  f"{pages} pages: {e}")
     if len(excerpt) > SCAN_PDF_EXCERPT_MAX:
         return None
     return excerpt
@@ -766,21 +851,26 @@ def classify_documents(
     docs: list[dict],
     context: str,
     explicit_submission: bool,
+    _vision_retry: bool = True,
 ) -> list[dict]:
     """
     One Claude call classifying a batch of documents.
     docs: [{"filename": ..., "text": ... or None, "pdf_bytes": optional
-    bytes of a text-free scan (see _scan_pdf_excerpt) attached so Claude
-    reads the pages}]. Returns one meta dict per doc (aligned by
-    filename, falling back to order). Inputs larger than
-    CLASSIFY_BATCH_MAX are split across multiple calls.
+    bytes of a text-free scan (see scan_pdf_excerpt) attached so Claude
+    reads the pages, "content": optional raw bytes enabling the vision
+    retry}]. PDFs whose TEXT classification lands below the confidence
+    floor get one retry with their pages attached — e-signed form leases
+    extract as blank templates while the filled values are only visible
+    on the rendered page (seen live 2026-09-03). Returns one meta dict
+    per doc (aligned by filename, falling back to order). Inputs larger
+    than CLASSIFY_BATCH_MAX are split across multiple calls.
     """
     if len(docs) > CLASSIFY_BATCH_MAX:
         results: list[dict] = []
         for i in range(0, len(docs), CLASSIFY_BATCH_MAX):
             results.extend(classify_documents(
                 client, docs[i:i + CLASSIFY_BATCH_MAX], context,
-                explicit_submission))
+                explicit_submission, _vision_retry))
         return results
 
     doc_blocks = []
@@ -816,13 +906,28 @@ def classify_documents(
 
     known = ""
     if _KNOWN_PROPERTIES:
-        known = (
-            "\nKnown firm properties — when a document belongs to one of "
-            "these, use the EXACT name as listed (email subjects, notes, "
-            "and file paths often name the property, e.g. a subject like "
-            "'The Kelvin | July Suit List' means these documents are for "
-            "The Kelvin):\n" + "; ".join(_KNOWN_PROPERTIES) + "\n"
-        )
+        # Prefer the name/entity/address rows when the table provided
+        # them — leases usually show the landlord LLC and the premises
+        # address rather than the community brand.
+        if _KNOWN_PROPERTY_LINES:
+            known = (
+                "\nKnown firm properties (community name — legal entity — "
+                "address). When a document belongs to one of these, use "
+                "the EXACT community name as listed; documents often show "
+                "only the legal entity or the street address — match on "
+                "those too. Email subjects, notes, and file paths may "
+                "also name the property:\n"
+                + "\n".join(_KNOWN_PROPERTY_LINES) + "\n"
+            )
+        else:
+            known = (
+                "\nKnown firm properties — when a document belongs to one "
+                "of these, use the EXACT name as listed (email subjects, "
+                "notes, and file paths often name the property, e.g. a "
+                "subject like 'The Kelvin | July Suit List' means these "
+                "documents are for The Kelvin):\n"
+                + "; ".join(_KNOWN_PROPERTIES) + "\n"
+            )
 
     prompt = (
         "You are Rocky, a virtual paralegal at Gallagher LLP, filing "
@@ -887,6 +992,57 @@ def classify_documents(
                     "doc_type": "other" if explicit_submission else None,
                     "confidence": 0.0, "reasoning": "missing from response"}
         aligned.append(_ground_property(meta))
+
+    if _vision_retry:
+        retry_idx = []
+        for i, (d, m) in enumerate(zip(docs, aligned)):
+            if not d.get("content") or d.get("pdf_bytes"):
+                continue  # no bytes to attach, or pages already attached
+            # PDFs by magic bytes — the prompt "filename" can be a
+            # Dropbox path or an email subject.
+            if not d["content"][:5].startswith(b"%PDF"):
+                continue
+            if m.get("classification_failed"):
+                continue
+            conf = float(m.get("confidence") or 0)
+            if m.get("is_vault_document"):
+                weak = (conf < CONFIDENCE_FLOOR
+                        or not (m.get("property") or "").strip()
+                        or not (m.get("tenant") or "").strip())
+            else:
+                # A husk lease (template text whose filled values didn't
+                # extract) sometimes gets marked not-vault anyway — a
+                # blank/unfilled-sounding reason or shaky confidence
+                # earns the page re-read; only a confidently reasoned
+                # not-vault call skips it.
+                husk = re.search(r"blank|unfilled|template|no text|empty",
+                                 m.get("reasoning") or "", re.IGNORECASE)
+                weak = conf < 0.85 or bool(husk)
+            if weak:
+                excerpt = scan_pdf_excerpt(d["filename"], d["content"], None)
+                if excerpt:
+                    retry_idx.append((i, excerpt))
+        # Small sub-batches keep a stack of attached page-sets under the
+        # API request-size ceiling.
+        for start in range(0, len(retry_idx), 4):
+            chunk = retry_idx[start:start + 4]
+            retry_docs = [{"filename": docs[i]["filename"], "text": None,
+                           "pdf_bytes": excerpt} for i, excerpt in chunk]
+            log.info(f"[vault] vision retry: {len(retry_docs)} weakly "
+                     f"classified PDF(s) re-read from their pages")
+            retry_metas = classify_documents(
+                client, retry_docs,
+                context + "\nText extraction was unreliable for these "
+                "documents (form templates whose filled values didn't "
+                "extract) — their first pages are attached; read the "
+                "pages themselves.",
+                explicit_submission, _vision_retry=False)
+            for (i, _), rm in zip(chunk, retry_metas):
+                if rm.get("classification_failed"):
+                    continue
+                # The pages-read result is strictly better informed than
+                # the husk-text one — take it.
+                aligned[i] = rm
     return aligned
 
 
@@ -1009,10 +1165,11 @@ def scan_inbox_source(
 
         docs = []
         for a in candidates:
-            text = extract_text_from_attachment(
+            text = _doc_text(
                 a["name"], a.get("contentType") or "", a["contentBytes"])
             docs.append({"filename": a["name"], "text": text,
-                         "pdf_bytes": _scan_pdf_excerpt(
+                         "content": a["contentBytes"],
+                         "pdf_bytes": scan_pdf_excerpt(
                              a["name"], a["contentBytes"], text)})
         metas = classify_documents(
             client, docs, _email_context(message, "James's inbox"),
@@ -1113,10 +1270,11 @@ def scan_vault_mailbox(
         if candidates:
             docs = []
             for a in candidates:
-                text = extract_text_from_attachment(
+                text = _doc_text(
                     a["name"], a.get("contentType") or "", a["contentBytes"])
                 docs.append({"filename": a["name"], "text": text,
-                             "pdf_bytes": _scan_pdf_excerpt(
+                             "content": a["contentBytes"],
+                             "pdf_bytes": scan_pdf_excerpt(
                                  a["name"], a["contentBytes"], text)})
             metas = classify_documents(
                 client, docs,
@@ -1245,15 +1403,21 @@ _QUOTED_HEADER_RE = re.compile(
     r"^\s*(from:|-{3,}\s*original message|_{5,})", re.IGNORECASE)
 
 
-def _is_vault_submission(message: dict, keyword: str) -> bool:
-    """A vault submission has the keyword in the subject OR in the
-    forwarding note — the body text ABOVE the quoted 'From:' header
-    (people forward without touching the subject and just type 'please
-    add to vault'). Capped at 10 note lines, and only the first 3 lines
-    when there's no quoted section, so a stray mention deep in a regular
-    email never triggers filing."""
-    if keyword in (message.get("subject") or "").lower():
-        return True
+def forwarding_note(message: dict, max_lines: int = 10) -> str:
+    """The body text ABOVE the quoted 'From:' header — what the sender
+    actually TYPED, as opposed to the chain they forwarded.
+
+    People forward to rocky@ without touching the subject and just type
+    an instruction on top ("please add to vault", "please add to
+    spreadsheet"), so every keyword test that means "the sender asked
+    for this" belongs here and not in the whole body: a deep quoted
+    mention must never trigger an action. Capped at `max_lines`, and at
+    the first 3 lines when there's no quoted section at all (plain mail
+    has no forwarding note to speak of).
+
+    Shared with litigation_updater.detect_intent — one note extractor,
+    not one per process.
+    """
     body = ((message.get("body") or {}).get("content")
             or message.get("bodyPreview") or "")
     note_lines: list[str] = []
@@ -1264,11 +1428,19 @@ def _is_vault_submission(message: dict, keyword: str) -> bool:
             break
         if ln.strip():
             note_lines.append(ln)
-        if len(note_lines) >= 10:
+        if len(note_lines) >= max_lines:
             break
     if not saw_quote:
         note_lines = note_lines[:3]
-    return any(keyword in ln.lower() for ln in note_lines)
+    return "\n".join(note_lines)
+
+
+def _is_vault_submission(message: dict, keyword: str) -> bool:
+    """A vault submission has the keyword in the subject OR in the
+    forwarding note (see `forwarding_note`)."""
+    if keyword in (message.get("subject") or "").lower():
+        return True
+    return keyword in forwarding_note(message).lower()
 
 
 def _mail_source_detail(message: dict, mailbox: str) -> dict:
@@ -1550,9 +1722,12 @@ def _apply_age_floor(entries: list[dict], max_age_days: int | None,
 def _classify_and_file_batch(
     client, paths: dict, batch: list[dict], context: str,
     source_name: str, counts: dict, seen: set[str], dry_run: bool,
+    allowed_types: set[str] | None = None,
 ) -> bool:
     """
     Classify one downloaded-file batch and file the vault documents.
+    allowed_types restricts what gets filed (e.g. {"lease"} for a
+    leases-only folder ingest); None files every vault doc type.
     Returns False when classification failed — the caller must then hold
     its cursor / not mark these files processed, so they retry next run.
     """
@@ -1561,13 +1736,23 @@ def _classify_and_file_batch(
     metas = classify_documents(
         client,
         [{"filename": b["prompt_name"], "text": b["text"],
-          "pdf_bytes": b.get("pdf_bytes")} for b in batch],
+          "content": b["content"], "pdf_bytes": b.get("pdf_bytes")}
+         for b in batch],
         context, explicit_submission=False,
     )
     if any(m.get("classification_failed") for m in metas):
         return False
     for b, meta in zip(batch, metas):
         if not meta.get("is_vault_document"):
+            log.info(f"[vault] {b['file_name']!r} not vault material "
+                     f"({meta.get('reasoning') or 'no reason given'}) — "
+                     f"skipping")
+            continue
+        if allowed_types and meta.get("doc_type") not in allowed_types:
+            log.info(f"[vault] {b['file_name']!r} is "
+                     f"{meta.get('doc_type')!r} — outside this ingest's "
+                     f"types, skipping")
+            counts["skipped_type"] = counts.get("skipped_type", 0) + 1
             continue
         if b["sha256"] in seen:
             # Identical bytes twice in one run (two client-side copies
@@ -1690,8 +1875,7 @@ def scan_dropbox(
                         fmarks[e.get("path_lower")] = _link_mark(e)
                     continue
                 counts["files"] += 1
-                text = extract_text_from_attachment(
-                    e.get("name") or "", "", content)
+                text = _doc_text(e.get("name") or "", "", content)
                 batch.append({
                     "content": content,
                     "sha256": sha256,
@@ -1700,7 +1884,7 @@ def scan_dropbox(
                     # often carries the property/tenant.
                     "prompt_name": e.get("path_display") or e.get("name"),
                     "text": text,
-                    "pdf_bytes": _scan_pdf_excerpt(
+                    "pdf_bytes": scan_pdf_excerpt(
                         e.get("name") or "", content, text),
                     "detail": {"account": name,
                                "path": e.get("path_display"),
@@ -1790,15 +1974,14 @@ def scan_dropbox(
                         marks[f["rel_path"]] = _link_mark(f)
                     continue
                 counts["files"] += 1
-                text = extract_text_from_attachment(
-                    f["name"] or "", "", content)
+                text = _doc_text(f["name"] or "", "", content)
                 batch.append({
                     "content": content,
                     "sha256": sha256,
                     "file_name": f["name"],
                     "prompt_name": f["rel_path"],
                     "text": text,
-                    "pdf_bytes": _scan_pdf_excerpt(
+                    "pdf_bytes": scan_pdf_excerpt(
                         f["name"] or "", content, text),
                     "detail": {"account": name, "shared_link": lname,
                                "path": f["rel_path"],
@@ -1811,6 +1994,112 @@ def scan_dropbox(
                     _flush_link(batch)
                     batch = []
             _flush_link(batch)
+    return counts
+
+
+# =============================================================================
+# Source 4 — one-shot local folder ingest
+# =============================================================================
+
+def run_ingest_folder(
+    client, paths: dict, folder: Path, recursive: bool,
+    match: str | None, allowed_types: set[str] | None,
+    limit: int | None, dry_run: bool,
+) -> dict:
+    """
+    One-shot ingest of a local folder (e.g. a resident archive on the
+    Desktop): classify every eligible file and COPY the vault documents
+    into place — originals are never touched. SHA dedup against the
+    catalog makes re-runs harmless, so a big folder can be processed in
+    --limit chunks. `match` keeps only filenames containing the substring
+    (case-insensitive); `allowed_types` restricts what gets filed
+    ("lease,ledger"); subfolder names ride into the classify prompt —
+    they often carry the property.
+    """
+    from rocky import extract_text_from_attachment  # lazy
+
+    counts = {"files": 0, "filed": 0, "needs_review": 0, "duplicates": 0,
+              "unreadable": 0}
+    walk = folder.rglob("*") if recursive else folder.glob("*")
+    candidates = []
+    for f in sorted(walk):
+        if not f.is_file():
+            continue
+        if f.suffix.lower() not in VAULT_EXTENSIONS:
+            continue
+        if match and match.lower() not in f.name.lower():
+            continue
+        candidates.append(f)
+    log.info(f"[vault] ingest-folder: {len(candidates)} eligible file(s) "
+             f"in {folder}{' (recursive)' if recursive else ''}"
+             + (f", name filter {match!r}" if match else "")
+             + (f", types {sorted(allowed_types)}" if allowed_types else ""))
+
+    seen = known_hashes(load_catalog(paths))
+    context = (
+        f"These files come from a local archive folder James asked Rocky "
+        f"to file into The Vault ('{folder.name}'). Filenames often lead "
+        f"with the unit number; subfolder names may name the property. "
+        f"The documents themselves are the best evidence of property and "
+        f"tenant."
+    )
+
+    def _flush(batch: list[dict]) -> bool:
+        return _classify_and_file_batch(
+            client, paths, batch, context, "folder", counts, seen,
+            dry_run, allowed_types=allowed_types)
+
+    batch: list[dict] = []
+    for f in candidates:
+        if limit is not None and counts["files"] >= limit:
+            log.info(f"[vault] ingest-folder: --limit {limit} reached; "
+                     f"re-run to continue (dedup skips what's done)")
+            break
+        try:
+            content = f.read_bytes()
+        except OSError as e:
+            log.warning(f"[vault] ingest-folder: could not read "
+                        f"{f.name!r}: {e} (OneDrive placeholder?)")
+            counts["unreadable"] += 1
+            continue
+        sha256 = hashlib.sha256(content).hexdigest()
+        if sha256 in seen:
+            counts["duplicates"] += 1
+            append_activity(paths, {"event": "duplicate_skipped",
+                                    "source": "folder",
+                                    "original_name": f.name,
+                                    "sha256": sha256})
+            continue
+        counts["files"] += 1
+        rel = str(f.relative_to(folder))
+        text = _doc_text(f.name, "", content)
+        try:
+            mtime = datetime.fromtimestamp(
+                f.stat().st_mtime, tz=timezone.utc).isoformat()
+        except OSError:
+            mtime = None
+        batch.append({
+            "content": content,
+            "sha256": sha256,
+            "file_name": f.name,
+            "prompt_name": rel,
+            "text": text,
+            "pdf_bytes": scan_pdf_excerpt(f.name, content, text),
+            "detail": {"folder": str(folder), "path": rel},
+            "modified": mtime,
+        })
+        if len(batch) >= DROPBOX_CLASSIFY_BATCH:
+            if not _flush(batch):
+                log.warning("[vault] ingest-folder: classification failed "
+                            "— stopping this run; re-run to continue")
+                batch = []
+                break
+            batch = []
+    _flush(batch)
+    if not dry_run:
+        rebuild_index(paths)
+    log.info(f"[vault] ingest-folder {'DRY-RUN ' if dry_run else ''}"
+             f"complete: {counts}")
     return counts
 
 
@@ -2564,9 +2853,10 @@ def run_reclassify_review(client, paths: dict, limit: int | None,
             original = e.get("original_name") or file.name
             detail = e.get("source_detail") or {}
             prompt_name = detail.get("path") or detail.get("subject") or original
-            text = extract_text_from_attachment(original, "", content)
+            text = _doc_text(original, "", content)
             docs.append({"filename": prompt_name, "text": text,
-                         "pdf_bytes": _scan_pdf_excerpt(original, content,
+                         "content": content,
+                         "pdf_bytes": scan_pdf_excerpt(original, content,
                                                         text)})
             inputs.append((idx, e, file, original))
         if not docs:
@@ -2694,6 +2984,22 @@ def run_cli(config: dict, data_dir: Path,
 
     if "--reclassify-review" in sys.argv:
         run_reclassify_review(client, paths, limit, dry_run)
+        return
+
+    if "--ingest-folder" in sys.argv:
+        folder_raw = _argv_value("--ingest-folder")
+        if not folder_raw or not Path(folder_raw).is_dir():
+            print(f"--ingest-folder needs an existing folder "
+                  f"(got {folder_raw!r})")
+            sys.exit(1)
+        types_raw = (_argv_value("--types") or "").strip()
+        allowed = {t.strip() for t in types_raw.split(",") if t.strip()} \
+            or None
+        run_ingest_folder(
+            client, paths, Path(folder_raw),
+            recursive="--recursive" in sys.argv,
+            match=_argv_value("--match"),
+            allowed_types=allowed, limit=limit, dry_run=dry_run)
         return
 
     seen = known_hashes(load_catalog(paths))
