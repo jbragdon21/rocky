@@ -4506,20 +4506,43 @@ def run_ella_digest_cli() -> None:
 
 def run_pending_llt_cli() -> None:
     """CLI entry point for --pending-llt: download LLT + contacts from
-    SharePoint, group by property, create draft emails in James's Drafts."""
+    SharePoint, group by property, create draft emails in James's Drafts.
+
+    With --ripe, drafts the narrower "ripe check-in" email instead — only
+    matters whose ripe date has passed and which have not been filed yet.
+    """
     import pending_llt
 
     dry_run = "--dry-run" in sys.argv
+    ripe_mode = "--ripe" in sys.argv
+    local = "--local" in sys.argv
+
+    def _arg(flag: str) -> str | None:
+        for i, arg in enumerate(sys.argv):
+            if arg == flag and i + 1 < len(sys.argv):
+                return sys.argv[i + 1]
+        return None
 
     # Parse --limit N.
     limit = None
-    for i, arg in enumerate(sys.argv):
-        if arg == "--limit" and i + 1 < len(sys.argv):
-            try:
-                limit = int(sys.argv[i + 1])
-            except ValueError:
-                print(f"Invalid --limit value: {sys.argv[i + 1]}")
-                sys.exit(1)
+    raw_limit = _arg("--limit")
+    if raw_limit is not None:
+        try:
+            limit = int(raw_limit)
+        except ValueError:
+            print(f"Invalid --limit value: {raw_limit}")
+            sys.exit(1)
+
+    # Parse --as-of M/D/YY (ripe mode only; defaults to today).
+    as_of = None
+    raw_as_of = _arg("--as-of")
+    if raw_as_of is not None:
+        as_of = pending_llt.parse_ripe_date(raw_as_of)
+        if as_of is None:
+            print(f"Invalid --as-of value: {raw_as_of} (expected M/D/YY)")
+            sys.exit(1)
+
+    sheet = _arg("--sheet")
 
     config = load_config()
     app = get_msal_app(config)
@@ -4529,6 +4552,51 @@ def run_pending_llt_cli() -> None:
     mode = "DRY RUN" if dry_run else "LIVE"
     if limit:
         mode += f", limit {limit}"
+    if local:
+        mode += ", local files"
+
+    if ripe_mode and "--compare" in sys.argv:
+        # --compare [RUN_ID]; bare --compare uses the most recent recorded run.
+        run_id = _arg("--compare")
+        if run_id and run_id.startswith("--"):
+            run_id = None
+        log.info(f"[pending-llt] Comparing recorded drafts against sent mail "
+                 f"({run_id or 'most recent run'})")
+        summary = pending_llt.compare_ripe_run(token, config, run_id=run_id)
+        if summary.get("error"):
+            log.error(f"[pending-llt] {summary['error']}")
+            sys.exit(1)
+        log.info(f"[pending-llt] Compare done — {summary['sent']}/"
+                 f"{summary['total']} sent, {summary['edited']} edited")
+        return
+
+    if ripe_mode and "--snapshot" in sys.argv:
+        log.info("[pending-llt] Snapshotting ripe drafts already in Drafts")
+        summary = pending_llt.snapshot_ripe_drafts(
+            token, config, as_of=as_of, local=local, sheet=sheet)
+        if summary.get("error"):
+            log.error(f"[pending-llt] {summary['error']}")
+            sys.exit(1)
+        log.info(f"[pending-llt] Snapshot done — {summary['recorded']} recorded, "
+                 f"{len(summary['missing'])} not found")
+        return
+
+    if ripe_mode:
+        log.info(f"[pending-llt] Starting ripe check-in ({mode})")
+        summary = pending_llt.run_pending_llt_ripe(
+            token, config, as_of=as_of, dry_run=dry_run, limit=limit,
+            local=local, sheet=sheet,
+        )
+        if summary.get("error"):
+            log.error(f"[pending-llt] Pipeline error: {summary['error']}")
+            sys.exit(1)
+        log.info(
+            f"[pending-llt] Ripe check-in done — {summary['drafts_created']} drafts, "
+            f"{summary['ripe_unfiled']} ripe matters, "
+            f"{summary['properties_unmatched']} properties unmatched"
+        )
+        return
+
     log.info(f"[pending-llt] Starting ({mode})")
 
     summary = pending_llt.run_pending_llt(token, config, dry_run=dry_run, limit=limit)
