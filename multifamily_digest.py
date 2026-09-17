@@ -6,7 +6,7 @@ Multifamily Digest — one daily email for the multifamily practice
 
 One DRAFT in James's Drafts folder (changed 2026-08-29 — Rocky used to
 email it from rocky@) covering the day across the multifamily
-processes, in four sections (empty sections are omitted):
+processes, in five sections (empty sections are omitted):
 
     CERTIFIED MAIL   — LetterStream activity from the LetterStream
                        process: requests preauth'd, released (with cost
@@ -18,6 +18,11 @@ processes, in four sections (empty sections are omitted):
     THE VAULT        — the day's Vault additions (same content the
                        standalone Vault Digest showed — this digest
                        SUBSUMES it; don't schedule both).
+    LLT SPREADSHEET  — hand edits to PENDING LLT MATTERS on the
+                       Multifamily Housing Teams site, captured hourly
+                       by --llt-watch: new matters, deletions, court
+                       dates, status changes. Template-rendered from
+                       that process's change log — no Claude call.
     REMY             — the day's Remy software-development digest,
                        GENERATED IN-PROCESS right before assembly
                        (2026-08-30: fully subsumed — there is no
@@ -29,8 +34,8 @@ processes, in four sections (empty sections are omitted):
                        awaiting a release YES, mailings in flight,
                        affidavits awaiting approval.
 
-Quiet window (nothing in the first three sections) = no draft at all,
-even if items are pending — the reminder pass nags about those.
+Quiet window (nothing in any section but STILL PENDING) = no draft at
+all, even if items are pending — the reminder pass nags about those.
 
 Delivery model (same as the Maple Digest): the digest is created as a
 DRAFT in James's Drafts folder, pre-addressed to the multifamily group
@@ -259,6 +264,30 @@ def vault_section(config: dict, data_dir: Path, since: datetime) -> str:
         len(filed) + len(review)) + vault.digest_body_html(filed, review)
 
 
+def llt_section(config: dict, data_dir: Path, since: datetime) -> str:
+    """The day's hand edits to PENDING LLT MATTERS, from the hourly
+    --llt-watch record. Rendered from templates in llt_watch — no Claude
+    call, so this section costs nothing."""
+    import llt_watch
+    paths = llt_watch.get_paths(config, data_dir)
+    changes = llt_watch.changes_since(paths, since)
+    items = llt_watch.digest_items(changes)
+    trailer = llt_watch.editor_trailer(changes)
+    if not items:
+        # Someone re-saved the sheet without changing a tracked value:
+        # worth one muted line, not a section header with no content.
+        return (_section("LLT Spreadsheet",
+                         "Hand edits to PENDING LLT MATTERS on the "
+                         "Multifamily Housing Teams site.") + trailer
+                ) if trailer else ""
+    return _section(
+        "LLT Spreadsheet",
+        "Hand edits to PENDING LLT MATTERS on the Multifamily Housing "
+        "Teams site, captured hourly — new matters, deletions, court "
+        "dates, and status changes.",
+        len(items)) + _ul(items) + trailer
+
+
 def generate_remy_digest(config: dict, data_dir: Path,
                          dry_run: bool) -> None:
     """Write today's Remy digest before assembly (fully subsumed
@@ -379,9 +408,12 @@ def _banner(config: dict) -> tuple[str, list[dict]]:
                                   / "multifamily_banner.png")
     if not path.exists():
         return "", []
+    # Half the old 860px masthead. Outlook ignores CSS width on images
+    # often enough that the explicit width/height attributes carry it.
     html = ("<img src='cid:mf_banner' alt=\"Gallagher's Daily Multifamily "
-            "Group Digest\" style='display:block;width:100%;"
-            "max-width:860px;border-radius:6px;margin:0 0 12px 0;'>")
+            "Group Digest\" width='430' height='157' "
+            "style='display:block;width:50%;max-width:430px;height:auto;"
+            "border-radius:6px;margin:0 0 12px 0;'>")
     return html, [{"path": str(path), "name": path.name,
                    "contentId": "mf_banner"}]
 
@@ -400,8 +432,12 @@ def build_digest(config: dict, data_dir: Path,
     mail_html = certified_mail_section(events, state)
     aff_html = affidavits_section(events)
     vault_html = vault_section(config, data_dir, since)
+    llt_html = llt_section(config, data_dir, since)
     remy_html = remy_section(data_dir, since)
-    if not (mail_html or aff_html or vault_html or remy_html):
+    # LLT spreadsheet changes count toward the quiet-window test: a day
+    # whose only activity was Christina working the docket still deserves
+    # the digest, because those edits are what the group needs to see.
+    if not (mail_html or aff_html or vault_html or llt_html or remy_html):
         return None, []
     pending_html = pending_section(state)
 
@@ -417,13 +453,15 @@ def build_digest(config: dict, data_dir: Path,
         "max-width:860px;'>"
         f"{banner_html}{title_html}"
         f"<p style='margin:0 0 10px 0;{_MUTED}font-size:13px;'>"
-        f"Certified mail, affidavits, Vault activity, and Remy "
-        f"development in the last {hours} hours.</p>"
-        f"{mail_html}{aff_html}{vault_html}{remy_html}{pending_html}"
+        f"Certified mail, affidavits, Vault activity, LLT spreadsheet "
+        f"changes, and Remy development in the last {hours} hours.</p>"
+        f"{mail_html}{aff_html}{vault_html}{llt_html}{remy_html}"
+        f"{pending_html}"
         f"<p style='margin:18px 0 0 0;font-size:12px;color:#999;'>"
         f"Rocky — LetterStream ({escape(str(aff_paths['root']))}), "
-        f"The Vault, and the Remy repo digest. This digest replaces the "
-        f"standalone Vault and Remy digest emails.</p>"
+        f"The Vault, the LLT spreadsheet watch, and the Remy repo digest. "
+        f"This digest replaces the standalone Vault and Remy digest "
+        f"emails.</p>"
         "</div>"
     ), banner_att
 
