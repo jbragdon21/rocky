@@ -131,7 +131,15 @@ ROCKY_COMMANDS = [
     {"flag": "vault-inbox",   "label": "Vault James Inbox", "group": "Vault", "dry_run": True, "desc": "Sweep James's inbox for leases, ledgers & affidavits",      "sched_freq": "HOURLY", "sched_interval": 1},
     {"flag": "vault",         "label": "The Vault",       "group": "Vault", "dry_run": True,  "desc": "All Vault sources in one run — manual use; don't schedule beside the split tasks"},
     {"flag": "multifamily-digest", "label": "Multifamily Digest", "group": "Vault", "dry_run": True,  "desc": "Draft the daily digest into James's Drafts to send: certified mail, affidavits, Vault additions, Remy development, and pending items", "sched_time": "17:45", "recommended": True},
-    {"flag": "monitor",       "label": "Monitor",         "group": "Other", "dry_run": False, "desc": "Fast loop — LetterStream + Vault mail sweeps every 10 min (stays running)"},
+    {"flag": "pacer",         "label": "PACER Sync",      "group": "PACER", "dry_run": True,  "desc": "Refresh every watched federal case and file new filings", "sched_time": "07:00", "recommended": True},
+    # --pacer-sweep / --pacer-digest are aliases pacer_monitor.run_cli
+    # understands, the same way --litigation-digest works. Every --pacer*
+    # flag shares one instance lock except --pacer-mail.
+    {"flag": "pacer-sweep",   "label": "PACER Sweep",     "group": "PACER", "dry_run": True,  "desc": "Search the nationwide index for new cases naming a client or tenant", "sched_time": "06:30"},
+    {"flag": "pacer-digest",  "label": "PACER Digest",    "group": "PACER", "dry_run": True,  "desc": "Email the day's new federal filings", "sched_time": "17:15"},
+    # No schedule slot: --pacer-mail runs every cycle of the monitor loop.
+    {"flag": "pacer-mail",    "label": "PACER Requests",  "group": "PACER", "dry_run": True,  "desc": "Answer PACER requests emailed to rocky@ (also runs in the monitor loop)"},
+    {"flag": "monitor",       "label": "Monitor",         "group": "Other", "dry_run": False, "desc": "Fast loop — LetterStream + Vault mail + PACER requests every 10 min (stays running)"},
 ]
 
 _COMMANDS_BY_FLAG = {c["flag"]: c for c in ROCKY_COMMANDS}

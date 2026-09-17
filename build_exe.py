@@ -51,10 +51,17 @@ def build_rocky():
         "--add-data", f"{ROOT / 'mailing_affidavits.py'};.",
         "--add-data", f"{ROOT / 'letterstream.py'};.",
         "--add-data", f"{ROOT / 'multifamily_digest.py'};.",
+        "--add-data", f"{ROOT / 'pacer_monitor.py'};.",
+        "--add-data", f"{ROOT / 'courtlistener.py'};.",
+        "--add-data", f"{ROOT / 'pacer_api.py'};.",
         "--add-data", f"{ROOT / '_templates' / 'affidavit_template.docx'};_templates",
         "--add-data", f"{ROOT / 'Icon'};Icon",
         # Jinja2 is used by pending_llt; ensure PyInstaller bundles it.
         "--hidden-import", "jinja2",
+        # sqlite3 is only imported by pacer_monitor.py, which ships as
+        # --add-data rather than analyzed source — without this the frozen
+        # exe has no _sqlite3 and --pacer --reindex dies at runtime.
+        "--hidden-import", "sqlite3",
         # Clean build each time.
         "--clean",
         str(ROOT / "rocky.py"),

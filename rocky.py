@@ -104,6 +104,23 @@ Rocky — Virtual Paralegal
       and a weekly learn pass folding chat feedback into the brain file.
       See LITIGATION_UPDATER.md.
 
+  python rocky.py --pacer [--sync] [--dry-run] | --sweep | --mail | --digest | --add <court> <docket#> | --fetch <court> <docket#> | --docs <court> <docket#> | --probe <court> <docket#> | --status | --reindex | --auth-test
+      PACER Monitor: federal case watching. Reads the RECAP archive
+      through the CourtListener API (free but hard-throttled — 125 calls
+      a day without a membership), subscribes a free docket alert to
+      every watched case, records new docket entries and files the PDFs
+      RECAP already holds, and buys a fresh docket from PACER through
+      RECAP Fetch when the archive goes stale — all inside a daily spend
+      cap. --sweep runs standing party-name searches against the PACER
+      Case Locator to DISCOVER new federal cases naming a client or a
+      tenant (the bankruptcy tripwire). The database lives on OneDrive in
+      "PACER Monitor Database". See PACER_MONITOR.md.
+
+  python rocky.py --pacer-mail [--dry-run]
+      PACER requests emailed to rocky@ (subject carries "pacer"): watch
+      this case, status, send the docket, send document N. Runs in the
+      --monitor loop so requests are answered within minutes.
+
   python rocky.py --inbox-<user> --snapshot|--analyze|--questionnaire|--chat|--rules-update|--digest|--execute|--status
       Inbox Cleaner: per-user inbox triage at 200k+ scale that becomes a
       permanent, rule-learning maintenance process ("inbox-matt",
@@ -4591,7 +4608,8 @@ def run_pma_activity_cli() -> None:
 # instance lock, cursors, and failure isolation (a crash or API outage in
 # one never stalls the others — the monitor is a scheduler, not a merge).
 # Config monitor_commands overrides without a rebuild.
-MONITOR_DEFAULT_COMMANDS = ["--letterstream", "--vault-mail", "--vault-inbox"]
+MONITOR_DEFAULT_COMMANDS = ["--letterstream", "--vault-mail", "--vault-inbox",
+                            "--pacer-mail"]
 
 
 def _self_command(flag: str) -> list[str]:
@@ -4888,6 +4906,16 @@ def main():
     # Normalize so both spellings share one instance lock.
     if command == "affidavits":
         command = "letterstream"
+    # PACER Monitor: --sync/--sweep/--status subflags may precede --pacer,
+    # and they all share state.json, so they share one lock. --pacer-mail
+    # is deliberately NOT folded in — it runs every monitor cycle off its
+    # own cursor file and must not queue behind a long sync.
+    pacer_flag = next(
+        (a for a in sys.argv[1:] if a.startswith("--pacer")), None
+    )
+    if pacer_flag:
+        command = ("pacer-mail" if pacer_flag == "--pacer-mail"
+                   or "--mail" in sys.argv else "pacer")
     if command:
         lock_fh = acquire_instance_lock(command)  # noqa: F841 — must stay alive
 
@@ -4940,6 +4968,17 @@ def main():
     elif "--letterstream" in sys.argv or "--affidavits" in sys.argv:
         import mailing_affidavits
         mailing_affidavits.run_cli(load_config(), DATA_DIR)
+    elif "--pacer-mail" in sys.argv:
+        import pacer_monitor
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        config = load_config()
+        pacer_monitor.run_mail(
+            config, pacer_monitor.get_paths(config, DATA_DIR),
+            dry_run="--dry-run" in sys.argv)
+    elif pacer_flag:
+        import pacer_monitor
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        pacer_monitor.run_cli(load_config(), DATA_DIR)
     elif lit_flag:
         import litigation_updater
         litigation_updater.run_cli(load_config(), DATA_DIR)
@@ -4981,6 +5020,15 @@ def main():
         print("                 --voice-rebuild | --status")
         print("                                          Litigation Updater: Bozzuto claims Smartsheet — notices, updates,")
         print("                                          closures over the Litigation Updates Teams chat (see LITIGATION_UPDATER.md)")
+        print("  --pacer        [--sync] [--dry-run] [--limit N] [--case <court:number>]  (default action is --sync)")
+        print("                 --sweep [--name <sweep>] | --mail | --digest [--hours N] |")
+        print("                 --add <court> <docket#> [--label \"...\"] | --remove <court> <docket#> |")
+        print("                 --fetch <court> <docket#> [--since YYYY-MM-DD] | --docs <court> <docket#> [--entry N] |")
+        print("                 --probe <court> <docket#> | --status | --reindex | --auth-test")
+        print("                                          PACER Monitor: watch federal dockets through CourtListener/RECAP,")
+        print("                                          discover new cases through the PACER Case Locator, and keep the")
+        print("                                          indexed database on OneDrive (see PACER_MONITOR.md)")
+        print("  --pacer-mail                            PACER requests emailed to rocky@ (runs in the --monitor loop)")
         print("  --inbox-<user> --snapshot|--analyze|--questionnaire|--chat|--rules-update|--digest|--execute|--status")
         print("                                          Inbox Cleaner per-user process (e.g. --inbox-matt);")
         print("                                          users are defined in config inbox_users")

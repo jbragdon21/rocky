@@ -22,6 +22,9 @@ state/
 affidavits/
 vault/
 multifamily/
+# PACER Monitor: holds a live PACER session token (pacer_token_*.json), the
+# CourtListener rate ledger, and the derived SQLite index.
+pacer/
 
 # Logs
 *.log

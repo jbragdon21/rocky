@@ -209,6 +209,65 @@
   "litigation_chat_topic": "Litigation Updates",
   "litigation_observers": [],
   "litigation_backfill_days": 7,
+  "_litigation_scan_comment": "Scanned notices: a PDF with no text layer (a stamped complaint, a faxed demand) has its first litigation_scan_pdf_pages pages attached to the classify/draft calls so Claude reads the pages themselves — the same path the Vault uses, wired in 2026-09-16 after a scanned King County complaint came back as 'text not extractable'. Default 10 (the Vault's 4 is enough to recognize a document; a claims entry needs the allegations). Lower it to trim tokens, raise it if captions and counts routinely run long.",
+  "litigation_scan_pdf_pages": 10,
+
+  "_pacer_monitor_comment": "PACER Monitor (--pacer --sync 7:00 AM, --pacer-sweep 6:30 AM, --pacer-digest 5:15 PM, --pacer-mail every monitor cycle). Watches federal dockets through the CourtListener/RECAP API and discovers new cases through the PACER Case Locator. pacer_monitor_root is the shared database folder; blank derives 'PACER Monitor Database' beside Rocky Cases. Pin it 'Always keep on this device' on the Rocky laptop. Authoritative records are JSONL under _db\\; the SQLite index (C:\\Rocky\\pacer\\index.db) is derived and rebuilt by --reindex. See PACER_MONITOR.md.",
+  "pacer_monitor_root": "C:\\Users\\jbragdon\\OneDrive - gejlaw.com\\PACER Monitor Database",
+
+  "_courtlistener_comment": "Free token from courtlistener.com/profile/api/. THE constraint on this whole feature: Free Law Project cut the default authenticated allowance on 2026-05-07 to 5/min, 50/hour, 125/day, and Rocky self-throttles below whatever is set here rather than earning a 429. A FLP membership or commercial agreement raises the cap — raise courtlistener_rate_limits to match when that happens. pacer_resolve_per_run caps how many not-yet-resolved cases spend a lookup call in one run; everything else refreshes in batches of fifty via id__in.",
+  "courtlistener_token": "PASTE-COURTLISTENER-API-TOKEN-HERE",
+  "courtlistener_rate_limits": {"minute": 5, "hour": 50, "day": 125},
+  "_courtlistener_reserve_comment": "Daily calls held back from the SCHEDULED SYNC so interactive work still has budget in the afternoon: an emailed 'send me the docket', a manual --docs, a --probe. At the free tier's 125/day a reserve of 20 leaves the 7:00 AM sync 105. The sync defers whatever it can't reach and queues those cases first next run (they keep their old last_synced on purpose, so nothing starves). 0 disables the reserve.",
+  "courtlistener_reserve_daily": 20,
+  "pacer_resolve_per_run": 10,
+
+  "_pacer_credentials_comment": "James's PACER production login. Used two ways: RECAP Fetch (CourtListener drives PACER with these to buy a docket or PDF) and the PACER Case Locator sweeps. PACER forces a password change every 180 days — when a sweep starts failing on 'PACER login refused', that's usually why. pacer_environment 'qa' points at qa-login/qa-pcl with a separate QA account and free test data. pacer_client_code tags billing transactions to a client and is REQUIRED if the account is set to require one (searches fail without it).",
+  "pacer_username": "PASTE-PACER-USERNAME-HERE",
+  "pacer_password": "PASTE-PACER-PASSWORD-HERE",
+  "pacer_client_code": "",
+  "_pacer_mfa_comment": "PACER made MFA mandatory for CM/ECF-level accounts through 2025, and 'PACER login refused: Invalid username, password, or one-time passcode' means the account has it on. The auth API takes an otpCode field; the codes are ordinary TOTP (6 digits, 30-second window). Paste the BASE32 SECRET KEY that PACER shows beside the QR code in Manage My Account -> multifactor authentication, and Rocky generates each code herself (RFC 6238 on the standard library, no new dependency). An authenticator app holding the same secret keeps working — a TOTP seed can live in as many places as you like. SECURITY: storing this beside the password puts both factors on one machine, which is the ordinary trade for unattended access; the file is local-only and gitignored, and a dedicated PACER login for automation is the cleaner option if you want the factors kept apart. TOTP depends on an accurate clock, so a machine with drifting time fails with 'invalid passcode'.",
+  "pacer_otp_secret": "",
+  "_pacer_redact_comment": "REQUIRED for any PACER account with e-filing privileges — such an account cannot authenticate at all without it, and the failure text is the redaction rule quoted in full. Sending it certifies that the filer complies with Fed. R. App. P. 25(a)(5), Fed. R. Civ. P. 5.2, Fed. R. Crim. P. 49.1, and Fed. R. Bankr. P. 9037 (redact Social Security and taxpayer ID numbers, dates of birth, names of minor children, financial account numbers, and in criminal cases home addresses, in all documents including attachments) — the same attestation CM/ECF collects at every interactive login. Left false on purpose: turning it on is the account holder's act, not Rocky's. Note that PACER Monitor only ever SEARCHES and downloads; nothing here files anything.",
+  "pacer_redact_flag": false,
+  "pacer_environment": "production",
+
+  "_pacer_spend_comment": "Money controls. pacer_purchase_enabled false = free RECAP reads only, no billable calls at all. Everything billable draws down pacer_daily_spend_cap: PCL searches report their real fee in the receipt; docket/PDF purchases are recorded at PACER's $3.00 per-document ceiling because the API never reports the actual charge, so the ledger over-states rather than under-states. Every transaction lands in _db\\spend.jsonl. pacer_fetch_stale_days = how long RECAP can show no movement on an active case before Rocky buys a fresh docket report.",
+  "pacer_purchase_enabled": true,
+  "pacer_daily_spend_cap": 10.00,
+  "pacer_fetch_stale_days": 3,
+  "pacer_backfill_days": 30,
+  "pacer_download_documents": true,
+
+  "_pacer_sweeps_comment": "Standing party-name searches against the nationwide index — the thing RECAP cannot do. For a landlord-tenant practice this is mostly a bankruptcy tripwire: a tenant filing Chapter 7 or 13 stays the eviction, and PCL sees the filing the day it happens. Each sweep: name (label), party_last_name (also matches entity names), optional party_first_name, jurisdiction_type (ap|bk|cr|cv|mdl), courts (PACER court ids like vaeb/dcb/mdb), bankruptcy_chapters, date_filed_days (rolling window), max_pages (MONEY CONTROL — each page of 54 results is billed), interval_days, auto_watch (add hits to the watchlist automatically), enabled. Sweeps that aren't due are skipped; --sweep --name <sweep> forces one.",
+  "pacer_sweep_interval_days": 7,
+  "pacer_sweeps": [
+    {
+      "name": "bozzuto-entities",
+      "party_last_name": "Bozzuto",
+      "date_filed_days": 30,
+      "max_pages": 2,
+      "auto_watch": false,
+      "client": "Bozzuto Management Company",
+      "enabled": false
+    },
+    {
+      "name": "tenant-bankruptcies-dmv",
+      "party_last_name": "PASTE-TENANT-OR-ENTITY-NAME",
+      "jurisdiction_type": "bk",
+      "courts": ["vaeb", "dcb", "mdb"],
+      "date_filed_days": 30,
+      "max_pages": 1,
+      "auto_watch": true,
+      "enabled": false
+    }
+  ],
+
+  "_pacer_mail_comment": "The team's front door. --pacer-mail scans pacer_mailbox (default rocky_email) for subjects carrying pacer_mail_subject_keyword and answers: watch this case, status, send the docket, send document N. Replies go out guarded (internal addresses only, Level 0 holds — Rocky never sends from James's account). pacer_case_index_seed false stops Rocky reading federal dockets out of Rocky Case Index.xlsx; the index has no docket columns today, so add 'PACER Court' and 'Docket Number' to it and federal matters enroll themselves.",
+  "pacer_mailbox": "rocky@gallagherllp.com",
+  "pacer_mail_subject_keyword": "pacer",
+  "pacer_case_index_seed": true,
+  "pacer_digest_recipients": ["jbragdon@gallagherllp.com"],
 
   "_inbox_cleaner_comment":"Inbox Cleaner (--inbox-<key>, e.g. --inbox-matt). Per-user inbox triage that becomes a permanent rule-learning maintenance process. Each key under inbox_users is a process name suffix (inbox-matt, inbox-paul, ...). mailbox must be covered by the Application Access Policy (IT adds it — see INBOX_CLEANER.md). chat_upn defaults to mailbox. Tunables: age_floor_days (case + internal cohorts; newsletters have none), big_cluster_min (thread size before it's 'a big case'), newsletter_min_count / newsletter_max_read_rate (bulk-sender heuristics). inbox_cleaner_dir = the human-facing share folder (rules.md, cohorts, activity + communications logs, review workbook); standard location is 'Rocky Inboxes' under OneDrive Program Files\\Rocky (already pinned/synced on the laptop; set the machine's own profile path). Blank = fallback to a 'Rocky Inboxes' folder beside Rocky Cases. Snapshot/moves logs stay LOCAL under C:\\Rocky\\inbox_cleaner\\<key>.",
   "inbox_cleaner_dir": "C:\\Users\\jbragdon\\OneDrive - gejlaw.com\\Program Files\\Rocky\\Rocky Inboxes",
