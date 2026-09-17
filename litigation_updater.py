@@ -12,6 +12,8 @@ proposes every change over a Teams chat called "Litigation Updates",
 and only writes to the Smartsheet after James says YES.
 
     python rocky.py --litigation --poll [--dry-run] [--backfill-days N]
+        (--backfill-days re-reads that window even if the cursor already
+         passed it — the recovery path for mail a too-narrow rule missed)
         The main cycle (schedule a few times a day, or hourly):
           1. Scan rocky@'s inbox since the cursor for litigation mail:
              - anything from legalnotices@bozzuto.com (or a forward of
@@ -19,8 +21,11 @@ and only writes to the Smartsheet after James says YES.
                to identify the document (complaint, demand letter,
                suggestion of bankruptcy, garnishment, ...), and Rocky
                proposes a new claims entry over Teams.
-             - forwards saying "add to the claims/litigation smartsheet"
-               — same proposal path.
+             - forwards saying "please add to spreadsheet" — same
+               proposal path. In the forwarding note "add" plus a sheet
+               word (or "add this claim") is enough; deeper in the
+               quoted chain the fuller "add to the claims/litigation
+               smartsheet" is required. See detect_intent.
              - forwards saying "move the <X> claim to Closed claims" —
                Rocky correlates the chain with an open-sheet row, drafts
                a closure note (in the closure voice), and proposes the
@@ -115,6 +120,7 @@ Local state (cursors, chat id, pending asks): C:\\Rocky\\litigation\\state.json
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
@@ -138,6 +144,10 @@ LIT_EXTENSIONS = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".xlsm", ".csv",
 
 # Text caps for Claude prompts.
 DOC_TEXT_CAP = 6000
+# Pages of a text-free (scanned) PDF attached to the prompt. Higher than
+# the Vault's 4 because a claims entry needs the allegations, not just
+# the caption page. Override: config litigation_scan_pdf_pages.
+SCAN_PDF_PAGES = 10
 BODY_TEXT_CAP = 3000
 ROW_LIST_CAP = 400          # max open rows listed in a correlation prompt
 VOICE_SAMPLE_CAP = 40       # sample entries per voice
@@ -151,7 +161,7 @@ VOICE_NAMES = ("updates", "summary", "closure", "disclosure")
 # Below this correlation confidence Rocky asks which claim instead of guessing.
 CORRELATE_FLOOR = 0.7
 
-_DEFAULT_CASES_ROOT = r"C:\Users\jbragdon\OneDrive\OneDrive - gejlaw.com\Rocky Cases"
+_DEFAULT_CASES_ROOT = r"C:\Users\jbragdon\OneDrive - gejlaw.com\Rocky Cases"
 
 # Document types the notice classifier knows. "other" carries a label.
 NOTICE_DOC_TYPES = [
@@ -743,12 +753,18 @@ def rows_for_entity(config: dict, sheet: dict, entity: dict) -> list[dict]:
 # Claude helpers
 # =============================================================================
 
-def _claude_text(client, prompt: str, max_tokens: int = 3000) -> str | None:
+def _claude_text(client, prompt: str, max_tokens: int = 3000,
+                 attachments: list[dict] | None = None) -> str | None:
+    """`attachments` are document content blocks (scanned pages — see
+    _scan_blocks) appended after the prompt."""
+    content: list[dict] | str = prompt
+    if attachments:
+        content = [{"type": "text", "text": prompt}, *attachments]
     for attempt in (1, 2):
         try:
             response = client.messages.create(
                 model=CLAUDE_MODEL, max_tokens=max_tokens,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[{"role": "user", "content": content}],
             )
             if getattr(response, "stop_reason", None) == "max_tokens":
                 log.warning(f"[litigation] Claude response hit the "
@@ -775,8 +791,9 @@ def _extract_json(text: str):
     raise ValueError("no JSON in response")
 
 
-def _claude_json(client, prompt: str, max_tokens: int = 3000):
-    text = _claude_text(client, prompt, max_tokens)
+def _claude_json(client, prompt: str, max_tokens: int = 3000,
+                 attachments: list[dict] | None = None):
+    text = _claude_text(client, prompt, max_tokens, attachments)
     if text is None:
         return None
     try:
@@ -818,21 +835,67 @@ def _rows_compact(sheet: dict, name_col: str, extra_cols: list[str],
     return "\n".join(lines)
 
 
+def _doc_blocks(docs: list[dict]) -> str:
+    """The text of each document, or a pointer to its attached pages when
+    it's a scan. Every prompt that shows Claude the documents uses this,
+    so a scanned complaint reads the same everywhere."""
+    blocks = []
+    for d in docs:
+        text = (d.get("text") or "").strip()
+        if text:
+            body = text[:DOC_TEXT_CAP]
+        elif d.get("pdf_bytes"):
+            body = "(scanned document — its pages are attached below)"
+        else:
+            body = "(no text could be extracted)"
+        blocks.append(f"--- Document: {d['filename']} ---\n{body}")
+    return "\n\n".join(blocks)
+
+
+def _scan_blocks(docs: list[dict]) -> list[dict]:
+    """Document content blocks for the scans in `docs` — the pages
+    themselves, so Claude reads a scanned complaint instead of reporting
+    that no text could be extracted (which is what it did until
+    2026-09-16: this path existed only in the Vault)."""
+    blocks: list[dict] = []
+    for d in docs:
+        pdf = d.get("pdf_bytes")
+        if not pdf:
+            continue
+        blocks.append({"type": "text",
+                       "text": f"Scanned document: {d['filename']}"})
+        blocks.append({
+            "type": "document",
+            "source": {"type": "base64", "media_type": "application/pdf",
+                       "data": base64.standard_b64encode(pdf).decode("ascii")},
+        })
+    return blocks
+
+
+_SCAN_NOTE = (
+    "\nSome documents are scans with no machine-readable text — their "
+    "first pages are attached as PDFs after this message, each preceded "
+    "by its filename. Read the scans themselves: the caption page of a "
+    "complaint carries the court, case number, and the parties, which is "
+    "most of what the sheet needs.\n"
+)
+
+
+def _scan_note(docs: list[dict]) -> str:
+    return _SCAN_NOTE if any(d.get("pdf_bytes") for d in docs) else ""
+
+
 def classify_notice(client, config: dict, paths: dict, docs: list[dict],
                     email_ctx: str) -> dict | None:
     """Identify the incoming legal document(s) and recommend whether a new
     claims entry is warranted. Returns None on Claude failure (callers hold
     the mail cursor)."""
-    blocks = []
-    for d in docs:
-        text = (d.get("text") or "").strip()
-        blocks.append(f"--- Document: {d['filename']} ---\n"
-                      f"{text[:DOC_TEXT_CAP] or '(no text could be extracted)'}")
     prompt = (
         _preamble(config, paths)
-        + f"A new legal notice arrived:\n{email_ctx}\n\n"
-        + ("\n\n".join(blocks) if blocks else "(no attachments — the notice "
-                                              "is in the email body itself)")
+        + f"A new legal notice arrived:\n{email_ctx}\n"
+        + _scan_note(docs) + "\n"
+        + (_doc_blocks(docs) or "(no attachments — the notice "
+                                "is in the email body itself)")
         + "\n\nReturn ONLY a JSON object:\n"
           '  "doc_type": one of ' + json.dumps(NOTICE_DOC_TYPES) + "\n"
           '  "doc_label": short human label, e.g. "Complaint (unlawful '
@@ -854,7 +917,7 @@ def classify_notice(client, config: dict, paths: dict, docs: list[dict],
           '  "recommend_reason": one sentence\n'
           '  "confidence": 0.0-1.0'
     )
-    result = _claude_json(client, prompt)
+    result = _claude_json(client, prompt, attachments=_scan_blocks(docs))
     return result if isinstance(result, dict) else None
 
 
@@ -865,8 +928,6 @@ def draft_entry(client, config: dict, paths: dict, open_sheet: dict,
     columns = sheet_column_titles(open_sheet)
     # A few recent rows teach the house style for each column.
     samples = [row_to_dict(open_sheet, r) for r in open_sheet.get("rows", [])[-5:]]
-    blocks = [f"--- Document: {d['filename']} ---\n"
-              f"{(d.get('text') or '')[:DOC_TEXT_CAP]}" for d in docs]
     voice = load_voice(paths, "updates")
     svoice = load_voice(paths, "summary")
     dvoice = load_voice(paths, "disclosure")
@@ -888,15 +949,21 @@ def draft_entry(client, config: dict, paths: dict, open_sheet: dict,
           f"James approved creating a new claims entry for this notice "
           f"(identified as: {classification.get('doc_label')}; "
           f"{classification.get('summary')}).\n\n"
-          f"Source email:\n{email_ctx}\n\n" + "\n\n".join(blocks)
+          f"Source email:\n{email_ctx}\n"
+        + _scan_note(docs) + "\n" + _doc_blocks(docs)
         + (("\n\nJames gave these instructions for this entry — follow "
             "them:\n- " + "\n- ".join(instructions)) if instructions else "")
         + "\n\nDraft the new row. Return ONLY a JSON object mapping column "
           "titles (exactly as given) to values. Match the existing entries' "
           "conventions for dates, abbreviations, and phrasing. Leave out "
-          "any column you have no information for — do NOT guess facts."
+          "any column you have no information for — do NOT guess facts. "
+          "Narrative cells are audit summaries, not case files — keep "
+          f"{summary_col!r} to one short paragraph and {disclosure_col!r} "
+          "to 3-5 sentences; never re-narrate a complaint's allegations "
+          "chronologically (the document itself is filed in the vault)."
     )
-    result = _claude_json(client, prompt, max_tokens=2000)
+    result = _claude_json(client, prompt, max_tokens=2000,
+                          attachments=_scan_blocks(docs))
     return result if isinstance(result, dict) else None
 
 
@@ -938,21 +1005,21 @@ def correlate_claim(client, config: dict, paths: dict, sheets: list[dict],
 def draft_closure_note(client, config: dict, paths: dict, row_dict: dict,
                        email_ctx: str, docs: list[dict]) -> str | None:
     voice = load_voice(paths, "closure")
-    blocks = [f"--- Document: {d['filename']} ---\n"
-              f"{(d.get('text') or '')[:DOC_TEXT_CAP]}" for d in docs]
     prompt = (
         _preamble(config, paths)
         + (f"Closure-note voice guide:\n{voice}\n\n" if voice else "")
         + f"This claim is being moved to the Closed claims sheet.\n\n"
           f"Current sheet entry:\n{json.dumps(row_dict, indent=1)[:3000]}\n\n"
           f"The email chain James forwarded with the closure instruction:\n"
-          f"{email_ctx}\n\n" + "\n\n".join(blocks)
+          f"{email_ctx}\n"
+        + _scan_note(docs) + "\n" + _doc_blocks(docs)
         + "\n\nDraft the closure note for the closed-claims sheet: how the "
           "matter resolved (settled/dismissed/judgment/withdrawn), material "
           "terms if any, and the effective date. Match the voice guide. "
           "Return ONLY the note text — no preamble, no JSON."
     )
-    text = _claude_text(client, prompt, max_tokens=800)
+    text = _claude_text(client, prompt, max_tokens=800,
+                        attachments=_scan_blocks(docs))
     return text.strip() if text else None
 
 
@@ -965,8 +1032,6 @@ def draft_update(client, config: dict, paths: dict, open_sheet: dict,
     if update_cols is None:
         update_cols = config.get("litigation_update_columns") or []
     columns = sheet_column_titles(open_sheet)
-    blocks = [f"--- Document: {d['filename']} ---\n"
-              f"{(d.get('text') or '')[:DOC_TEXT_CAP]}" for d in docs]
     prompt = (
         _preamble(config, paths)
         + (f"Voice guide for sheet updates:\n{voice}\n\n" if voice else "")
@@ -975,7 +1040,8 @@ def draft_update(client, config: dict, paths: dict, open_sheet: dict,
            if update_cols else "")
         + f"\nCurrent entry:\n{json.dumps(row_dict, indent=1)[:3000]}\n\n"
           f"James forwarded this chain with an instruction to update the "
-          f"entry:\n{email_ctx}\n\n" + "\n\n".join(blocks)
+          f"entry:\n{email_ctx}\n"
+        + _scan_note(docs) + "\n" + _doc_blocks(docs)
         + "\n\nReturn ONLY a JSON object mapping column titles to their NEW "
           "full values (rewrite the whole cell — Smartsheet cells are "
           "replaced, not appended). When adding to a running-update column, "
@@ -983,7 +1049,8 @@ def draft_update(client, config: dict, paths: dict, open_sheet: dict,
           "style, most recent first if that is the sheet's convention. "
           "Only include columns that should change."
     )
-    result = _claude_json(client, prompt, max_tokens=2000)
+    result = _claude_json(client, prompt, max_tokens=2000,
+                          attachments=_scan_blocks(docs))
     return result if isinstance(result, dict) else None
 
 
@@ -1117,6 +1184,24 @@ _UPDATE_RE = re.compile(
     r"\bupdate\b.{0,60}?\b(?:claims?|litigation)\b.{0,30}?"
     r"\b(?:smartsheet|spread\s*sheet|sheet)\b", re.I | re.S)
 
+# The patterns above scan the WHOLE forwarded chain, so they have to name
+# claims/litigation to keep a quoted "add to the spreadsheet" from firing.
+# Nobody types that much. In the forwarding NOTE — the lines the sender
+# actually typed, see vault.forwarding_note — "please add to spreadsheet"
+# is unambiguous, so the sheet word alone is enough there.
+# (Added 2026-09-16: real forwards saying exactly that were silently
+# dropped from 2026-08-31 on. Same lesson the Vault learned 2026-08-23.)
+_NOTE_SHEET = r"(?:smart\s*sheet|spread\s*sheet|sheet|tracker)"
+# "add" alone is enough with a sheet word OR a claim word ("please add
+# this claim"); "update" needs the sheet word, because "update me on the
+# claim" is a question, not an instruction to write a row.
+_NOTE_ADD_RE = re.compile(
+    rf"\badd\b.{{0,40}}?\b(?:{_NOTE_SHEET}|claims?|litigation)\b", re.I | re.S)
+_NOTE_UPDATE_RE = re.compile(
+    rf"\bupdate\b.{{0,40}}?\b{_NOTE_SHEET}\b", re.I | re.S)
+_NOTE_CLOSE_RE = re.compile(
+    r"\b(?:move|transfer)\b.{0,60}?\bclosed\b", re.I | re.S)
+
 
 def _message_text(msg: dict) -> str:
     body = (msg.get("body") or {}).get("content") or msg.get("bodyPreview") or ""
@@ -1138,6 +1223,8 @@ def _email_context(msg: dict) -> str:
 
 def detect_intent(msg: dict, notice_senders: set[str]) -> tuple[str | None, str | None]:
     """(intent, claim_hint). Intents: notice | add | closure | update."""
+    from vault import forwarding_note  # lazy — shared note extractor
+
     if _sender_address(msg) in notice_senders:
         return "notice", None
     text = f"{msg.get('subject') or ''}\n{_message_text(msg)[:4000]}"
@@ -1145,9 +1232,26 @@ def detect_intent(msg: dict, notice_senders: set[str]) -> tuple[str | None, str 
     # the From is James (auto-forward/redirect either way).
     if any(s in text.lower() for s in notice_senders):
         return "notice", None
-    if _CLOSE_RE.search(text):
-        m = _CLOSE_NAME_RE.search(text)
+    # What the sender TYPED decides, with the loose patterns; only if the
+    # note asks for nothing does the whole forwarded chain get read with
+    # the strict ones. Note-first matters for precedence as much as for
+    # detection: "please update the spreadsheet" on top of a chain that
+    # happens to quote "add to the claims spreadsheet" is an update.
+    note = f"{msg.get('subject') or ''}\n{forwarding_note(msg)}"
+
+    def _closure(where: str) -> tuple[str, str | None]:
+        m = _CLOSE_NAME_RE.search(where) or _CLOSE_NAME_RE.search(text)
         return "closure", (m.group(1).strip() if m else None)
+
+    if _NOTE_CLOSE_RE.search(note):
+        return _closure(note)
+    if _NOTE_ADD_RE.search(note):
+        return "add", None
+    if _NOTE_UPDATE_RE.search(note):
+        return "update", None
+
+    if _CLOSE_RE.search(text):
+        return _closure(text)
     if _ADD_RE.search(text):
         return "add", None
     if _UPDATE_RE.search(text):
@@ -1171,12 +1275,26 @@ def _eligible_attachments(token: str, mailbox: str, msg: dict) -> list[dict]:
     return keep
 
 
-def _docs_from_attachments(attachments: list[dict]) -> list[dict]:
+def _docs_from_attachments(attachments: list[dict],
+                           config: dict | None = None) -> list[dict]:
+    """Text per attachment, plus — for a PDF with no text layer — the
+    first pages as bytes to attach to the prompt. Legal notices arrive
+    scanned constantly (a clerk's stamped complaint, a faxed demand), and
+    pypdf returns nothing for those."""
     from rocky import extract_text_from_attachment  # lazy
-    return [{"filename": a["name"],
-             "text": extract_text_from_attachment(
-                 a["name"], a.get("contentType") or "", a["contentBytes"])}
-            for a in attachments]
+    from vault import scan_pdf_excerpt  # lazy — shared scan path
+
+    pages = int((config or {}).get("litigation_scan_pdf_pages")
+                or SCAN_PDF_PAGES)
+    docs = []
+    for a in attachments:
+        content = a.get("contentBytes")
+        text = extract_text_from_attachment(
+            a["name"], a.get("contentType") or "", content)
+        docs.append({"filename": a["name"], "text": text,
+                     "pdf_bytes": scan_pdf_excerpt(a["name"], content, text,
+                                                   pages=pages)})
+    return docs
 
 
 def _next_ask_id(state: dict) -> str:
@@ -1204,9 +1322,17 @@ def _msg_ref(msg: dict, mailbox: str) -> dict:
 
 def intake_pass(client, graph_token: str, ss_token: str | None, config: dict,
                 paths: dict, state: dict, backfill_days: int,
-                dry_run: bool) -> dict:
+                dry_run: bool, force_window: bool = False) -> dict:
     """Scan rocky@'s inbox for litigation mail and queue Teams asks.
-    Claude failures hold the cursor (nothing is silently lost)."""
+    Claude failures hold the cursor (nothing is silently lost).
+
+    `force_window` re-reads the last `backfill_days` days even though the
+    cursor has already passed them — what someone typing --backfill-days
+    by hand means, and the only way to recover mail that was scanned
+    while a detection rule was too narrow to see it. Re-queuing is the
+    risk, not lost mail; an ask still needs a YES before anything is
+    written, so a duplicate proposal costs a NO in the chat.
+    """
     from vault import fetch_inbox_messages  # shared paged fetcher
 
     mailbox = (config.get("litigation_mailbox")
@@ -1215,7 +1341,7 @@ def intake_pass(client, graph_token: str, ss_token: str | None, config: dict,
                       (config.get("litigation_notice_senders")
                        or ["legalnotices@bozzuto.com"])}
 
-    cursor = state.get("mail_cursor")
+    cursor = None if force_window else state.get("mail_cursor")
     if cursor:
         try:
             since = datetime.fromisoformat(cursor.replace("Z", "+00:00"))
@@ -1238,14 +1364,23 @@ def intake_pass(client, graph_token: str, ss_token: str | None, config: dict,
             sheets_loaded[0] = True
         return sheets_cache
 
+    ignored_logged = 0
     for msg in messages:
         intent, hint = detect_intent(msg, notice_senders)
         if intent is None:
+            # Say WHY mail was passed over, so "I forwarded that claim,
+            # where is it?" is answerable from rocky.log (capped to stay
+            # sane on a wide backfill). Same reason the Vault logs it.
+            if ignored_logged < 10:
+                log.info(f"[litigation] no litigation intent — ignored: "
+                         f"{(msg.get('subject') or '')[:80]!r} "
+                         f"(from {_sender_address(msg) or '?'})")
+                ignored_logged += 1
             state["mail_cursor"] = msg.get("receivedDateTime") or state.get("mail_cursor")
             continue
 
         attachments = _eligible_attachments(graph_token, mailbox, msg)
-        docs = _docs_from_attachments(attachments)
+        docs = _docs_from_attachments(attachments, config)
         ctx = _email_context(msg)
         log_event(paths, "mail_intake", intent=intent,
                   subject=msg.get("subject"), sender=_sender_address(msg),
@@ -1458,7 +1593,7 @@ def execute_ask(client, ss_token: str | None, config: dict, paths: dict,
     if kind == "new_entry":
         open_sheet = get_sheet(ss_token, spec["sheet_id"])
         attachments = _refetch_attachments(config, ask)
-        docs = _docs_from_attachments(attachments)
+        docs = _docs_from_attachments(attachments, config)
         ref = ask.get("msg") or {}
         ctx = (f"From: {ref.get('from')}\nSubject: {ref.get('subject')}\n"
                f"Received: {ref.get('received')}")
@@ -1579,7 +1714,7 @@ def resolve_identify(client, ss_token: str | None, config: dict, paths: dict,
     claim = row_dict.get(claim_column_title(entry, open_sheet), claim_text)
 
     attachments = _refetch_attachments(config, ask)
-    docs = _docs_from_attachments(attachments)
+    docs = _docs_from_attachments(attachments, config)
     if ask.get("intent") == "closure":
         note = draft_closure_note(client, config, paths, row_dict,
                                   ctx, docs)
@@ -2139,7 +2274,10 @@ def _build_voice(client, config: dict, paths: dict, name: str, what: str,
           f"let a paralegal produce new ones indistinguishable from these: "
           f"tone, tense, person, typical length, date and citation formats, "
           f"abbreviations, what is always/never included, and 2-3 verbatim "
-          f"exemplars. Markdown, under 500 words.\n\n"
+          f"exemplars. Markdown, under 500 words. Where the standing "
+          f"instructions above set length or content rules, the style guide "
+          f"must adopt them — even if some samples below run longer "
+          f"(over-long samples are legacy entries, not the target voice).\n\n"
         + "\n---\n".join(samples)
         + (f"\n\nGold-standard exemplar documents (these show the target "
            f"voice best — weight them above the sheet samples):\n"
@@ -2610,7 +2748,7 @@ def run_learn(config: dict, paths: dict, days: int) -> dict:
 # =============================================================================
 
 def run_poll(config: dict, paths: dict, backfill_days: int,
-             dry_run: bool) -> dict:
+             dry_run: bool, force_window: bool = False) -> dict:
     from anthropic import Anthropic  # lazy
     from rocky import acquire_app_token  # lazy
 
@@ -2621,7 +2759,7 @@ def run_poll(config: dict, paths: dict, backfill_days: int,
 
     graph_token = acquire_app_token(config)
     counts = intake_pass(client, graph_token, ss_token, config, paths, state,
-                         backfill_days, dry_run)
+                         backfill_days, dry_run, force_window=force_window)
     save_state(paths, state)
     log.info(f"[litigation] intake: {counts}")
 
@@ -2747,7 +2885,11 @@ def _dispatch(config: dict, paths: dict, dry_run: bool) -> None:
             chat_cycle(config, paths, dry_run)
         return
 
-    # Default (and --poll): the full cycle.
-    backfill_days = int(_argv_value("--backfill-days")
+    # Default (and --poll): the full cycle. An explicit --backfill-days
+    # re-reads that window even though the cursor has passed it (the
+    # config default never does — a scheduled run must stay incremental).
+    explicit_backfill = _argv_value("--backfill-days")
+    backfill_days = int(explicit_backfill
                         or config.get("litigation_backfill_days") or 7)
-    run_poll(config, paths, backfill_days, dry_run)
+    run_poll(config, paths, backfill_days, dry_run,
+             force_window=bool(explicit_backfill))

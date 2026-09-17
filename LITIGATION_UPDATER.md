@@ -47,8 +47,15 @@ lock (they share `state.json`).
    garnishment, subpoena, ...) and Rocky proposes a new claims entry
    over Teams, applying the brain's standing rules ("garnishment
    notices never get entries") when recommending.
-2. **"Add to the claims/litigation smartsheet"** forwards — same
-   proposal path.
+2. **"Please add to spreadsheet"** forwards — same proposal path. The
+   ask can be as short as that: in the **forwarding note** (the lines
+   you actually typed, above the quoted `From:` header) "add" plus a
+   sheet word — spreadsheet, smartsheet, sheet, tracker — or "add this
+   claim" is enough. Deeper in the forwarded chain the phrasing has to
+   be the fuller **"add to the claims/litigation smartsheet"**, so that
+   someone else's quoted "I added it to the spreadsheet" can't fire an
+   entry. (Widened 2026-09-16 — the note was previously held to the
+   strict phrasing and real forwards were dropped.)
 3. **"Move the *X* claim to Closed claims"** forwards — Rocky
    correlates the chain with an open-sheet row (Claude-assisted; below
    0.7 confidence she asks *which claim?* in chat), drafts a **closure
@@ -61,8 +68,35 @@ lock (they share `state.json`).
    exact new cell values; YES applies exactly those).
 
 Unrelated rocky@ mail is ignored (the intent match requires the notice
-sender or claims/smartsheet language). A Claude/API failure **holds the
-mail cursor** so nothing is lost — the same mail is retried next run.
+sender or claims/smartsheet language) — and each ignored message is
+logged to `rocky.log` with its subject and sender, capped at 10 a run,
+so "I forwarded that claim, where is it?" is answerable without
+guessing. A Claude/API failure **holds the mail cursor** so nothing is
+lost — the same mail is retried next run.
+
+**One live ask at a time.** A proposal sits in the chat until it gets a
+YES or NO; everything detected after it waits in the queue. So an
+unanswered ask from weeks ago silently stalls every new claim behind it
+— `--litigation --status` prints the pending one.
+
+### Scanned attachments
+
+Court paper arrives scanned constantly — a clerk-stamped complaint, a
+faxed demand — and `pypdf` returns nothing at all for an image-only PDF.
+Every prompt that shows Claude the documents (classify, draft entry,
+closure note, update) therefore **attaches the pages themselves** when a
+PDF has no text layer, using the Vault's `scan_pdf_excerpt`. Text PDFs
+are never attached: the text path is cheaper and just as good.
+
+First `litigation_scan_pdf_pages` pages, default **10** — higher than the
+Vault's 4, because the Vault only has to recognize a document while a
+claims entry needs the allegations, not just the caption page. A PDF
+`pypdf` cannot open is left off the call entirely rather than risk a 400
+on the whole request; that shows up in the log as "unreadable as PDF."
+
+Wired 2026-09-16. Before that the litigation calls were text-only, so a
+scanned complaint classified as "text not extractable" with the parties,
+entity, and allegations all unknown.
 
 **After a YES executes** (entry added / row updated / claim closed), the
 source mail is moved out of rocky@'s inbox into the **"Litigation
