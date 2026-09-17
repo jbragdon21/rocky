@@ -24,6 +24,1350 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-09-16 — Litigation intake: the phrase, and the scan
+
+James forwarded claims to rocky@ with "please add to spreadsheet" on top
+and nothing reached the Smartsheet. Not a Smartsheet, auth, or schedule
+problem: `--litigation --poll` has run every ~10 minutes all along
+(2,318 `run_started` events in `_litigation\activity.jsonl`), but the
+last `mail_intake` of any kind was **2026-08-31**.
+
+**Cause — the add trigger never matched the phrase people actually use.**
+`_ADD_RE` required "claims" or "litigation" to sit *between* "add" and
+the sheet word: "add to the claims spreadsheet" matched, "please add to
+spreadsheet" did not. Nor did "please add to smartsheet". Every intake
+that ever succeeded got in on the **notice** path instead (the forwarded
+chain quoted legalnotices@bozzuto.com), which is why this looked like it
+worked for a month — forwards of anything else were invisible.
+
+**Fix — match the typed note loosely, the quoted chain strictly.** Same
+shape as the Vault's 2026-08-23 fix, and now literally the same code:
+`vault._is_vault_submission`'s note extractor is factored out as
+`vault.forwarding_note(message)` and `detect_intent` imports it. In the
+note, "add" + spreadsheet/smartsheet/sheet/tracker — or "add this
+claim" — is enough; "update" requires the sheet word ("update me on the
+Smith claim" is a question); "move ... closed" covers closures. The
+strict whole-chain patterns stay as the fallback so a quoted "I already
+added it to the spreadsheet" still can't fire an entry. **The note wins
+on precedence**, not just detection: a typed "update the spreadsheet"
+over a chain quoting "add to the claims spreadsheet" is an update.
+12 checks in scratchpad `test_intent.py`, 5 in `test_vault_note.py`.
+
+**Two related gaps closed the same way the Vault closed them**
+
+- **Ignored mail is now logged** (subject + sender, 10/run) — "I
+  forwarded that claim, where is it?" was unanswerable from any log,
+  which is the only reason this went a fortnight unnoticed.
+- **`--backfill-days` was dead.** The cursor took precedence, so the
+  documented recovery flag re-read nothing. An *explicit*
+  `--backfill-days N` now overrides the cursor (`force_window`); the
+  config default still never does, so scheduled runs stay incremental.
+  This is how the missed forwards get picked up — the cursor has long
+  since passed them.
+
+**Watch-out: one live ask at a time, and the queue is stalled.** A
+proposal sits in the Teams chat until it gets a YES or NO, and
+`chat_cycle` proposes nothing new while one is outstanding
+(litigation_updater.py:2093). The log shows 72 proposed / 71 decided —
+**L0072, an `identify` ask from 2026-08-31, is still pending**, so even
+correctly-detected claims would have queued behind it silently. Answer
+or decline it (`--litigation --status` prints it) before expecting new
+proposals. A queue that can stall indefinitely with no visible symptom
+is worth a deliberate fix: nothing surfaces "you have an ask from three
+weeks ago."
+
+**Then L0074 came in and couldn't read its own PDF** — "Complaint
+(scanned image, text not extractable)", parties/entity/allegations all
+unknown on a King County complaint. Cause: `classify_notice`,
+`draft_entry`, `draft_closure_note`, and `draft_update` were **text
+only**. `rocky.extract_text_from_attachment` → `_extract_pdf` is
+`pypdf` page text, which returns nothing for an image-only PDF. The
+Vault grew a scanned-page path on 2026-08-29/09-03; the Litigation
+Updater never got it, which is how a scanned complaint — the *normal*
+case for court paper — ended up as the one document class Rocky
+structurally could not read.
+
+- `vault._scan_pdf_excerpt` is now public `vault.scan_pdf_excerpt(...,
+  pages=None)`; litigation imports it. One scan path, not two.
+- `_claude_text`/`_claude_json` take `attachments` (content blocks);
+  new `_doc_blocks` / `_scan_blocks` / `_scan_note` replace the four
+  copy-pasted doc-block builders, so all four prompts read a scan the
+  same way.
+- **10 pages for litigation, still 4 for the Vault**
+  (`litigation_scan_pdf_pages`). The Vault only has to recognize a
+  document; a claims entry needs the allegations. Text PDFs are still
+  never attached, and a PDF pypdf can't open is still left off the call
+  rather than 400 the whole request.
+- 5 checks in scratchpad `test_scan.py` / `test_scan2.py`: scan →
+  excerpt attached at the cap, real text PDF → not attached and no scan
+  note, unopenable PDF → not attached, config override honored.
+
+**Also still text-only, and worth a later look:** litigation extracts
+with `rocky.extract_text_from_attachment` while the Vault uses
+`vault._doc_text`, which prepends *filled PDF form field values*.
+Fillable court forms (DC/VA) e-sign into fields that the page text
+doesn't carry — the Vault hit exactly this on 2026-09-03 with form
+leases. Sharing `_doc_text` is the same one-line-import fix.
+
+**Open:** rebuild and deploy (`python build_exe.py`) — not done this
+session; the Rocky laptop is still running the old .exe. Then answer
+L0072, and re-propose L0074 so it reads the scan (`--litigation --poll
+--backfill-days 21` re-queues the forward).
+
+---
+
+## Session 2026-09-13 — MF Case Brain Stage 0 started (observe only)
+
+James set the first step: have the brain gather from the sources, "dry
+run" its analysis and the changes it *would* make, and send him a daily
+email of thoughts and questions with a fill-in block whose answers come
+back for learning — explicitly modelled on how the Maple updater started
+with suggested changes.
+
+**The reframe worth keeping.** Phase 1 as designed had James grading
+every divergence, which costs him time per line. His version lets the
+brain **grade itself**: record an *expectation* with a resolution
+horizon ("this ripe matter gets filed inside two weeks") and the world
+answers it, with nobody doing anything. James's typed answers are then
+reserved for what data can never settle — identity and judgment. Stage 0
+therefore records three things, not one: observations, predictions, and
+questions.
+
+**Built this session — `mf_brain.py` + `rocky.py --mf-brain`**
+
+- `--scan [--dry-run] [--local]`, `--status`. Writes ONLY to its own
+  ledger under `<mf_tracker_root>\Case Brain\`. No spreadsheet edits, no
+  mail moves, no folder changes.
+- Case registry (`cases.jsonl`, append-only, **last line wins per
+  MF-#####** so amending a case preserves what the brain used to
+  believe), observations idempotent by `obs_id` = sha1(source | key |
+  kind | value | as_of) so a re-scan is a no-op.
+- Scored identity resolver (`resolve()`): folder_map 1.0 →
+  property+unit+surname 0.97 → property+surname 0.88 → property+unit
+  0.80 → surname+unit 0.62 → surname 0.40, floor 0.75. Reuses
+  `pending_llt._property_signature()` rather than writing a fourth
+  matcher.
+- `classify_matter_type()` — foreign branch wins first (insured/monitored
+  belongs to `litigation_updater`), then text patterns, then sheet
+  presence.
+- Adapter (a) full-sheet read and adapter (d) folder walk.
+
+**First live scan (dry run) — it works, and it exposed a real modeling
+error**
+
+```
+1,026 sheet matters, 2,945 folders ->
+cases 0 -> 1,682  (+854 sheet, +828 folders)
+2,720 observations, 569 folders need review
+822 eviction · 583 other · 156 insured_litigation · 29 incident ·
+23 demand · 20 habitability · 16 agency_complaint · 15 discrimination ·
+13 lease_exit · 5 bankruptcy
+```
+
+- **KNOWN INCOMPLETE: the model needs two levels.** 1,026 sheet rows
+  collapsed to 854 cases because 106 residents carry two concurrent
+  matters at one unit. A *case* is a resident-at-a-unit (which is what
+  the folder tree models — one folder per resident); the sheet is finer
+  grained. The collapse is right for identity and wrong downstream:
+  those two matters have separate stages and ripe dates and resolve
+  independently, so "archive as resolved" must act on one of them, not
+  the resident. Fix is matter **lines** under a case, with line identity
+  carried across scans by `llt_watch._pair_rows`-style similarity
+  pairing. Recorded as a limitation in the module docstring; no
+  projection should be trusted to collapse a case's stages until it
+  lands.
+- 569 folders sit below the confidence floor (surname matches, property
+  does not) and are parked in `_Needs Review\unresolved_folders.json`.
+  That queue is not a defect — it is the alias-learning material the
+  daily questions should chew through, highest-impact first.
+- 828 folders matched no surname at all and were registered as
+  folder-only cases. Consistent with the 940 measured earlier.
+
+**Then James said "build it all" — Stage 0 is now complete**
+
+- **Matter lines** (the two-level model), **predictions with
+  auto-scoring**, **adapter (c)** (James's inbox), and the **daily
+  email** with answer boxes. New: `mf_digest.py`. Scheduled as
+  `--mf-brain --digest` at 7:00 AM; `--mf-brain-scan` is the manual
+  no-email variant. **Schedule only one** — `--digest` runs the scan
+  itself.
+
+**First full live run**
+
+```
+cases 0 -> 2,270 ; lines 0 -> 1,026 (1,026 changed, 0 closed)
+2,750 observations ; 479 mail across 26 folders ; 820 predictions
+11 folders need review
+1,048 other · 870 eviction · 231 insured_litigation · 36 incident ·
+29 habitability · 25 agency_complaint · 12 discrimination · 8 demand ·
+7 bankruptcy · 4 lease_exit
+```
+
+**Three bugs the live data caught — each only visible by running it**
+
+1. **Surname-only identity.** `case_signature` keyed on surname while
+   `llt_watch` keys on the full name, so roommates and a parent with an
+   adult child merged: 986 lines from 1,026 matters, and lines
+   *closing* on a first scan when nothing existed to close. Fixed with
+   a first initial that **vetoes** a surname match when both sides have
+   one — separates John from Jane, still tolerates the folder's
+   "Jasmin" from the sheet's "Jasmine". Never use the full given name:
+   the two sources disagree on spelling constantly.
+2. **Single-pass line pairing.** Two resident groups can legitimately
+   resolve to one case (the resolver is deliberately looser than
+   llt_watch's grouping), and processing them independently made the
+   second group pair against the first's lines and close them. Fixed by
+   collecting rows per case first, pairing once per case.
+3. **A review queue full of coincidences.** Any surname hit (0.40) went
+   to review, so the first digest asked James whether "Adams, Deborah"
+   was "Adams, Durrel" and whether "Chase, Ashley" was "Chase, Andrew".
+   In a 2,000-resident population a bare surname match is noise, not
+   ambiguity. Raising the bar to property+unit or name+unit took the
+   queue **568 → 212 → 11**.
+
+**With the queue clean, the questions became real** — "Classic / Modern
+on M" vs "Modern on M"; "70 Cap Yards" vs "70 Capitol Yards"; two
+Bridge District folders matching sheet rows at Alula and Stratos, which
+is exactly what the Pending LLT notes already say about that leasing
+office.
+
+**Other fixes**
+
+- `%-m` / `%-I` strftime flags are glibc-only and **raise on Windows**.
+  Bit twice this session; there is now a `fmt_date()` helper. The Rocky
+  laptop is Windows — never use them.
+- The thoughts section inferred "a Saturday in late July" from the
+  sheet's revision-tab name. Today's date and a note that the tab name
+  is *not* today are now passed explicitly, along with a glossary so
+  Claude stops calling cases "matters".
+- **The answer parser is stricter than `inbox_cleaner`'s.** That one
+  un-quotes a ">" line and keeps it, which absorbs a quoted question
+  sitting between two boxes into the previous answer. This one drops
+  quoted lines outright and stops at the first blank line after
+  content. Tested against both reply shapes (plain-text with ">", and
+  HTML after tag-stripping) plus multi-line answers and empty boxes.
+
+**Design notes worth keeping**
+
+- **Predictions can come out `moot`** — the matter resolved for a reason
+  the prediction was not about. Moot is excluded from the accuracy rate
+  rather than counted as a win. That rate is what earns write access, so
+  it has to stay honest.
+- **One Graph query for the whole mailbox**, not 1,564 per-folder polls:
+  messages carry `parentFolderId`, so grouping is free and folders with
+  no new mail cost nothing. 479 messages → 26 Claude calls.
+- The ledger was cleared and rebuilt twice during the session, which is
+  the right move on day one — it is append-only, and a ledger built on
+  a known-wrong signature is worse than no ledger.
+
+**Still open**
+
+- Source (b), the task lists, needs delegated `Notes.Read`.
+- Deploy: `python build_exe.py`, then on the Rocky laptop set
+  `mf_tracker_root` and add the 7:00 AM task.
+- Nothing has been emailed yet — every digest run so far was
+  `--dry-run`.
+
+---
+
+## Session 2026-09-12 — LLT Watch (hourly spreadsheet change tracking)
+
+**What changed**
+
+- **`llt_watch.py`** (new) + **`rocky.py --llt-watch`** — hourly change
+  tracking on `PENDING LLT MATTERS.XLSX`, the same Teams-site sheet
+  `--pending-llt` drafts from. Stats the file's `driveItem` first and
+  skips the download on a `cTag` match; otherwise reads every column and
+  diffs against a snapshot. Records to `llt_changes.jsonl` + a readable
+  `Daily Changes\YYYY-MM-DD.md` under `Program Files\Rocky\LLT Watch\`.
+- **`multifamily_digest.py`** — new **LLT Spreadsheet** section
+  (`llt_section`), fifth in the digest, and it counts toward the
+  quiet-window test.
+- **`dashboard.py`** — LLT Watch registry entry, HOURLY, in the
+  recommended schedule.
+- **`config.example.json`** — `llt_watch_root`, `llt_watch_hours`,
+  `llt_watch_ignore_columns`. **`build_exe.py`** — bundles the module.
+- **`LLT_WATCH.md`** (new) — the operational guide.
+
+**Decisions made**
+
+- **Zero Claude tokens, by design.** James's ask was explicitly "if it is
+  not too token heavy." A spreadsheet diff is arithmetic, so the whole
+  process is deterministic and the digest bullets are template-rendered.
+  The only per-run cost is one Graph metadata GET, plus a 1.3 MB download
+  on the hours somebody actually edited the sheet.
+- **The section goes in the Multifamily Digest**, not the Bozzuto
+  litigation digest and not the Phase D case digest — James picked it.
+  The LLT sheet is a multifamily artifact and Christina, who maintains
+  it, is already on that draft's recipient list.
+- **A row key maps to a LIST of rows.** First cut keyed on
+  property+tenant+unit and assumed uniqueness; the live sheet has 106
+  residents with a SECOND pending matter at the same unit (a rent case
+  and a smoking case). Rows are now paired within a resident by cell
+  agreement, and those change lines name the matter in brackets.
+- **Never key on the matter type.** It lives in the Status cell, which is
+  also the progress field (`Rent` → `Rent sent` → `Rent sent
+  (re-issue/not properly served)`), so keying on it reports every status
+  update as a deletion plus a new entry. `pending_llt._classify_matter`
+  is unusable for the same reason from the other direction: it
+  reclassifies to `court` once a hearing appears, which is exactly a
+  change we want reported.
+- **The 8 AM–7 PM window is enforced in code, not in the trigger.**
+  `schtasks` needs `/du` to express a workday-only hourly trigger and
+  `dashboard.create_task` deliberately keeps its schtasks surface small.
+  The task runs hourly around the clock; off-hours runs exit before any
+  network call, so they're free.
+- **`snapshot.json` lives on the share, not `C:\Rocky`.** It IS the dedup
+  key for the change log — a local snapshot on two machines means both
+  report the same edit. Same reasoning as PACER's shared spend ledger.
+  Atomic writes; a sync conflict degrades to a re-baseline.
+- **Two refusals.** An unparseable or wrong-version snapshot re-baselines
+  instead of diffing against nothing (otherwise ~1,030 phantom "new
+  entry" lines bury the real changes); a parse yielding zero matters is
+  treated as a parse failure, not a cleared docket.
+- **Renames are paired.** `Nicols, Christa` → `Nichols, Christa` reads as
+  one re-entry, not a deletion plus an addition — deletions here usually
+  mean a matter resolved, so they can't be diluted with typo noise.
+
+**Watch-outs**
+
+- **The first run only baselines.** No changes, no digest section; the
+  second run is the first real diff. Not created yet — the first
+  scheduled run on the Rocky laptop does it.
+- **66 of the sheet's 77 columns are unnamed empty spacers.** Dropped
+  from the snapshot (459 KB instead of several MB). Named columns are
+  kept even when empty. An unnamed column that later gains a value is
+  reported by its spreadsheet letter ("column AS added: ...").
+- **Column A is unlabeled and carries the client**, written once above
+  its block of rows. Diffed as an ordinary column, one inserted row
+  reads as "column A cleared" on one matter and "column A added" on
+  another — so it's replaced by a synthetic `Client` column on every row.
+- **The workbook's 33 dated revision sheets are NOT in chronological
+  order** (`sheetnames[-1]` is `1.30.23`). Production always reads the
+  *active* sheet. A `sheet_rollover` record explains a rollover day's
+  larger diff so a future session doesn't read it as data loss.
+- `changes_since` now coerces a naive timestamp to UTC. It raised
+  `TypeError` on one, which would have taken the whole Multifamily
+  Digest down over a single log line.
+
+**Verified**
+
+- Synthetic sheet reproducing the real layout (unlabeled client column A,
+  spacer columns, free-text ripe dates, a two-matter resident): court
+  date added, deletion, new entry, typo fix, and a status edit on one of
+  a resident's two matters all classify correctly; no-op hour yields zero
+  events; window gate, atomic snapshot write, corrupt/wrong-version
+  re-baseline, and the JSONL round-trip all pass.
+- Real data: diffed two actual revision sheets (278 → 282 matters) —
+  62 added, 58 removed, 114 modified, 3 renamed, and the renames were
+  genuine typo fixes.
+- Live SharePoint path end to end (`--llt-watch --force --dry-run`):
+  1,027 matters, 11 real columns, `lastModifiedBy` resolved to a real
+  person ("Mia R. Kobylski", 9/11 7:24 PM), nothing written.
+- `--multifamily-digest --dry-run` assembles around the new section, and
+  the section renders from a populated log and stays empty from a quiet
+  one.
+
+**Open items**
+
+- Not yet deployed: needs `python build_exe.py` and, on the Rocky laptop,
+  `llt_watch_root` pointed at that machine's mount of the share plus the
+  hourly Task Scheduler entry (dashboard → LLT Watch, or the recommended
+  schedule).
+- A `touched` record (file re-saved, no tracked value changed) is logged
+  but never rendered as a bullet — only as the section's muted "Sheet
+  edited by ..." trailer. Revisit if that trailer proves noisy.
+
+---
+
+## Session 2026-09-12 (2) — Surveyed all 31 revision tabs; style guide
+
+James asked how this data is stored across the old tabs, what the process
+steps actually are, and for a short style guide for entries. The workbook
+is its own three-year corpus, so the answers are empirical rather than
+assumed.
+
+**What was done**
+
+- Mined all 31 dated tabs of `PENDING LLT MATTERS.XLSX` (2023-01-30 →
+  2026-07-25, 16,317 row-observations) for the Status and Next Steps
+  vocabulary, then traced **Status transitions between consecutive
+  revisions** (1,633 observed moves) to recover the lifecycle from the
+  data instead of guessing it. Reused `llt_watch.snapshot_rows` and
+  `_pair_rows`, which is what made the tracing possible at all.
+- **`LLT_SHEET_STYLE_GUIDE.md`** (new) — the deliverable. One fact per
+  column, the eight stages with the variants to retire, the Next Steps
+  grammar, and date / time / case-number conventions. Every recommended
+  form is the dominant form already in use; nothing was invented.
+
+**What the corpus says**
+
+- **The docket nearly quadrupled**: 282 matters (Jan 2023) → 1,060 (Jul
+  2026). Four column layouts; the VAWA trio was added 2024-02-11, and
+  four headers were renamed `/` → `.` between 11.8.25 and 4.25.26.
+- **Eight stages**, recovered from the transition counts: intake (bare
+  case type) → notice drafted → notice sent → *reissue loop* → filed
+  (FTPR / BOL / THO / UD / WID) → judgment → writ / eviction →
+  collection. The reissue loop was the surprise: `Term letter sent
+  (Rent)` cycles back to a drafted-reissue state 20+ times, so stage
+  order is not monotonic and no code should assume it is.
+- **Writ and eviction live in Next Steps, not Status** (`WRIT FILED`,
+  `WRIT ISSUED`, `EVICTION: <date>`, `EVICTED ON <date>`). Status stops
+  at judgment.
+- **Case-number format is the jurisdiction tell**: `26-7159` DC L&T,
+  `-LTB-` / `-SCB-` / `-CAB-` DC branches, `GV26######-##` Virginia GDC,
+  `D-##-CV-##-######` Maryland District. 3,922 of the short DC form.
+- **Status is 1,761 distinct values for ~40 real states**; 583 appear
+  exactly once, and 163 stages have multiple spellings (`Non-renewal
+  sent` has seven across 1,251 rows, including `Non-Renreal sent` ×32).
+  160 Status cells carry a whole sentence.
+- **Next Steps is disciplined where it counts**: 379 of 382 current
+  court-date lines carry a case number, and 565 of 574 populated ripe
+  dates are in house `M.D.YY` form. The drift is concentrated in Status.
+- **The two columns bleed**: 224 Next Steps entries open with a status
+  word (`Lawsuit Filed.`, `Judgment awarded.`, `Notice Issued.`).
+
+**Watch-outs for future work**
+
+- **`9.4.6` and `12.31` in Ripe Date on the current tab are unreadable**
+  by `parse_ripe_date`, so those two matters are invisible to
+  `--pending-llt --ripe`. Flagged to James, not edited — the sheet is the
+  team's.
+- **Status variant churn will show up in the LLT Watch digest** as real
+  changes (`Non-renewal sent → Non-Renewal sent`). Expected, and the
+  argument for the style guide rather than for code that silently folds
+  case. Do NOT normalize Status inside `llt_watch` — the record of
+  account should say what the sheet says.
+- **Tab names are NOT in workbook order.** `sheetnames[-1]` is `1.30.23`,
+  the oldest. Anything iterating revisions must parse the `M.D.YY` name
+  into a date and sort. Two undated tabs (`Sheet1`, `Sheet2`) carry no
+  matters.
+- `pending_llt._classify_matter` pattern-matches this column to route the
+  rent / breach / recert sections of the manager emails, so vocabulary
+  drift degrades those drafts too.
+
+**Offered, not built**
+
+- Excel data validation on Status (dropdown from the stage × type list),
+  which would stop the variant problem at the source.
+- A digest line flagging entries whose Status is off-vocabulary.
+
+**The Teams "Notes" tab — located, partially blocked (same session)**
+
+James asked whether Rocky can also reach the Notes tab holding the team's
+task-list history. Answer: it is found, and the useful read is gated.
+
+- **What it is:** a OneNote notebook, not a spreadsheet tab —
+  `SiteAssets\Multifamily Housing Notebook\General.one` on the same
+  MultifamilyHousing site. **282 "Task List" pages** plus 5 "Week of"
+  pages, oldest seen 3/17. Each page is one table: *Property | Resident
+  (Unit) | C/M | Project | Lead | Priority/Notes*, e.g. "Flats 130 |
+  Angelo Lomax | 6104-1439 | Issue banning notice on 9/4 once approved |
+  Mia | Not yet approved as of 9/4".
+- **What Rocky CAN read today** on the existing `Sites.Read.All`: page
+  titles plus a ~180-character text summary per page from the **Search
+  API** (`POST /search/query`, entityTypes driveItem, queryString
+  `"Task List" path:"https://gejlaw.sharepoint.com/sites/MultifamilyHousing"`).
+  Enough to enumerate pages and glimpse the first row. Also the raw
+  `General.one` — but it is **162 MB** and `.one` is an undocumented
+  binary format with no maintained Python parser, so that path is a dead
+  end, not a fallback.
+- **What is BLOCKED:** the OneNote REST API, which is the only sane way
+  in because `/onenote/pages/{id}/content` returns clean HTML tables.
+  All three forms return **HTTP 401 code 40001** ("does not contain a
+  valid authentication token" — the OneNote service's response to a token
+  with no Notes scope): `/sites/{id}/onenote/notebooks`,
+  `/me/onenote/notebooks`, `/sites/{id}/onenote/pages`.
+- **The gate:** add delegated **`Notes.Read`** (or `Notes.Read.All` for
+  other users' notebooks) to the Azure app registration, plus IT consent.
+  Nothing in Rocky's code needs to change first — this is purely a
+  permission, and per the house rule permissions follow validated
+  capability, so it should be requested when there is code that needs it.
+- Also 403: `/groups` (no `Group.Read.All`), so Teams channel/tab
+  enumeration is unavailable. Did not matter — the notebook was found
+  through the site's Site Assets library instead.
+- **Why it is worth wiring up:** the two sources are complementary. The
+  LLT sheet tracks a matter's *stage*; the task lists track *who owes
+  what this week* (`Lead`, `Project`, `Priority/Notes`). A ripe matter
+  with no task-list entry is an actionable gap neither source shows on
+  its own. (The C/M column looked like the join key here; the next
+  session's recon proved it is not — see below.)
+
+---
+
+## Session 2026-09-12 (3) — MF Case Brain designed
+
+James: "we need a somewhat elastic brain that can track the status of
+individual landlord tenant cases in various sources" — the LLT sheet, the
+task list, a to-be-built inbox monitor, and a to-be-built folder→case
+association. Design only this session; **no code written**. Full design
+in **`MF_CASE_BRAIN.md`**, summary paragraph in `BUILD_REFERENCE.md`.
+
+**Recon done first, against live data**
+
+- **There is no join key, and this is the finding the design turns on.**
+  `Client.Matter` is populated on **6 of 1,060 rows (1%)** of the LLT
+  sheet. The task list uses C/M consistently, so it looked like a spine;
+  from the spreadsheet side it does not exist. Identity must be scored,
+  which is what makes James's word "elastic" the right instinct rather
+  than a vague one.
+- Fallback key **Property+Unit: 910 distinct across 1,060 matters**, 116
+  colliding (the same two-matters-per-resident case `llt_watch` already
+  handles).
+- **James's mailbox has 2,962 folders** (depth ≤ 4): 582 containers
+  (leading `_`, nesting client → jurisdiction → property, e.g.
+  `__Bozzuto Management \ __DC \ __5333`), **1,564 matter-shaped
+  (`Last, First`) holding 27,592 emails**, 799 topic/commercial. 624 of
+  the matter folders surname-match a live matter, 160 of those also have
+  an ancestor naming the property, 940 match no open matter (the
+  closed-matter archive).
+- **Inbox root holds only 50 items** against 27,592 in matter folders, so
+  Outlook rules already file nearly everything: reading mapped folders
+  alone is close to complete coverage, and a whole-inbox sweep is not
+  needed.
+- **A folder name's parenthetical is not reliably the unit.**
+  `Negron, Damon (5333)` is the property (unit is 704);
+  `Pachter, Wendy (5333 - RA request)` is property + issue;
+  `Robinson, Johniece (HAP issues 518)` is issue + unit. Parse as any of
+  unit/property/issue and score.
+
+**Decisions made**
+
+- **Divergence detection first, merged system of record second — and the
+  gate between them is the accuracy record.** James's reasoning, and it
+  reframed the design: Phase 2 is for Rocky to *write* to the sheet and
+  task list and take administrative work, which is only valuable once the
+  brain demonstrably understands the cases. So every Phase 1 divergence
+  carries an ID and gets a disposition (right / wrong / already handled),
+  and that log is the evidence that earns write access. Same shape as the
+  Pending LLT draft-vs-sent loop; same house rule that permissions follow
+  validated capability.
+- **Case IDs are `MF-#####`**, a new series. Deliberately not RRID: an
+  RRID means a Phase D case folder with a `case.json`, and the ~1,060
+  open LLT matters are not that.
+- **Observations are idempotent by `obs_id`** (hash of source + source
+  key + fact). This removes the cursor-location question that
+  `llt_watch` had to reason about — a re-read cursor cannot double-write,
+  so cursors can live anywhere.
+- **Current state is a projection over a case's observations**, never an
+  overwrite, so a wrong source-precedence rule is a one-line fix instead
+  of a data migration.
+- **Reuse `pending_llt`'s matcher**, don't write a fourth one:
+  `_property_signature()`, `CONTACT_ALIASES`, `NON_BOZZUTO_PORTFOLIOS`
+  already carry the scars from this exact problem. Confidence floor 0.75
+  and a `_needs_review\` pen, matching the Vault.
+- **Adapter (c) is `--daily-cases` retargeted**, not new machinery: one
+  Claude call per folder with new mail per day, never per email.
+- **Christina's mailbox is a config block plus one IT step** (Application
+  Access Policy), the `inbox_cleaner` onboarding pattern. Architect for
+  several mailboxes from the first commit.
+
+**Watch-out for whoever builds it**
+
+- **The value is the lag between sources.** An email arrives days before
+  the spreadsheet catches up, and that gap is the entire product. Any
+  future move to "reconcile" the sources into one clean number destroys
+  the signal the brain exists to find. Rules 3, 6 and 7 need no inbox at
+  all, so the first divergence report can ship before (c) exists.
+
+**Open**
+
+- James has not said to start building. Step 1 of the build order
+  (ledger + resolver + adapters (a) and (d)) is the reviewable unit.
+
+**Design corrected same session — the sheet is NOT the case population**
+
+James: "there are resident issues in my inbox that will not make it to
+the LLT task sheet or spreadsheet. For example, a noneviction resident
+legal dispute might get an email folder but never be on the eviction task
+list or spreadsheet." He was right, and the scale is large.
+
+- **Measured:** of 1,564 matter folders, **391 are live** (mail in 90
+  days) and **201 of those are absent from the LLT sheet**. Roughly half
+  the active resident work is invisible to the spreadsheet. The earlier
+  draft called the 940 non-matching folders "the closed-matter archive" —
+  that was an assumption, and wrong.
+- **The folder tree spans four systems of record.** Of the 201:
+  **37** are under `__Bozzuto Insured/Monitored Litigation` (owned by
+  `litigation_updater`'s Smartsheet, several of them federal cases
+  `pacer_monitor` watches — `Hettinger, Laura` carries 1,691 messages on
+  `1:23-cv-…`), and **164 have NO system of record anywhere**. 137 of
+  the 164 sit under `__Bozzuto Management`, the same client whose
+  evictions DO reach the sheet.
+- **The 164 sort into:** DC OHR and DC OAG agency complaints, demand
+  letters from tenant counsel, lease-exit / release-from-lease
+  negotiations, discrimination and harassment claims, habitability and
+  bed bugs, safety incidents, data breach, resident bankruptcy.
+- **Design changes:** case population is the **union of sources**, not
+  the sheet; every case carries a **`matter_type`** and every divergence
+  rule is gated on it; rule 6 was rewritten (it previously meant "folder
+  with no sheet entry," which would have fired on all 201 every run — it
+  now means "unknown to the brain," an intake queue that drains); new
+  rule 8 (an *eviction*-typed matter with a live folder and no sheet row
+  — the narrow version of the original intent) and rule 9 (a non-eviction
+  matter with no system of record going quiet, which no current process
+  can detect).
+- **Boundary rule:** the brain must recognize the insured/monitored and
+  federal folders and record that they belong elsewhere, rather than
+  tracking them twice.
+
+**Folder naming — measured, standard proposed**
+
+James asked whether Rocky could make his folder names uniform.
+
+- **The core convention is already uniform:** 1,563 of 1,564 matter
+  folders use `Last, First` with a comma and one space. Do not touch it.
+- **The damage is at the edges:** **123 trailing spaces** (invisible,
+  and they break every exact match — `__Allegro  ` carries two), 37
+  unbalanced parens (`Evans, Paris (`), 16 trailing punctuation, 12
+  double spaces, container prefixes split `_`×52 / `__`×517 / `___`×9 /
+  `_____`×2 / `______`×2, unit placement split 263 in parens vs 28 bare.
+- **Standard:** `__<Name>` for containers, `Last, First (unit — issue)`
+  for matters. Unit in parens (parens already win 263:28). The
+  parenthetical today is NOT reliably the unit — `Negron, Damon (5333)`
+  is the property — and fixing that is the single change that would most
+  improve (d)'s match rate.
+- **Safety, and why renaming is tractable:** a Graph mail folder's `id`
+  does not change when `displayName` does, so `folder_map.json` keyed on
+  `id` survives a rename. Verified on the Rocky side that nothing depends
+  on James's *matter* folder names: `--daily-cases` uses folder IDs from
+  the case index, and the name-based `resolve_folder_path()`
+  (`rocky.py:414`) only serves Rocky's own operational folders in
+  rocky@'s mailbox. Outlook client rules bind by entry ID and should
+  survive, but **confirm that on one folder before any bulk run.**
+- **Proposed `--mf-brain --rename`:** propose to `rename_plan.md`, never
+  act; tiered approval (the 135 mechanical whitespace fixes as one batch,
+  anything changing a word one-at-a-time over Teams with a YES); log
+  id + old + new to `folder_renames.jsonl` so the run is reversible by
+  replay; rename only, never delete or move.
+- Rocky already has `Mail.ReadWrite` on James's mailbox, so no new
+  permission is needed — which is exactly why the gate matters.
+
+**EXECUTED same session — stripped `__` from 205 Bozzuto property folders**
+
+James: "remove the `__` prefix from the MD, DC, and VA Bozzuto Management
+folders … (the ones inside them)". The prefix existed to sort property
+folders above individual matter folders; those three levels are now all
+property, so it had no job left.
+
+- **205 folders renamed, 0 failures**: `__Bozzuto Management\__DC` 72,
+  `\__Maryland` 69, `\__Virginia` 64. The three *jurisdiction* folders
+  themselves were left alone (his clarification: the ones inside).
+- **The dry run confirmed his premise**: 0 of the 205 children lacked the
+  prefix, and 0 name collisions. Those levels really are all property.
+- **Canary first.** Renamed one folder (`__100 Capitol Yards`), then
+  re-fetched it **by its original id**: HTTP 200, displayName changed,
+  8 messages and 7 subfolders intact. **A Graph mail folder's `id` is
+  stable across a `displayName` change** — now verified, not assumed,
+  which is what makes an id-keyed `folder_map.json` safe and what makes
+  every rename reversible. Only then did the remaining 204 run.
+- **Undo log lives on the share**, not in session temp:
+  `Program Files\Rocky\Multifamily Tracker and Dashboard\Folder
+  Operations\folder_renames.jsonl` (205 lines,
+  written BEFORE each rename) plus a `README.md` giving the exact PATCH
+  to reverse any run. Renames are independent, so they reverse in any
+  order. Nothing was deleted or moved; no message changed folders.
+- **Deliberately NOT done:** 11 of the 205 also carry a trailing space
+  (`Allegro `, `Press House `, `Core `, `The Barrett `, `The Lindley `,
+  `The Vine `, `Winthrop `, `Halstead Square `, `Nouvelle `,
+  `The Kingsley `, `The View `). Only the prefix was stripped, because
+  that is what was asked — the whitespace tier is a separate approval
+  per the standard in `MF_CASE_BRAIN.md`.
+- Could not read server-side inbox rules (HTTP 403 — the delegated grant
+  covers mail, not `messageRules`). It does not matter: rules store a
+  folder **id**, and the canary proved ids survive.
+- Post-state: 17,720 messages in those property folders, 1,494 matter
+  subfolders beneath them.
+- Executed with a scratch script, not committed code. When
+  `--mf-brain --rename` gets built it should absorb this exact flow:
+  dry-run plan → collision check → canary → log-before → `$batch` PATCH
+  in 20s → re-read verification.
+
+**The actual goal surfaced: a staff dashboard (same session)**
+
+James: the reason for consolidating all of this is an intranet page
+several staff use *in lieu of* the shared spreadsheets — 5–6 panels
+(LL/T calendar, task list, LL/T matters sortable by property and ripe
+date, new matters), **editable**, with edits flowing back to the
+spreadsheets. His example: a client emails "resolved", a user clicks the
+matter, picks archive-as-resolved, the row leaves the active sheet in
+Teams, and Rocky flattens the matter's email subfolder into the property
+folder. "Backed up by the big brain."
+
+- **New: `MF_DASHBOARD_IT_BRIEFING.md`** — James asked for the hosting
+  and auth options in enough detail to review with IT. Covers Azure App
+  Service + Entra SSO, Rocky-laptop + Tailscale, SharePoint + Power
+  Apps, and a staged path; plus the Graph permissions, costs, and five
+  questions for IT.
+- **Hard constraint found: the staff page CANNOT be part of
+  `dashboard.py`.** That app binds `0.0.0.0:5001` with **no
+  authentication**, and `/api/run` executes Rocky commands behind only a
+  command allowlist — safe today solely because Tailscale is the
+  perimeter. Any staff access must be a separate app, and a Tailscale
+  ACL must fence port 5001 off on day one.
+- **Ask IT for `Sites.Selected`, not `Sites.ReadWrite.All`** — write
+  access to named sites only (just MultifamilyHousing). Least privilege,
+  and the version IT is likely to approve.
+- **Spreadsheet writes must use the Graph Excel API** (workbook session
+  + range endpoints), never download-edit-upload, which would destroy a
+  colleague's concurrent Excel Online edits and strip formatting.
+  Validate it against the real file first: 1.3 MB, 33 worksheets.
+- **Prefer OAuth on-behalf-of for writes** so SharePoint version history
+  names the actual staff member instead of attributing everything to
+  `rocky@`.
+- **"Archive" is a verb per `matter_type`**, not one operation — James:
+  "it will depend on what is being archived." Defaults proposed:
+  eviction → row moves to a `Closed` sheet; non-eviction (the 164) →
+  nothing on the sheet, brain only; insured/monitored → **hand off to
+  `litigation_updater`, do not archive here**; unregistered (rule 6) →
+  a negative rule meaning "not a matter", the declined-cohort pattern.
+- **Integration hazard if a `Closed` tab is added:** `llt_watch` reads
+  `wb.active`. If anyone saves with the Closed tab selected, the watcher
+  reads the wrong sheet and reports the whole docket as removed. Pin the
+  current revision by its `M.D.YY` name pattern BEFORE any Closed tab
+  exists.
+- **Folder disposition: flatten and delete** — James reaffirmed after I
+  proposed moving the intact folder to a `_Closed` container. Specced
+  with an interlock instead: move every message (logging
+  id + from + to), then **re-read and delete only if
+  `totalItemCount == 0` and `childFolderCount == 0`**, so a partial move
+  fails to "folder still there" rather than "mail gone". Handle matter
+  folders that have their own children. Canary whether Graph `DELETE` on
+  a mail folder soft-deletes to Deleted Items before any batch.
+- The court-calendar panel is nearly free: the hearing-line grammar is
+  already documented in `LLT_SHEET_STYLE_GUIDE.md` (382 lines on the
+  current tab) and Rocky already holds `Calendars.ReadWrite`, so it can
+  also publish to a real shared M365 calendar.
+- Build order unchanged; the dashboard tracks alongside read-only from
+  step 1, because a page the team actually opens is how the resolver's
+  mistakes get found. Write actions land with step 6.
+
+**One roof on the share (same session)**
+
+James: have all of this live in a subfolder of the Rocky program folder
+called "Multifamily Tracker and Dashboard". Done.
+
+- Renamed `Program Files\Rocky\MF Case Brain\` →
+  `Program Files\Rocky\Multifamily Tracker and Dashboard\` and built out
+  `LLT Watch\`, `Task Lists\`, `Case Brain\_Needs Review\`, and
+  `Folder Operations\`; the 205-line rename log moved into
+  `Folder Operations\`.
+- **New config key `mf_tracker_root`** is the single thing to repoint
+  per machine (the Rocky laptop mounts the share under the `rocky`
+  profile). Resolution for each component: its own `--x-root` flag, then
+  its own config key, then `<mf_tracker_root>\<Subdir>`, then the
+  built-in default. `llt_watch_root` now defaults to empty in
+  `config.example.json` and exists only as an override — the old
+  behaviour of naming the full LLT Watch path in config still works.
+- `llt_watch.py` gained `tracker_root()` and derives `get_paths()` from
+  it. Verified: `--llt-watch --status` resolves to
+  `…\Multifamily Tracker and Dashboard\LLT Watch`.
+- Rewrote the share's `README.md` as the subsystem's front door: the
+  layout, what is live versus designed, which two files are hand-
+  editable (`folder_map.json`, `aliases.md` — everything else is
+  append-only), and the undo procedure for the rename log.
+- **Kept the split:** data on the share, code in `rocky.exe`, design
+  docs in the repo. OneDrive is a shared filesystem, not a deployment
+  mechanism — the dashboard app will ship like every other Rocky
+  component, reading this folder rather than living in it.
+
+---
+
+## Session 2026-09-07 — Pending LLT "ripe check-in" mode
+
+**What changed**
+
+- **`pending_llt.py`** — new mode `--pending-llt --ripe`, alongside the
+  existing full-status mode. Selects only matters whose Ripe Date has
+  passed and which have NOT been filed, then drafts one short check-in
+  email per property: breach cases get "has this issue resolved? if not,
+  would you like us to prepare a lawsuit for breach of lease?", rent /
+  non-rent-charge cases get "if a balance remains outstanding, can you
+  please provide an updated ledger?", recerts get their own ask.
+  Format is James's, dictated verbatim in the session.
+- **`parse_ripe_date()`** — the Ripe Date column is free text in
+  practice, not dates. Real values: a true datetime, `9.9.26`, `8.6.26 `
+  (trailing space), `Ripe on9.3.26` (the whole sentence typed into the
+  date cell). The old `isinstance(ripe_raw, datetime)` check silently
+  dropped every string form, i.e. nearly all of them. This also fixes
+  ripe-date handling in the pre-existing full-status mode.
+- **`parse_llt_spreadsheet()`** — reads the column-A client header
+  before the `if not name: continue`, so a header on a nameless row
+  still carries forward; takes an optional `sheet=` (the workbook keeps
+  one dated sheet per weekly revision, active = current).
+- **`match_property_to_contacts()`** — added `CONTACT_ALIASES` (curated
+  same-property bridges) and a `portfolio=` guard.
+- **`--local`** resolves the LLT sheet by GLOB over Downloads,
+  newest-modified wins, and prints the filename + mtime + age with a
+  warning past 14 days.
+
+**Decisions made**
+
+- **Group by the `Property` column, never column A.** Column A is the
+  *client* ("Bozzuto MD", "Horning", "Towner Management Company") and
+  spans dozens of properties with different managers. Grouping on it
+  would have put 27 residents across 12 Towner properties into one
+  email.
+- **`NON_BOZZUTO_PORTFOLIOS` blocklist.** BMC Contacts is the *Bozzuto*
+  contact sheet. The containment matcher paired Silver Tree's "Burton
+  Manor" with Bozzuto's "The Burton" and Horning's "Chesapeake" with
+  Bozzuto's "Chesapeake Ridge" — two emails about one client's
+  residents addressed to a different client's manager. Properties whose
+  column-A client is non-Bozzuto now match nothing at all. Prefer adding
+  to this list (or to `CONTACT_ALIASES`) over loosening the matcher.
+- **Fuzzy spelling merges are gated on `_property_signature()`** — the
+  numeric and roman-numeral tokens must match exactly. The sheet is
+  hand-typed, so "Cloisters I"/"Clositers I" is one property typed
+  twice, but "Cloisters I"/"Cloisters II" are two buildings and their
+  edit distance is *smaller* than the typo's. First cut without this
+  guard merged Solstice I+II and Weinberg Village+II.
+- **Dedupe by resolved contacts entry, not by property name.** Several
+  sheet spellings can name one contacts row ("450 K"/"450K"), and one
+  row can legitimately cover several buildings under one team (Bridge
+  District = Alula + Poplar House + Stratos). Either way the manager
+  gets one email; multi-building drafts name the building next to the
+  unit.
+- **On-hold matters are included, not filtered.** "hold for inspection"
+  usually means waiting on the property, which is exactly what the email
+  asks about. They're listed in the run report so James can pull them
+  from a draft before sending.
+- CC stays `caraviakis@gallagherllp.com`, same as full-status mode.
+
+**Watch-outs**
+
+- **Ran once against a three-month-old spreadsheet and created 84 client
+  drafts.** `--local` used a hardcoded `Downloads\PENDING LLT
+  MATTERS.XLSX` while the current sheet was `... (2).XLSX`; Downloads
+  had a June 3 copy under the bare name. All 84 were deleted and the run
+  redone (60 drafts). This is why `--local` now globs newest-first and
+  prints the file's date. **A "success" line proves nothing about which
+  file was read** — check the LLT-sheet log line.
+- Rocky's log line is the only place the source file is named. Keep it.
+
+**Results of the 9/8/26 run**
+
+- 1,060 matters on the sheet → 362 ripe and unfiled → 60 drafts across
+  60 Bozzuto properties (CC Christina).
+- 33 properties / 108 matters had no contact email — Horning, Franklin
+  Group, Towner, WPC, MRP, Silver Tree, Associated Catholic Charities,
+  Stella Maris, plus Hanover 8th Street. These clients need contacts in
+  BMC Contacts (or their own sheet) before Rocky can draft for them.
+- 11 rows carried a ripe date but are already in court; 2 have
+  unreadable ripe-date cells (`9.4.6`, `12.31`) and need fixing on the
+  sheet.
+
+**Run record + draft-vs-sent comparison (added same session)**
+
+- **Why:** James's ask — freeze what Rocky drafted, compare against what
+  he actually sends, and derive the richer ruleset from the delta. The
+  edits *are* the specification.
+- **`build_ripe_drafts()`** — the derivation (parse → select ripe →
+  group → match → render) extracted out of `run_pending_llt_ripe` so
+  the draft, dry-run, and snapshot paths can't drift apart.
+- **`ripe_bullets()`** — every bullet carries its **source spreadsheet
+  row** (status, ripe date, next steps, subsidized, VAWA columns,
+  on_hold flag). This is the part that makes the corpus useful: a
+  deleted bullet is only informative if you can see what Rocky knew
+  when it wrote it.
+- **Record of account:** `OneDrive\Program Files\Rocky\Pending LLT
+  Records\` — append-only `pending_llt_ripe_drafts.jsonl` (one line per
+  draft per run, with the Graph **message id**) plus a readable
+  `<run_id> — drafts.md` per run. Written automatically by every live
+  ripe run.
+- **`--ripe --compare [RUN_ID]`** — refetches each recorded message by
+  id and diffs it. A draft keeps its message id when sent, so this
+  reports sent / pending / deleted per property with a unified diff of
+  the body and any recipient changes. Bare `--compare` = most recent
+  run. Quote the run id; it contains spaces.
+- **`--ripe --snapshot`** — records drafts *already sitting* in the
+  Drafts folder (re-derives, pairs to the live message by subject,
+  stores the mailbox's own body). Creates and sends nothing. Written
+  because this session's 60 drafts predated the recording step; it also
+  covers a run that dies after creating drafts.
+
+**Watch-out: `_strip_html` must stay canonical.** The same body gets
+stripped once from Rocky's HTML and again from what Graph returns, and
+Graph rewrites the markup in transit — decodes `&ndash;`, drops
+inter-tag newlines. The first cut flagged all 60 drafts as "edited" on
+pure normalization noise. Now entities decode to characters, dash
+variants fold to one form, and blank lines are normalized structurally
+(none inside a bullet run, one elsewhere). Verified: 60/60 drafts
+report zero drift against a re-render. **Anything not normalized there
+shows up as a phantom edit and buries the real ones.**
+
+**Watch-out: one draft left the mailbox on its own.** "Yards at
+Fieldside Village" was created at 13:16 (confirmed in `rocky.log` and by
+a 13:17 listing) but by 13:32 was in neither Drafts, Sent Items, nor
+Deleted Items — most likely filed into a nested per-property folder by
+one of James's Outlook rules. It was recreated. **Drafts Rocky creates
+are not guaranteed to stay in Drafts**; `--compare` treats a
+message-id 404 as `deleted`, which is the right report but conflates
+"James deleted it" with "a rule moved it".
+
+**Also found — an existing corpus of the target style.** Sent Items
+holds **24** messages matching this email type, hand-written by James.
+The convention starts 2025-04-21; nothing earlier. **7 are originals**
+(the rest are `RE:`/`FW:` on those threads):
+
+| Sent | Subject | To |
+|---|---|---|
+| 2026-04-09 | Halstead Centreville - pending resident issues | HalsteadCentreville@bozzuto.com, ddawson@ |
+| 2025-11-08 | The Laureate - status check on pending resident issues | Nani.Lee@bozzuto.com |
+| 2025-11-08 | Spinnaker Bay - Pending Resident Issues | Nick.Butler@, Isabelle.Mattioli@ |
+| 2025-11-08 | Aspen at Melford - pending resident issues | Julia.Hatmaker@, lmitchell@ |
+| 2025-05-18 | Westlight - pending resident issues | amahmood@, mcoules@, caraviakis@ |
+| 2025-05-18 | Aster - status of pending resident issues | Maria.Ventura@bozzuto.com |
+| 2025-04-21 | Heming - pending resident issues | Christopher.Fuller@bozzuto.com |
+
+Signals visible from the headers alone, before reading a single body:
+
+- **These are ad hoc and per-property, never batched.** Seven originals
+  across 18 months, one or three at a time — not a 60-property sweep.
+  Rocky's batch shape is new, not learned.
+- **They become long-running threads.** Halstead Centreville runs
+  2026-04-09 → 2026-07-20 across six replies. The check-in is the start
+  of a conversation, so a *second* sweep must reply into the existing
+  thread rather than open a new one — Rocky has no such notion today.
+- **Subject wording drifts** — "pending resident issues", "Pending
+  Resident Issues", "status check on pending resident issues", "status
+  of pending resident issues". Rocky's fixed subject is one variant.
+- **Recipients often include a regional or a property shared mailbox**
+  (`mcoules@bozzuto.com` recurs; `HalsteadCentreville@bozzuto.com`,
+  `TheLaureate@bozzuto.com`), which Rocky's one-contacts-row-per-
+  property lookup only partly reproduces.
+- **Silverwood and Falls Green appear only as `RE:`** — James joined
+  threads someone else opened, so the corpus is not limited to mail he
+  initiated.
+
+**Retrieval note:** Graph mail `$filter` does NOT support
+`contains(subject,...)` — HTTP 400. `$search='"subject:pending resident
+issues"'` (with `ConsistencyLevel: eventual`) works but is
+relevance-ranked and pulled in unrelated hits ("Pending renewal/lease",
+"pending subpoena"), which is what produced a wrong "back to 2024"
+reading. Paging Sent Items and filtering client-side is exact but
+exceeds a 120s tool timeout — run it backgrounded.
+
+**Open items**
+
+- Mine the pre-existing sent "pending resident issues" threads as a
+  second calibration source, alongside the draft-vs-sent diff.
+- `--compare` can't distinguish a deleted draft from one an Outlook rule
+  relocated. Searching all folders by message id (rather than assuming
+  Drafts/Sent) would fix it.
+- Contact sheet for the non-Bozzuto clients — the single biggest gap
+  (108 ripe matters Rocky can't address).
+- `Milstone at Kingsview` in one subject line is the contacts sheet's
+  typo of Millstone; harmless, but the sheet should be corrected.
+- Consider whether the ripe sweep should run on a schedule (weekly,
+  after Christina revises the sheet) rather than on demand.
+
+---
+
+## Session 2026-09-06 — PACER Monitor v1 (CourtListener/RECAP + PACER direct)
+
+**What changed**
+
+- **`courtlistener.py`** (new) — CourtListener REST v4 client. Reads
+  (dockets / docket-entries / recap-documents / parties), free docket
+  alerts, RECAP Fetch purchases, and free PDF pulls from
+  storage.courtlistener.com. Carries a `_RateGovernor`: a rolling
+  on-disk call ledger that self-throttles below the configured cap and
+  raises `RateBudgetExhausted` BEFORE a request goes out.
+- **`pacer_api.py`** (new) — PACER authentication (`/services/cso-auth`,
+  cached nextGenCSO token, picks up header re-issues, re-auths on 401)
+  and the PACER Case Locator (`/cases/find`, `/parties/find`, batch
+  download endpoints). Returns every billing receipt untouched.
+- **`pacer_monitor.py`** (new) — orchestration + the database. `--sync`,
+  `--sweep`, `--mail`, `--digest`, `--add`/`--remove`, `--fetch`,
+  `--docs`, `--probe`, `--status`, `--reindex`, `--auth-test`.
+- **`rocky.py`** — `--pacer` dispatch (all `--pacer*` subflags share one
+  instance lock) plus a separate `--pacer-mail` flag with its own lock;
+  added to `MONITOR_DEFAULT_COMMANDS`; usage text and module docstring.
+- **`dashboard.py`** — new "PACER" group: PACER Sweep 6:30, PACER Sync
+  7:00, PACER Digest 17:15, PACER Requests (no slot — monitor loop).
+- **`config.example.json`** — `pacer_monitor_root`, `courtlistener_token`
+  + `courtlistener_rate_limits`, PACER credentials, the spend block, the
+  sweeps block, the mail block.
+- **`.gitignore`** — `pacer/` (holds a live PACER session token).
+- **Docs** — `PACER_MONITOR.md` (full guide), BUILD_REFERENCE section,
+  tech-stack amendment for the one SQLite file.
+- **Scaffolded** the real share folder: `PACER Monitor Database\` now has
+  README.md, PACER Watchlist.xlsx, PACER Index.xlsx, `_db\`, `Documents\`.
+
+**Decisions made**
+
+- **James's answers this session:** he'll get a CourtListener token and
+  has a PACER production login; a Free Law Project commercial agreement
+  is deferred. Watch scope is all four sources (watchlist file, PCL
+  client-name sweeps, Rocky Case Index seeding, @recap.email) plus
+  mail-triggered API calls from rocky@'s inbox in the monitor loop.
+  Purchases are **auto, under a daily cap** (not approval-gated — this
+  deliberately departs from the LetterStream/Litigation YES-gate
+  pattern). Storage is JSONL + local SQLite + Excel.
+- **The 125-calls-a-day CourtListener ceiling is the binding
+  constraint**, not PACER money. Everything in `--sync` is shaped by it:
+  batch `id__in` header refreshes (50 cases/call), free docket alerts so
+  quiet cases cost nothing, entry pulls gated on `date_last_filing`, a
+  per-run cap on new-case resolution, and a budget stop that holds
+  cursors instead of retrying.
+- **SQLite stays local.** JSONL on the share is the record of account;
+  `index.db` is derived and rebuildable. A .db on OneDrive invites
+  conflict copies and mid-write locks — same call as the Email Brain.
+- **Purchases are booked at PACER's $3.00 per-document ceiling**, since
+  no API reports the actual charge. Over-stating spend makes the cap
+  bite early, which is the safe direction.
+- **PCL is for discovery, not dockets.** It has no entries and no
+  documents. Its value here is the bankruptcy tripwire on tenant names.
+
+**Added later the same session — budget reserve, fair ordering, real deferral**
+
+- James confirmed his CourtListener account shows exactly 5/min, 50/hr,
+  125/day and asked for request logging and queueing. Logging and
+  pre-flight refusal already existed; queueing did not. Added:
+  - **Reserve** — `courtlistener_reserve_daily` (default 20) withheld
+    from the scheduled sync (`make_cl_client(bulk=True)` →
+    `_RateGovernor(reserve={"day": N})`). Interactive commands
+    (`--mail`, `--docs`, `--fetch`, `--probe`) build an unreserved client
+    off the same ledger, so an afternoon request can always be answered
+    even after a heavy morning sync.
+  - **Fair ordering** — resolution is least-recently-attempted first
+    (`last_resolve_attempt`), the header/entry pass is oldest-synced
+    first. A fixed order re-tries the same head of the list every run and
+    starves the tail once the watchlist outgrows 125/day.
+  - **Deferral that defers** — cases the budget can't reach go to
+    `state["deferred"]`, are named in the log, and show in `--status`.
+    They KEEP their old `last_synced` deliberately; bumping it would sort
+    them to the back of the oldest-first queue, which is the exact
+    starvation the ordering was meant to prevent.
+  - `--status` now prints Rocky's count, what a sync may spend, and
+    CourtListener's own `/api-usage/` figure (separate throttle scope, so
+    asking is free).
+- Deployed: `python build_exe.py` built and copied rocky.exe (51.1 MB)
+  and dashboard.exe to OneDrive `Program Files\Rocky` at 16:14/16:15.
+  `sqlite3` confirmed in the bundle (`_sqlite3.pyd`, `sqlite3.dll`) —
+  needed because `pacer_monitor.py` ships as `--add-data`, not analyzed
+  source, so nothing else would have pulled it in.
+- Rocky-laptop share confirmed: `C:\Users\rocky\OneDrive - gejlaw.com\
+  James D. Bragdon's files - PACER Monitor Database` (James shared the
+  folder to rocky@ this session; it was not there before).
+
+**Added later the same session — PACER MFA**
+
+- First live `--auth-test` on the Rocky laptop: **CourtListener OK**
+  (token valid, `/api-usage/` responding, full 125/day available).
+  **PACER refused: "Invalid username, password, or one-time passcode."**
+  The AO made MFA mandatory for CM/ECF-level accounts through 2025.
+- The auth API gained an `otpCode` field in guide v.2 (April 2025).
+  Codes are ordinary TOTP (6 digits, 30s window) from a base32 secret in
+  Manage My Account. Implemented `pacer_api.totp_now()` on the standard
+  library (hmac/hashlib/struct/base64) rather than adding pyotp — keeps
+  the PyInstaller bundle unchanged. **Verified against the RFC 6238
+  published test vectors** (287082 / 081804 / 005924).
+- New config key `pacer_otp_secret`. `authenticate()` sends `otpCode`
+  when it's set, retries ONCE on the next TOTP window when the code is
+  refused (a code can roll over mid-request or be rejected for reuse),
+  and on final failure appends a hint naming the likely cause: no secret
+  configured, or clock drift. `--status` prints the code Rocky would send
+  and the seconds until it rolls, so drift is diagnosable in one glance.
+- **A TOTP seed has no single holder** — Duo Mobile can keep the PACER
+  account and Rocky can hold the same secret; both derive identical codes
+  from the same seed and clock. Pointing Rocky *at* Duo is the thing that
+  can't work: no API to ask the phone, and Duo push isn't what `otpCode`
+  wants. Recorded because it's the natural first question.
+- Security note carried into the docs: seed beside password puts both
+  factors on one machine. Standard trade for unattended access; a
+  Rocky-only PACER login separates them and isolates her charges.
+- Also from that run: `resolve_root()` created the database at
+  `C:\Users\rocky\OneDrive - gejlaw.com\PACER Monitor Database` because
+  `pacer_monitor_root` wasn't in the laptop's config. It now also probes
+  the `James D. Bragdon's files - ` prefixed spelling, which is how a
+  shared OneDrive folder arrives in another account.
+
+**Added later the same session — filer redaction flag**
+
+- With MFA working, PACER moved to the next gate: *"All filers must
+  redact: Social Security or taxpayer identification numbers; dates of
+  birth; ..."*. James's account has e-filing privileges, and per the auth
+  guide a filer account cannot authenticate without `redactFlag: "1"`.
+- New config key `pacer_redact_flag`, **default false on purpose**. The
+  flag is a certification of compliance with Fed. R. App. P. 25(a)(5),
+  Fed. R. Civ. P. 5.2, Fed. R. Crim. P. 49.1, and Fed. R. Bankr. P. 9037
+  — the same attestation CM/ECF collects at interactive login. Hardcoding
+  it, or defaulting it on, would have Rocky make a legal certification on
+  the account holder's behalf. Setting it is James's act.
+- `authenticate()` detects the redaction refusal and says which config
+  key fixes it; `--status` prints a "Filer flag" line so its state is
+  visible without a login attempt.
+- Sequence of gates hit on this account, for the next person: password →
+  MFA one-time passcode → filer redaction flag.
+
+**Added later the same session — first live probe, and the bug it found**
+
+- `--pacer --probe vaed 1:25-cv-00123` worked end to end against both
+  live APIs. RECAP returned the docket header (Trustees of the United
+  Association National Pension Fund v. Mohawk Construction, Judge Alston,
+  filed 2025-01-23, terminated 2025-05-07) with **zero docket entries** —
+  normal for a docket RECAP holds from a metadata source that nobody has
+  ever purchased entries for.
+- **Bug the probe exposed: the PCL search wasn't scoped to a court**, so
+  it matched case number 1:2025cv00123 in 46 districts. One page, ten
+  cents this time; on a lower case number it would have run to several
+  billed pages. Root cause was a missing CourtListener→PACER court id
+  translation, and `_pcl_court_to_cl` was also wrong for bankruptcy
+  (`vaebk` came back as `vaebk`, not `vaeb`).
+- Added `pacer_api.cl_court_to_pcl()` / `pcl_court_to_cl()`, verified
+  round-trip over district, bankruptcy, circuit, and the specials
+  (cofc/uscfc, citdc/cit, dcca/cadc). PCL = region + `dc`|`bk`;
+  CourtListener = region + `d`|`b`; circuits are `04ca` vs `ca4`.
+  **A caller that can't map a court now refuses to search** rather than
+  searching all 94 districts and billing for it.
+- Added `_docket_to_pcl_number()` (`1:25-cv-00123` → `1:2025cv00123`) so
+  a Case Locator lookup retries in PCL's own spelling when the court's
+  spelling finds nothing.
+- The probe also wasn't recording its PCL fee against the daily cap. It
+  does now.
+- **New `--pacer --find "case name" [--court X]`.** Every command needed
+  a docket number and nothing helped you find one; this searches RECAP by
+  caption (free, one call) and prints a ready-to-paste `--add` line. The
+  emailed "search" intent now uses the same free search instead of
+  punting to sweeps, and only mentions the billable PCL route when RECAP
+  has nothing.
+- Scanned Rocky Case Index for federal matters: exactly one,
+  **RRID-0008 Ogunnupe** (Bozzuto Management Company, junk fees class
+  action in EDVA). Everything else is state court, which is why the
+  bankruptcy sweep matters more here than the district watchlist.
+
+**Added later the same session — `id__in` doesn't exist (first live sync)**
+
+- First `--sync --dry-run` resolved Ogunnupe fine, then died:
+  `400 {"detail":"Unknown filter parameters are not allowed.",
+  "unknown_params":["id__in"]}`. **The batch refresh I designed the whole
+  budget strategy around was an assumption I never checked.** On
+  `/dockets/`, `id` is a NumberRangeFilter (exact/gt/gte/lt/lte/range) —
+  no `__in`, and CourtListener 400s rather than ignoring the parameter.
+  `id__range` groups ids but would pull every unrelated docket in the
+  span, so it's worse than useless.
+- **There is no batch.** Header refresh is now one call per case, via
+  `dockets_by_id_progressive()`, a generator that yields each docket as
+  it arrives so a budget stop KEEPS what it already fetched instead of
+  losing the run. Unreached cases go to the deferral queue, hold their
+  old `last_synced`, and sort first next run. Verified with a stubbed
+  client: 3 cases, budget dies after 1 header → 2 deferred, both keeping
+  the earlier timestamp and sorting to the front.
+- Revised budget math: ~80 quiet cases or ~35 busy ones per day at the
+  105 a sync gets after the reserve. Past that the queue takes more than
+  one run to drain, which is delay rather than failure. Corrected in
+  BUILD_REFERENCE and PACER_MONITOR.md, both of which claimed 50-per-call
+  batching.
+- **New `--pacer --filters [endpoint]`** — OPTIONS request printing every
+  supported filter and its lookup types. Added specifically so the next
+  filter gets checked instead of assumed.
+- Also fixed: `--find` printed a truncated CourtListener URL; search
+  results carry `docket_absolute_url`/`docket_id`, not `absolute_url`.
+- `--find "Ogunnupe" --court vaed` located the case: **vaed
+  1:26-cv-00417, Ogunnupe v. Bozzuto Management Company**, Judge Patricia
+  Tolliver Giles, filed 2026-02-13.
+- **`--filters dockets` run live confirmed the diagnosis**: `id` →
+  `['exact','gte','gt','lte','lt','range']`, no `in`. The only `in` on
+  the endpoint is `source`. Per-case refresh is the correct design, not a
+  workaround.
+- **Fix verified live 19:05**: `--sync --dry-run` completes clean —
+  `{cases: 1, refreshed: 1, new_entries: 0, budget_stops: 0}`, 94 calls
+  left. RECAP holds the docket HEADER for 72276149 and **zero entries**,
+  the normal state for a case nobody has purchased. Nothing free remains
+  for it; the next real sync is the first PACER purchase.
+- Noted for later: `date_modified` supports `gte` and is orderable, but
+  scoping is one court at a time, so a "modified since" query would drag
+  in every recently-touched docket in EDVA. **Webhooks on the existing
+  free docket alerts are the real answer to polling cost** — they'd drop
+  header-refresh calls to zero and make watchlist size irrelevant. FLP
+  charges organizations for webhooks and it needs a public endpoint, so
+  revisit if the federal caseload outgrows 105 calls/day.
+
+**Added later the same session — RECAP FETCH IS CLOSED TO A FILER'S ACCOUNT**
+
+- First real purchase attempt (`--fetch vaed 1:26-cv-00417`) crashed with
+  an unhandled `CourtListenerError`: **400
+  `{"non_field_errors":["PacerLoginException: Did not get NextGenCSO
+  cookie when attempting PACER login."]}`**.
+- **Cause is architectural, not a bug.** Free Law Project's own docs:
+  *"We do not currently support PACER or CM/ECF accounts with MFA
+  enabled."* Their workaround is to disable MFA, which a filer cannot do
+  since the AO made it mandatory for CM/ECF-level access. RECAP Fetch is
+  therefore unavailable on James's login, full stop.
+- **The asymmetry matters and is worth remembering:** Rocky's OWN PACER
+  integration authenticates fine, because `pacer_api.py` sends `otpCode`.
+  It is *CourtListener's* PACER login that can't do MFA. So `--sweep` and
+  every Case Locator search still work; only purchases through
+  CourtListener are dead.
+- **@recap.email moved from nice-to-have to load-bearing.** It is now the
+  primary way docket CONTENTS reach Rocky: free, NEF-driven, covers every
+  case where the firm is counsel of record, and immune to this problem
+  because it is email-based rather than login-based. Documented as path
+  one in PACER_MONITOR.md; the doc's "three data paths" section is now
+  four, ordered by what actually works.
+- Code: new `cl.RecapFetchLoginError` raised when a 400 body carries
+  `PacerLoginException`/`NextGenCSO`; `_mark_fetch_blocked()` writes
+  `state["recap_fetch_blocked"]`; `_purchase_stale` and `run_fetch` both
+  short-circuit on it (no API call, no phantom spend entry) and print
+  `FETCH_BLOCKED_HELP` with the three alternatives; `--status` shows the
+  block; `--retry-fetch` clears it. Verified: first attempt records and
+  explains, second makes no call at all, spend ledger stays empty.
+- **RESOLVED (researched same session): a firm Case Search Only account
+  is the fix.** PACER's published guidance is that filers and other
+  CM/ECF-level users MUST enroll in MFA while **PACER-only access users
+  have the OPTION** — so a search-only account can run without MFA, which
+  is exactly what CourtListener's login needs. Free to register, can view
+  dockets/documents in CM/ECF, cannot file.
+  - Register it in the **FIRM's** name, not as a second personal account:
+    PACER consolidated attorneys' duplicate personal logins (the old
+    CJA/private pair is gone), but firms routinely hold several, and a
+    PACER Administrative Account manages and pays for them together.
+    Commercial PACER integrations run on exactly this credential.
+  - **The security case is stronger than the capability case.** Today
+    `C:\Rocky\config.json` holds a password AND a TOTP seed for an
+    account with federal e-filing privileges. A search-only account
+    cannot file, so the exposure disappears; charges also land on a
+    separately allocable bill.
+  - Migration is config-only: swap `pacer_username`/`pacer_password`, set
+    `pacer_otp_secret` to `""` (no MFA) and `pacer_redact_flag` to
+    `false` (non-filers make no redaction certification), then
+    `--retry-fetch` to clear the block. No code change needed.
+  - Still confirm the exemption with the PSC (800-676-6856) before
+    relying on it; the whole purchase path hangs on it.
+
+**Open items**
+
+- ~~Both API credentials are placeholders.~~ **RESOLVED same session,
+  17:11.** `--pacer --auth-test` on the Rocky laptop returns OK for both:
+  CourtListener token valid with the full 125/day available, and PACER
+  `authenticated as jbragdon29724 (production) with MFA`, 128-char token
+  cached. Live credential chain confirmed end to end. Next calibration
+  step is `--probe <court> <docket#>` against a real federal matter.
+- **Rocky Case Index.xlsx has no docket columns** (its matters are mostly
+  state court). Add `PACER Court` and `Docket Number` and federal
+  matters auto-enroll; until then the seeding step logs one line and
+  skips.
+- @recap.email not set up yet — free, and the difference between
+  reporting yesterday's filings and today's. Needs a PACER settings
+  change per jurisdiction of admission.
+- Raise `courtlistener_rate_limits` if a membership ever lands.
+- Digest is email-only for now; no Teams surface, no merge into the
+  Multifamily Digest.
+
+**Watch-outs**
+
+- **There are TWO OneDrive roots on the dev laptop** —
+  `C:\Users\jbragdon\OneDrive - gejlaw.com` AND
+  `C:\Users\jbragdon\OneDrive\OneDrive - gejlaw.com` — and both contain a
+  Rocky Cases and (now) a PACER Monitor Database. `_DEFAULT_CASES_ROOT`
+  points at the doubled one; James's real PACER folder is in the
+  un-doubled one. First `--status` run created an empty database in the
+  wrong root; it was deleted and `resolve_root()` now probes for an
+  existing folder under either before deriving a path. Anything else
+  deriving a share path from `cases_root` has the same hazard.
+- `_RateGovernor` counts only Rocky's own calls. A browser session or a
+  second machine spending the same CourtListener account's budget still
+  produces a 429; she absorbs it by burning the window in her ledger.
+- Anything bought through RECAP Fetch is contributed to the public RECAP
+  Archive. Fine for ordinary federal civil filings, wrong for a matter
+  where the firm's interest is itself sensitive.
+- PACER forces a password change every 180 days. Sweeps failing on
+  "PACER login refused" usually means that, not a code bug.
+
+---
+
+## Session 2026-08-31 (2) — LetterStream: submitters approve (and sign) their own affidavits
+
+**What changed**
+
+- **`mailing_affidavits.py`** — anyone who submits an affidavit request is
+  now that affidavit's approver AND its affiant, instead of everything
+  routing to `affidavit_approver` (Hailey):
+  - Each pending `[AM-####]` entry records `approver`/`approver_name`
+    (the submitter). The approval email goes to them (greeting uses
+    their first name; `affidavit_cc` skips the approver to avoid
+    self-cc), and only their YES/NO — or James's — decides it.
+  - The affidavit is rendered with the submitter's name in the
+    signature block (`fields["affiant"]`), preserving the invariant
+    that a YES only ever authorizes your OWN conformed /s/. The email
+    now tells the approver to check their name/title.
+  - Identity plumbing: proof-of-mailing emails and `[CM-####]`
+    certified-mail requests capture the Graph display name
+    ("Last, First" flipped); `handle_mail_request` gained
+    `requester_name`, stored on the entry and carried through
+    `poll_in_flight` so API-tracked mailings' affidavits go back to
+    the requester. CLI `--mail` maps to James
+    (`user_display_name`, default "James Bragdon").
+  - Fallbacks unchanged: no known submitter (API pull, `--ingest`,
+    `--fetch`) and pre-existing pending entries keep the configured
+    `affidavit_approver`/`affidavit_affiant_name` exactly as before.
+- **Config:** new optional `affidavit_affiant_titles` (`{email: title}`
+  signature-block overrides; default `affidavit_affiant_title`) and
+  `user_display_name`. `config.example.json` comments updated.
+- **Docs:** module docstring, `LETTERSTREAM.md`, `BUILD_REFERENCE.md`
+  updated to the submitter-as-approver model.
+
+**Decisions made**
+
+- Approver = affiant, always. Routing approvals to the submitter while
+  leaving Hailey's name on the document would have someone authorizing
+  another person's /s/ — so the submitter's name goes ON the affidavit.
+- James can approve/decline any affidavit (pre-existing behavior, kept);
+  the configured approver can NOT approve someone else's submission.
+
+**Open items**
+
+- If people other than Hailey start submitting, consider populating
+  `affidavit_affiant_titles` in the live config so titles aren't the
+  Legal Administrative Assistant default for everyone.
+
+**Watch-outs**
+
+- Live `state.json` pending entries created before this change have no
+  `approver` key — they intentionally fall back to the old configured
+  approver list. New entries only ever accept submitter + James.
+
+---
+
+## Session 2026-08-31 — Litigation narrative-length style rules (Rosenberg bloat)
+
+**What changed**
+
+- **Trigger:** the L0070 new-entry draft (Eric Rosenberg / Novel Beach Park)
+  carried a ~600-word Summary of Claim that re-narrated the complaint
+  allegation-by-allegation. Nothing in the style stack forbade it.
+- **Share: `_litigation\brain.md`** — three hand-added rules (tagged
+  `[James, direct edit 2026-08-30]`): narrative cells are audit summaries,
+  never chronological complaint retellings (docs live in the vault);
+  Summary of Claim ≤ one short paragraph (~5–7 sentences / ~150 words) with
+  a fixed formula; Third Party Disclosure Summary ≤ 3–5 sentences.
+  Brain rides every drafting call *and* every voice rebuild, so these survive
+  `--voice-rebuild`.
+- **Share: `voices\voice_summary.md`** — Structure & Length rewritten
+  (dropped "occasionally 3+ paragraphs"; added the compression rule);
+  Never Include gains "chronological retelling" bullet.
+- **Share: `voices\voice_disclosure.md`** — explicit "3–5 sentences, one
+  paragraph" length block added.
+- **`litigation_updater.py`** — `draft_entry` prompt now states the per-column
+  length caps inline; `_build_voice` prompt now says brain length/content
+  rules trump over-long sheet samples ("legacy entries, not the target
+  voice") — matters because the bloated Rosenberg row is now ON the sheet
+  and would otherwise teach future rebuilds.
+
+**Open items**
+
+- The L0070 row itself is still long on the sheet. Fix by forwarding an
+  "update the claims smartsheet" instruction for Rosenberg (or a
+  `--cleanup` pass, which now has the length rules to check against).
+
+**Watch-outs**
+
+- Voice edits on the share are overwritten by the next `--voice-rebuild`;
+  the brain rules + `_build_voice` prompt change are the durable layer.
+
+---
+
 ## Session 2026-08-30 — Remy digest fully subsumed into the Multifamily Digest
 
 **What changed**
