@@ -110,6 +110,20 @@ ROCKY_COMMANDS = [
     {"flag": "steve-todo",    "label": "Steve To-Do",     "group": "Inbox", "dry_run": False, "desc": "Build Steve's morning to-do list from his email",       "sched_time": "07:30", "recommended": True},
     {"flag": "ella-digest",   "label": "Ella Digest",     "group": "Inbox", "dry_run": False, "desc": "Write Ella's daily summary of her case emails",         "sched_time": "17:00", "recommended": True},
     {"flag": "pending-llt",   "label": "Pending LLT",     "group": "Inbox", "dry_run": True,  "desc": "Draft status-update emails for landlord-tenant matters"},
+    # HOURLY around the clock on purpose, and no sched_time (create_task
+    # passes /st only for ONCE/DAILY/WEEKLY): --llt-watch enforces its own
+    # 8 AM-7 PM window in code, because schtasks cannot say "hourly, but
+    # only during the workday" without a /du duration and create_task
+    # deliberately keeps its schtasks surface small. The off-hours runs
+    # exit immediately, before any network call.
+    {"flag": "llt-watch",     "label": "LLT Watch",       "group": "Inbox", "dry_run": True,  "desc": "Record hand edits to the PENDING LLT MATTERS spreadsheet (runs 8 AM-7 PM; off-hours runs exit at once)", "sched_freq": "HOURLY", "sched_interval": 1, "recommended": True},
+    # --mf-brain --digest runs the scan itself and then emails, so only
+    # ONE of these belongs on a schedule. The digest is the daily job;
+    # the bare scan is for manual/off-cycle use (it costs the same Claude
+    # calls, and running both in a day just advances the mail cursor
+    # early so the digest sees nothing).
+    {"flag": "mf-brain",      "label": "MF Brain Digest", "group": "Inbox", "dry_run": True,  "args": ["--digest"], "desc": "Read the spreadsheet, folders and inbox; email James the day's thoughts, scorecard and questions", "sched_time": "07:00", "recommended": True},
+    {"flag": "mf-brain-scan", "label": "MF Brain Scan",   "group": "Inbox", "dry_run": True,  "desc": "Update the case ledger without sending the email (manual — the digest does this daily)"},
     {"flag": "maple-pma-activity", "label": "Maple PMA Activity", "group": "Maple", "dry_run": False, "desc": "Step 1 — collect the day's PMA emails for Maple", "sched_time": "17:00", "recommended": True},
     {"flag": "maple-updater", "label": "Maple Updater",   "group": "Maple", "dry_run": False, "desc": "Step 2 — Maple updates HubSpot and writes the client update", "sched_time": "17:10", "external": True},
     {"flag": "maple-digest",  "label": "Maple Digest",    "group": "Maple", "dry_run": True,  "desc": "Step 3 — put the client update in James's Drafts to send", "sched_time": "17:40", "recommended": True},

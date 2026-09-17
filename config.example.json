@@ -177,6 +177,17 @@
       "column_map": {"Project": "Property"}
     }
   ],
+  "_mf_tracker_comment": "The Multifamily Tracker and Dashboard folder on the share: ONE roof over LLT Watch (source a), the case brain ledger, the folder-operation logs, and the task-list cache. Repoint this single key on the Rocky laptop (where the share mounts under the rocky profile) and every component follows. MUST be the share, not C:\\Rocky — the snapshot and ledger are dedup keys, and a local copy on two machines makes both report the same change. Data only; program code ships in rocky.exe.",
+  "mf_tracker_root": "C:\\Users\\jbragdon\\OneDrive - gejlaw.com\\Program Files\\Rocky\\Multifamily Tracker and Dashboard",
+
+  "_mf_brain_comment": "MF Case Brain Stage 0 (--mf-brain --digest, 7:00 AM daily). Observe only: reads the LLT spreadsheet, the Outlook folder tree and James's inbox, and emails him the day's thoughts, a scorecard of earlier predictions, and questions with fill-in boxes. Answers come back via rocky@'s inbox. Ledger under <mf_tracker_root>\\Case Brain. mf_digest_recipients defaults to [user_email]; keep it to people who should be answering the questions, since every recipient sees the answer boxes.",
+  "mf_digest_recipients": [],
+
+  "_llt_watch_comment": "LLT Watch (--llt-watch) records hand edits to PENDING LLT MATTERS on the MultifamilyHousing Teams site. It reuses sharepoint_hostname / sharepoint_site_path / llt_file_path above. Its data goes to <mf_tracker_root>\\LLT Watch; set llt_watch_root only to override that outright. llt_watch_hours is the inclusive local-hour window the run is allowed in, enforced in code because schtasks can't express a workday-only hourly trigger. llt_watch_ignore_columns suppresses change reports for named columns (empty = report every column, including ones added to the sheet later).",
+  "llt_watch_root": "",
+  "llt_watch_hours": [8, 19],
+  "llt_watch_ignore_columns": [],
+
   "litigation_closed_sheet_id": "PASTE-CLOSED-CLAIMS-SHEET-ID",
   "litigation_root": "C:\\Users\\jbragdon\\OneDrive - gejlaw.com\\Program Files\\Rocky\\Litigation Updates",
   "litigation_mailbox": "rocky@gallagherllp.com",

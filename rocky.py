@@ -19,8 +19,32 @@ Rocky — Virtual Paralegal
       Generate Ella Aiken's daily case digest from her inbox folders.
 
   python rocky.py --pending-llt [--dry-run]              (on demand)
+  python rocky.py --pending-llt --ripe [--dry-run]       (on demand — ripe check-ins)
       Download LLT spreadsheet + contacts from SharePoint, group by
       property, create draft status-update emails in James's Drafts.
+
+  python rocky.py --mf-brain --digest [--dry-run] [--max-questions N]  (7:00 AM daily)
+  python rocky.py --mf-brain --scan [--dry-run] [--local] | --status
+      MF Case Brain, Stage 0: OBSERVE ONLY. Reads the LLT spreadsheet, the
+      Outlook folder tree and James's inbox; resolves them to MF-##### cases
+      (a case is a resident at a unit; matter LINES sit under it); records
+      predictions that grade themselves when their horizon passes; and emails
+      James the day's thoughts, a scorecard of how earlier guesses turned out,
+      what it WOULD have done, and a few questions with fill-in boxes. Typed
+      answers come back through rocky@'s inbox into learning.md.
+      Writes nothing outside its own ledger — no spreadsheet edits, no mail
+      moves, no folder changes. --digest runs the scan itself, so schedule
+      only ONE of the two. See MF_CASE_BRAIN.md.
+
+  python rocky.py --llt-watch [--force] [--dry-run] [--status]  (HOURLY, 8 AM - 7 PM)
+      Watch PENDING LLT MATTERS on the Multifamily Housing Teams site and
+      record every hand edit: new matters, deletions, court dates, status
+      changes. Checks the file's cTag first and downloads nothing when the
+      sheet is untouched, so an hourly schedule costs one small Graph call
+      per run and zero Claude tokens. Skips itself outside the 8 AM - 7 PM
+      window (config llt_watch_hours; --force overrides) because schtasks
+      can't express a workday-only hourly trigger. The change log feeds the
+      Multifamily Digest's "LLT Spreadsheet" section. See llt_watch.py.
 
   python rocky.py --maple-pma-activity [--dry-run] [--backfill-days N]  (3:30 PM daily)
       Export new emails from rocky@'s "Inbox\\PMA emails" folder to a JSONL
@@ -5018,6 +5042,14 @@ def main():
     elif "--multifamily-digest" in sys.argv:
         import multifamily_digest
         multifamily_digest.run_cli(load_config(), DATA_DIR)
+    elif "--llt-watch" in sys.argv:
+        import llt_watch
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        llt_watch.run_cli(load_config(), DATA_DIR)
+    elif "--mf-brain" in sys.argv or "--mf-brain-scan" in sys.argv:
+        import mf_brain
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        mf_brain.run_cli(load_config(), DATA_DIR)
     elif "--vault-digest" in sys.argv:
         import vault
         vault.run_digest_cli(load_config(), DATA_DIR)
@@ -5061,6 +5093,20 @@ def main():
         print("  --steve-todo                            Steve's daily to-do list from inbox")
         print("  --ella-digest  [--hours N]              Ella's daily case digest from inbox")
         print("  --pending-llt  [--dry-run] [--limit N]  Draft LLT status emails by property")
+        print("  --pending-llt --ripe [--as-of M/D/YY] [--local] [--sheet NAME] [--dry-run] [--limit N]")
+        print("                                          Draft ripe check-in emails: only matters whose")
+        print("                                          ripe date has passed and that aren't filed yet")
+        print("  --pending-llt --ripe --snapshot         Record ripe drafts already in the Drafts folder")
+        print("                                          (recovers the baseline; creates nothing)")
+        print("  --pending-llt --ripe --compare [RUN_ID] Diff the drafts Rocky recorded against what")
+        print("                                          was actually sent (bare = most recent run)")
+        print("  --mf-brain --digest [--dry-run] [--max-questions N]")
+        print("                                          MF Case Brain daily email: thoughts, scorecard,")
+        print("                                          would-have-dones, and questions with answer boxes")
+        print("  --mf-brain --scan [--local] | --status  Update the case ledger without emailing")
+        print("  --llt-watch    [--force] [--dry-run] [--sheet NAME] [--local] [--status]")
+        print("                                          Record hand edits to PENDING LLT MATTERS (hourly,")
+        print("                                          8 AM-7 PM); feeds the Multifamily Digest")
         print("  --maple-pma-activity [--dry-run] [--backfill-days N]  Export PMA emails folder to JSONL for the Maple updater (legacy alias: --pma-activity)")
         print("  --maple-digest [--date YYYY-MM-DD] [--yesterday] [--dry-run]  Draft the Maple PMA digest into James's Drafts (James sends)")
         print("  --remy-digest  [--date YYYY-MM-DD] [--yesterday] [--dry-run] [--no-push] [--no-email] [--force]")
