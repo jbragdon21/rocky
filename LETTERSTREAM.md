@@ -75,16 +75,21 @@ queryable status, tracking, and proofs, so when Rocky does the
 submitting, the entire chain runs itself:
 
 1. **Request** — a firm sender emails rocky@ with **"certified mail"**
-   in the subject (`mail_request_keyword`) and **exactly one PDF**
-   attached: the complete packet to mail, in mailing order. Address
-   instructions in the body override the document's addressee. (Or:
-   `rocky.exe --letterstream --mail <packet.pdf>` — requester is James.)
+   in the subject (`mail_request_keyword`) and **one PDF** attached: the
+   complete packet to mail, in mailing order. Several PDFs on one email
+   is a **batch** — one mailing per PDF, one confirmation for all of
+   them (see "Batches" below). Address instructions in the body override
+   the document's addressee. (Or: `rocky.exe --letterstream --mail
+   <packet.pdf>` / `--mail-batch <folder>` — requester is James.)
 2. **Preauth** — Rocky extracts the recipient, submits to LetterStream
    with `preauth=1` (**nothing prints, mails, or bills**), and gets the
-   exact cost quote. Quotes above `mail_max_cost` (default $50) are
-   refused outright. The same document to the same recipient is never
-   submitted twice from email (SHA-256; a deliberate re-mail goes
-   through `--mail`).
+   exact cost quote. **No cost cap** (James, 2026-09-21): the
+   LetterStream account's own limits and prepay balance are the
+   ceiling, and the release email quotes the cost before anyone
+   authorizes it. A preauth that comes back with no readable quote is
+   still refused — Rocky won't ask for a YES on an unknown number. The
+   same document to the same recipient is never submitted twice from
+   email (SHA-256; a deliberate re-mail goes through `--mail`).
 3. **Release** — the requester gets a `[CM-####]` email quoting the
    recipient, page count, and cost. **The requester approves their own
    mailings** — any firm team member can use the channel, and only that
@@ -101,6 +106,44 @@ submitting, the entire chain runs itself:
    as affiant → YES → Vault). Zero manual steps between the release YES
    and the vaulted affidavit. No-affidavit jobs are just tracked to
    completion.
+
+### Batches: many mailings, one confirmation (built 2026-09-21)
+
+Attach **several PDFs** to one "certified mail" request email and Rocky
+treats each PDF as its own mailing — its own recipient extraction, its
+own `[CM-####]` — then confirms all of them in **one `[CMB-####]`
+email** listing every piece with its recipient, matter number, page
+count, and cost, plus the batch total. **One YES releases the whole
+batch.** One NO cancels it. The requester releases their own batch,
+same as a single mailing (James can release or cancel any of them).
+
+- **Dropping one piece.** Reply NO with just that piece's `[CM-####]`
+  tag in the subject; it's cancelled and the batch stays releasable, its
+  total reduced. Then YES on the `[CMB-####]` email releases the rest.
+- **Pieces that can't be prepared** (no readable address, LetterStream
+  refuses the preauth or returns no cost quote) are itemized in the
+  same confirmation email and left out of the batch. They never generate
+  their own failure email — the batch speaks once.
+- **No cost guard, by design** (James, 2026-09-21). The account's own
+  limits govern; the confirmation email states each piece's cost and
+  the total, and nothing bills until someone replies YES.
+- **Size guard.** `mail_batch_max_pieces` (default 25) refuses an
+  oversized request outright: nothing is submitted, and the requester is
+  asked to split it. `letterstream_daily_submission_limit` (default 50,
+  their Method-2 ceiling) makes the 51st submission of a day fail with
+  "resend tomorrow" instead of being silently rejected.
+- **Reminders** go out on the batch, once, never piece by piece.
+- **Affidavits stay per-mailing.** The release reply's affidavit choice
+  ("Yes, no affidavits") applies to the whole batch, but each mailing
+  still produces its own affidavit that comes back for its own YES —
+  every signature is authorized by a reply to that one document. A
+  20-piece batch is 1 release reply and 20 affidavit replies.
+- **From the command line:** `--letterstream --mail-batch <folder>`
+  batches every PDF in a folder (a glob like `C:\Notices\*.pdf` works
+  too), requester James.
+
+A single PDF still takes the original one-piece path with its own
+`[CM-####]` email — nothing about single requests changed.
 
 **Mailing date/time policy (2026-08-17, time source refined
 2026-08-26):** the affidavit swears to the date and time the mailing
@@ -120,7 +163,8 @@ Working copies of requested packets live in `<affidavit_root>\Outbound\`
 (declined ones move to `Declined\`). The firm return address printed on
 the coversheet comes from `mail_from` (defaults to the Baltimore
 office); mail type from `letterstream_mailtype` (`certified` = with
-Electronic Return Receipt). Method-2 API limit: 50 submissions/day.
+Electronic Return Receipt). Method-2 API limit: 50 submissions/day,
+enforced locally by `letterstream_daily_submission_limit`.
 
 **Naming convention:** the uploaded file and the LetterStream job are
 named **"LastName Matter#"** (e.g. `Brathwaite 1234.001.pdf`, job
@@ -142,7 +186,8 @@ every submission, no rebuild.
 
 `rocky.exe --multifamily-digest` (5:30 PM daily; dashboard "Multifamily
 Digest") builds one digest covering this process end to end — certified
-mail requested/released/mailed (with costs, approvers, and tracking),
+mail requested/released/mailed (with costs, approvers, and tracking;
+batches appear as one line, not one per piece),
 affidavits sent/filed/declined, the day's Vault additions, and a
 snapshot of everything still waiting on a reply. It subsumes the old
 standalone Vault Digest. Since 2026-08-29 it is created as a DRAFT in
@@ -157,6 +202,7 @@ emails it from rocky@. Recipients: built-in group list, override with
 |---|---|
 | `rocky.exe --letterstream` | Full run: inbox sweep (approvals, proof submissions, mail requests) → track in-flight mailings → reminders |
 | `--letterstream --mail <packet.pdf>` | Request an outbound certified mailing from the command line (preauth → `[CM-####]` approval email) |
+| `--letterstream --mail-batch <folder\|glob>` | Request every PDF in a folder as one batch (preauth each → one `[CMB-####]` email whose single YES releases them all) |
 | `--letterstream --dry-run [--limit N]` | Log what would happen; no emails, no submissions, no state changes |
 | `--letterstream --fetch <tracking#>` | Pull ONE mailing's proof from the LetterStream API by USPS certified tracking number (or unique doc id) and run the pipeline — **the day-to-day discovery path** (see "API reality" below) |
 | `--letterstream --ingest <proof.pdf>` | Run ONE manually downloaded proof through the same pipeline (needs no API at all) |
@@ -165,7 +211,8 @@ emails it from rocky@. Recipients: built-in group list, override with
 
 **From the Rocky Dashboard** (see `DASHBOARD.md`): the sidebar's
 **Certified Mail** card shows everything pending (affidavits awaiting
-approval, mailings awaiting release, jobs in the mail) straight from the
+approval, mailings awaiting release — batched pieces marked with their
+`[CMB-####]` and its total — and jobs in the mail) straight from the
 process's state file, and its **Fetch proof** box runs `--fetch` for a
 pasted tracking number. The full sweep is in the Run a Command list
 (group "Mail", schedulable at the suggested 8:00 AM) — though if the
@@ -186,6 +233,8 @@ daily task is redundant (safe, but skip it).
    - `affidavit_approver` — Hailey's firm email, the DEFAULT approver
      for mailings with no known submitter; email-submitted requests are
      approved by their own submitter (or James) instead
+   - batch guards: `mail_batch_max_pieces` (25),
+     `letterstream_daily_submission_limit` (50) — no cost cap by design
    - optional: `affidavit_root`, `affidavit_cc`, `affidavit_affiant_name`
      / `_title`, `affidavit_affiant_titles` (`{email: title}` overrides
      for the signature block), `affidavit_reminder_days`,
@@ -260,7 +309,7 @@ anything.
 | `<affidavit_root>\Pending\` | Working copies awaiting a reply (`AM-#### Certified Mailing Affidavit - <Tenant>.docx` + proof) |
 | `<affidavit_root>\Approved\` / `Declined\` | Where those copies move on resolution (the Vault holds the canonical filed documents) |
 | `<affidavit_root>\_affidavits\activity.jsonl` | Audit trail (proposed / approved / declined / reminders / errors) — travels with the share |
-| `C:\Rocky\affidavits\state.json` | Local state: `[AM-####]` counter, pending queue, processed LetterStream job IDs, proof SHA-256s, approval-mail cursor |
+| `C:\Rocky\affidavits\state.json` | Local state: `[AM-####]` / `[CM-####]` / `[CMB-####]` counters, the pending, `mail_pending`, `mail_batches`, and `in_flight` queues, processed LetterStream job IDs, proof SHA-256s, per-day submission counts, approval-mail cursor |
 | `C:\Rocky\affidavits\letterstream_raw.jsonl` | Raw API responses for calibration |
 
 ## Failure behavior

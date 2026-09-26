@@ -24,6 +24,226 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-09-25 — To-do lists become per-person; Rommel Loria added
+
+James asked for the Steve To-Do List process for Rommel Loria
+(`rloria@`), and for the permissions a later OneDrive review or folder
+digest would need to be requested now rather than in three tickets.
+Rather than copy the Steve code, the process is now **one command per
+person** off a shared implementation.
+
+**What changed**
+
+- `rocky.py` — `TODO_USERS` registry (`steve`, `rommel`), `load_todo_user()`
+  merging config `todo_users` over it, `TODO_PROMPT_TEMPLATE` +
+  `build_todo_prompt(name, focus)`, and `steve_daily_todo()` →
+  `daily_todo(client, token, rocky_email, person)`. `_build_todo_html()`
+  takes the name; `run_steve_todo_cli()` → `run_todo_cli(key)`.
+- Dispatch: any `--<key>-todo` flag routes to `run_todo_cli`, and the
+  instance lock is the flag itself — so `rocky_steve-todo.lock` keeps its
+  old name (the dashboard's "last ran" reads that path) and two people's
+  lists can run at once while one person's still can't double-run.
+- `dashboard.py` — "Rommel To-Do" at 07:35, `recommended: True`.
+- `config.example.json` — `todo_users` (overrides only; both people are
+  built in). Per person: `mailbox`, `display_name`, `cc`, `hours`,
+  `focus` (free text about their practice, appended to the prompt).
+- `TODO_LISTS.md` — new: how the process works, how to add someone, and
+  the three permission tiers with a ready-to-send IT request.
+
+**Decisions made**
+
+- **Per-person flags (`--rommel-todo`), not a generic `--todo <who>`.**
+  Keeps one lock, one dashboard button, one scheduled task per person,
+  and leaves the deployed Steve task untouched.
+- **A new person in config alone works** (`--<key>-todo` runs), but only
+  gets a button and an Auto-setup slot once `dashboard.py` lists them.
+  Registry in code, overrides in config — the `inbox_users` pattern.
+- **Ask IT for both mailbox fences at once.** The to-do list runs on
+  rocky@'s *delegated* token, so it needs an Exchange Read delegation on
+  `rloria@`. An Ella-style folder digest runs on the *app* token, which
+  is fenced by the Application Access Policy group — a separate action.
+  Neither needs an Azure change. OneDrive review is a share, not a
+  permission: `--daily-cases` reads the synced filesystem.
+- Scheduled "recommended" before the grant exists, deliberately: the
+  failure is a soft 403 logged to `rocky.log` with no mail sent.
+
+**Open items**
+
+- IT hasn't granted either mailbox fence yet — `--rommel-todo` 403s
+  until the delegation lands. Checklist in `TASKS.md`.
+- `EMAIL_SAFETY.md` §1's four-mailbox table needs `rloria@` added once
+  the Application Access Policy group is updated.
+- `todo_users.rommel.focus` is empty; the base prompt is role-neutral
+  until Rommel says what counts as urgent.
+
+**Watch-outs**
+
+- `ella_auth.py` (device-code sign-in by Ella, token handed to James) is
+  *not* how Ella's digest authenticates today — `run_ella_digest_cli()`
+  uses `acquire_app_token()`. Don't cite that file as the model for
+  onboarding somebody's mailbox.
+
+---
+
+## Session 2026-09-21 (2) — LetterStream batches: N PDFs in, one confirmation out
+
+James asked whether Rocky could take a batch of PDFs with "certified mail
+please" and confirm them all at once. She could not: the email intake
+counted attachments and bounced anything other than exactly one PDF, and
+every layer below it was one packet, one recipient, one approval. Now
+several PDFs on one request email are **one mailing per PDF**, preauth'd
+piece by piece, confirmed in a single `[CMB-####]` email whose **one YES
+releases the whole batch**.
+
+**What changed**
+
+- `mailing_affidavits.py` — `handle_mail_batch()` plus the batch tag,
+  `_send_batch_approval_email()`, `_finalize_batch_approval()`,
+  `_finalize_batch_decline()`, and the `[CMB-####]` branch in
+  `poll_approvals`. `handle_mail_request()` gained `notify=` and
+  `outcome=` so a batch can preauth each piece without firing its own
+  email and still report per-piece failures; `_finalize_mail_approval`
+  and `_finalize_mail_decline` gained `notify=` for the same reason.
+  `--mail-batch <folder-or-glob>` is the CLI equivalent.
+- Guards: `mail_batch_max_pieces` (25) refuses an oversized request
+  before anything is submitted; `letterstream_daily_submission_limit`
+  (50) tracks preauths per day in `state["submissions_by_day"]` and
+  fails the 51st with "resend tomorrow" instead of letting LetterStream
+  reject it silently. **No cost cap** — see the decision below.
+- **`mail_max_cost` is gone** (same session, James's call). The $50
+  per-piece refusal from 2026-08-16 came out along with the batch-total
+  cap that shipped earlier in this session. A preauth that returns no
+  readable quote is still refused: there is no honest number to put in
+  the approval email. The legacy config key is simply ignored, so the
+  deployed `config.json` needs no edit.
+- `dashboard.py`, `multifamily_digest.py` — batched pieces show their
+  `[CMB-####]` and total; the digest renders batch request / release /
+  cancel / refuse events and rolls a waiting batch into ONE "Still
+  Pending" line instead of one per piece.
+- `LETTERSTREAM.md`, `BUILD_REFERENCE.md`, `DASHBOARD.md`,
+  `config.example.json`, `rocky.py` help — documented. The
+  BUILD_REFERENCE LetterStream entry never described the outbound
+  `[CM-####]` flow from 2026-08-16; it does now.
+
+**Decisions made**
+
+- **The LetterStream account is the spending ceiling, not Rocky.** A
+  cap in the code duplicated protection the account already provides
+  and could only refuse mailings the account would have allowed — and a
+  refusal is worse than a prompt, because it sends the requester back to
+  square one instead of asking a question. Everything that spends money
+  still requires a human YES on an email that states the exact cost,
+  which is where the judgment belongs. First built the batch cap with a
+  James-only escalation, then took it and the older per-piece cap out
+  the same session; don't reintroduce either without a reason the
+  prepay balance doesn't already cover.
+- **Per-piece `[CM-####]` tags survive inside a batch.** Everything
+  downstream (in_flight, tracking, the affidavit's requester linkage,
+  mail_done, the digest) keys on them, and keeping them means a reply of
+  NO on one piece's tag drops just that piece while the batch stays
+  releasable. The batch is a wrapper, not a replacement.
+- **Affidavits stay per-mailing.** A batch release still produces one
+  affidavit per mailing, each going back for its own YES, because a YES
+  is the record authorizing the `/s/` on that exact document. Batching
+  the affidavit approvals would mean one reply standing as authorization
+  for many signed documents — James's call, not a coding decision (see
+  Open items).
+- **The batch record carries a display snapshot of its members**
+  (recipient, cost, pages, matter) so the confirmation and its reminders
+  render from the batch alone. Authcodes and the rest stay in
+  `mail_pending`, which the release reads — no second source of truth
+  for anything that moves money.
+- **A failed release keeps the batch open.** If LetterStream refuses
+  some pieces, those stay in `mail_pending`, the batch record survives,
+  James gets one alert naming them, and a second YES retries. Only a
+  fully resolved batch is popped.
+- **Reminders are per batch, once.** The `mail_pending` reminder pass
+  skips any piece whose batch is still live.
+
+**Open items**
+
+- Batch affidavit approval — one email, N affidavits attached, one YES.
+  Mechanically easy on this foundation; the question is whether James
+  wants a single reply to authorize N conformed signatures.
+- Untested against the live LetterStream API (still no API activation —
+  the 2026-08-06 gating item stands). Batch logic is covered by an
+  offline harness with stubbed LetterStream/Graph/Claude: 58 checks over
+  intake routing, per-piece failure, the release summary, an expensive
+  piece and a large total passing uncapped, a quoteless preauth being
+  refused, single-piece decline inside a batch, reminders, both
+  non-cost guards, and dry run. Harness lives in the session
+  scratchpad, not the repo.
+
+**Watch-outs**
+
+- Attachment order is mailing order. Graph returns attachments in the
+  order they were attached, and Rocky numbers the confirmation from
+  that; a requester who cares which piece is which reads the recipient
+  names, not the position.
+- Nothing in Rocky limits what a mailing can cost. The email quoting
+  the cost is the control, so the confirmation's cost lines matter more
+  than they used to — keep them accurate and keep them near the YES
+  instruction.
+- One preauth per piece means a 25-piece batch spends 25 of the day's 50
+  API submissions. Two big batches in a morning will hit the ceiling.
+- `_CM_TAG_RE` and `_CMB_TAG_RE` cannot match each other's tags
+  (`[CMB-0001]` fails `\[(CM-\d{4})\]` on the `B`), so the two reply
+  loops never cross. Don't "simplify" either pattern.
+
+---
+
+## Session 2026-09-21 — Collections drafts: 48 emails into James's Drafts
+
+Reviewed the Collections Project 2026 (RRID-0037) folder on OneDrive and
+drafted the Part I follow-up emails on the Bozzuto 006104 series. **48
+drafts, 52 attachments, $66,282.43, all unsent.** Nothing was sent, and the
+script has no send path.
+
+**The review held up under mechanical check.** All 80 invoice PDFs are
+accounted for with no gaps and no double-counting (52 Part I, 26 Part II, 2
+cleared). Every `Attach` filename exists on disk with exact case and is a
+real PDF, not a OneDrive placeholder. Per-property totals sum correctly and
+reconcile to the header. Cross-checked all 78 open invoices against
+`Bozzuto Group AR as of 9.15.2026.xlsx`: every one present at face value and
+in the Over-120 bucket. Invoices 193012 and 202069 are absent from the AR,
+which independently confirms the markdown's claim that they cleared.
+
+**Three defects found, all cosmetic, none in the numbers.** Parc Plymouth
+Meeting is in PA but the folder name and subject say (MA) — corrected in the
+draft subject only, via `SUBJECT_FIXUPS`. Lexie Greaney is both PM and
+Regional at MetroPointe and The Sage, so she landed in To and Cc — duplicate
+Cc dropped. Candace Jennings gets three drafts and Kelly Imbert is cc'd on
+four, which is correct under per-property VendorCafe processing.
+
+**No new Rocky code.** `draft_collections_emails.py` lives in the matter
+folder on OneDrive, not this repo — it is one matter's work, not a Rocky
+feature. It imports `pending_llt.create_draft_email` and acquires rocky@'s
+cached `Mail.ReadWrite.Shared` silently, the same path the Vault and Mailing
+Affidavits use to write into James's mailbox. That the drafting capability
+needed nothing new is the useful finding.
+
+**Watch-outs**
+
+- The script raises rather than skips on a missing attachment or an
+  unparseable section, and asserts exactly 48 sections. A silent skip is a
+  collections email that never goes out.
+- Idempotency is two-layered: `.draft_state.json` beside the script, plus a
+  subject-match scan of James's Drafts. To rebuild a draft, delete it in
+  Outlook **and** drop its state entry, or the run will skip it.
+- Graph does not append an Outlook signature to a draft. James chose to end
+  the body at "James," as the outline reads.
+- Attachments are inlined as base64. Fine here (largest email is 0.37 MB),
+  but anything over ~3 MB needs an upload session instead.
+
+**Open**
+
+- Part II (23 properties, $8,969.21) has no roster contact and no drafts.
+  One65 Main ($2,815.84) and The Silva ($2,356.87) are worth a lookup before
+  write-off; The Silva's work includes an insurance claim, so an insurer or
+  ownership contact may pay it.
+
+---
+
 ## Session 2026-09-16 — Litigation intake: the phrase, and the scan
 
 James forwarded claims to rocky@ with "please add to spreadsheet" on top

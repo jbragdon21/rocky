@@ -62,6 +62,17 @@
     "caraviakis@gallagherllp.com"
   ],
 
+  "_todo_users_comment": "Daily to-do lists (--steve-todo 7:30 AM, --rommel-todo 7:35 AM). Rocky reads that person's inbox for the last `hours` (default 24), drops the mail they already replied to, and emails them an Urgent / Action Needed / FYI list. Steve (smetzger@) and Rommel (rloria@) are built into rocky.py's TODO_USERS, so this key is only for OVERRIDES — change a mailbox, add a cc, widen the lookback over a holiday weekend, or write a `focus` note (free text about that person's practice, appended to the prompt so Claude knows what counts as actionable for them). A brand-new key here also works (--<key>-todo runs immediately) but only gets a dashboard button and an auto-setup schedule once dashboard.py's ROCKY_COMMANDS lists it. IT prerequisite per person: rocky@ needs Exchange Read delegation on that mailbox — no Azure change; the same delegation later covers an Ella-style folder digest for them.",
+  "todo_users": {
+    "rommel": {
+      "mailbox": "rloria@gallagherllp.com",
+      "display_name": "Rommel",
+      "cc": [],
+      "hours": 24,
+      "focus": ""
+    }
+  },
+
   "_pending_llt_comment": "SharePoint config for the Pending LLT Matters pipeline. Templates path points to the Jinja2 email template folder.",
   "sharepoint_hostname": "gejlaw.sharepoint.com",
   "sharepoint_site_path": "/sites/MultifamilyHousing",
@@ -139,9 +150,11 @@
   "letterstream_api_key": "PASTE-LETTERSTREAM-API-KEY-WHEN-ACTIVATED",
   "_affidavit_submit_comment": "Primary discovery channel (LetterStream confirmed 2026-08-16 that the API can't list or serve proofs for website-submitted jobs): any firm sender emails rocky@ with affidavit_subject_keyword in the subject and the proof-of-mailing PDF(s) from the LetterStream job page attached; the 8 AM sweep turns each into an affidavit sent back to the submitter for approval (the submitter is the affiant) and replies to the submitter.",
   "affidavit_subject_keyword": "proof of mailing",
-  "_mail_submit_comment": "Outbound: Rocky submits certified mail through the LetterStream API. A firm sender emails rocky@ with mail_request_keyword in the subject + ONE PDF (the complete packet); Rocky preauths on LetterStream (nothing bills), emails the requester the recipient + page count + quoted cost tagged [CM-####]; YES from the requester or James releases it (the billing step). mail_max_cost caps the LetterStream quote. mail_from = the firm return address printed on the envelope/coversheet (defaults in code to the Baltimore office). letterstream_mailtype: 'certified' (with Electronic Return Receipt) or 'certnoerr' (without). Once mailed, the proof is pulled via the API and the affidavit flows automatically.",
+  "_mail_submit_comment": "Outbound: Rocky submits certified mail through the LetterStream API. A firm sender emails rocky@ with mail_request_keyword in the subject + ONE PDF (the complete packet); Rocky preauths on LetterStream (nothing bills), emails the requester the recipient + page count + quoted cost tagged [CM-####]; YES from the requester or James releases it (the billing step). NO COST CAP by design (James, 2026-09-21): the LetterStream account's own limits and prepay balance are the ceiling, and no job bills until a human replies YES to an email quoting the exact cost — a second cap in Rocky only refused work the account would have allowed. The legacy mail_max_cost key is ignored. mail_from = the firm return address printed on the envelope/coversheet (defaults in code to the Baltimore office). letterstream_mailtype: 'certified' (with Electronic Return Receipt) or 'certnoerr' (without). Once mailed, the proof is pulled via the API and the affidavit flows automatically.",
   "mail_request_keyword": "certified mail",
-  "mail_max_cost": 50.0,
+  "_mail_batch_comment": "BATCHES (2026-09-21): several PDFs on one request email = one mailing per PDF. Each is preauth'd on its own ([CM-####], its own recipient extraction) and all of them are confirmed in ONE [CMB-####] email listing every piece, its cost, and the total; a single YES from the requester (or James) releases the whole batch, a single NO cancels it. A NO on one piece's own [CM-####] drops just that piece and leaves the batch releasable. Two guards, neither about money: mail_batch_max_pieces caps the PDFs one request may carry (default 25), and letterstream_daily_submission_limit guards LetterStream's Method-2 ceiling of 50 API submissions per day — past it, pieces fail with 'resend tomorrow' instead of being silently rejected. CLI: '--letterstream --mail-batch <folder-or-glob>'. Each released piece still produces its own affidavit for its own YES.",
+  "mail_batch_max_pieces": 25,
+  "letterstream_daily_submission_limit": 50,
   "letterstream_mailtype": "certified",
   "letterstream_coversheet": true,
   "_letterstream_extra_comment": "Extra POST fields merged into every job submission — the hook for options the Feb 2023 API doc doesn't cover. Pending answer from LetterStream support: the field name for EXPEDITED production (the website's expedite option), which the firm wants as the default; when support names it, add it here (e.g. {\"expedite\": \"1\"}) — no rebuild needed. Uploads/job names follow the firm convention 'LastName Matter#' (matter number extracted from the request email; job names carry a short unique suffix).",

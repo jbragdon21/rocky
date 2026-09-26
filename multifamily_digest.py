@@ -185,6 +185,38 @@ def certified_mail_section(events: list[dict], state: dict) -> str:
         elif kind == "mail_declined":
             items.append(f"<b>Cancelled</b> [{escape(tag)}] {escape(label)} "
                          + _muted(f"by {e.get('by') or '?'}"))
+        elif kind == "mail_batch_preauth":
+            total = e.get("total")
+            items.append(
+                f"<b>Batch requested</b> [{escape(tag)}] {e.get('pieces')} "
+                f"mailings"
+                + (f", ${total:.2f} total" if isinstance(total, (int, float))
+                   else "")
+                + (f", {e.get('failed')} attachment(s) failed"
+                   if e.get("failed") else "")
+                + " " + _muted(f"by {e.get('from') or '?'}; one YES from "
+                               f"the requester releases them all"))
+        elif kind == "mail_batch_released":
+            cost = e.get("cost")
+            aff = ("with affidavits" if e.get("want_affidavit", True)
+                   else "no affidavits")
+            items.append(
+                f"<b>Batch released</b> [{escape(tag)}] {e.get('released')} "
+                f"mailings"
+                + (f" — ${cost:.2f}" if isinstance(cost, (int, float)) else "")
+                + f", {aff} " + _muted(
+                    f"by {e.get('by') or '?'}"
+                    + (f"; {e.get('failed')} refused by LetterStream"
+                       if e.get("failed") else "")))
+        elif kind == "mail_batch_declined":
+            items.append(
+                f"<b>Batch cancelled</b> [{escape(tag)}] "
+                f"{e.get('cancelled')} mailings "
+                + _muted(f"by {e.get('by') or '?'}"))
+        elif kind == "mail_batch_failed":
+            items.append(f"<b>Batch refused</b> {e.get('pieces')} PDFs "
+                         + _muted(f"from {e.get('from') or '?'}: "
+                                  f"{str(e.get('reason') or '')[:120]}"))
         elif kind == "mail_release_failed":
             items.append(f"<b>RELEASE FAILED</b> [{escape(tag)}] "
                          + _muted(str(e.get("reason") or "")[:120]))
@@ -358,7 +390,21 @@ def remy_section(data_dir: Path, since: datetime) -> str:
 
 def pending_section(state: dict) -> str:
     items: list[str] = []
+    batches = state.get("mail_batches") or {}
+    # A batch waits on ONE reply, so it gets one line instead of one per
+    # piece (the pieces below skip anything already counted here).
+    for tag, b in sorted(batches.items()):
+        live = [m for m in (b.get("members") or []) if not m.get("declined")]
+        total = b.get("total")
+        items.append(
+            f"<b>Batch awaiting release</b> [{escape(tag)}] {len(live)} "
+            f"mailings"
+            + (f", ${total:.2f}" if isinstance(total, (int, float)) else "")
+            + " " + _muted(f"asked {(b.get('created') or '')[:10]}, "
+                           f"waiting on {b.get('requester') or '?'}"))
     for tag, e in sorted((state.get("mail_pending") or {}).items()):
+        if batches.get(e.get("batch") or ""):
+            continue
         cost = e.get("cost")
         items.append(
             f"<b>Awaiting release</b> [{escape(tag)}] {escape(e.get('label') or '')} "

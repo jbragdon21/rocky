@@ -107,7 +107,14 @@ ROCKY_COMMANDS = [
     {"flag": "daily-cases",   "label": "Daily Cases",     "group": "Cases", "dry_run": False, "desc": "Collect and summarize today's emails for each case",    "sched_time": "16:00", "recommended": True},
     {"flag": "daily-run",     "label": "Daily Run",       "group": "Cases", "dry_run": False, "desc": "File new documents into each case folder",              "sched_time": "16:30", "recommended": True},
     {"flag": "daily-digest",  "label": "Daily Digest",    "group": "Cases", "dry_run": False, "desc": "Write the end-of-day summary of case activity",         "sched_time": "17:00", "recommended": True},
+    # One entry per person on a daily to-do list (rocky.py TODO_USERS).
+    # Staggered five minutes apart: they're separate processes with separate
+    # locks, but they hit the same Graph and Claude endpoints back to back.
+    # Until IT grants rocky@ Read on that person's mailbox the run fails
+    # soft — Graph 403, logged, no mail sent — so scheduling ahead of the
+    # delegation costs nothing but a daily line in rocky.log.
     {"flag": "steve-todo",    "label": "Steve To-Do",     "group": "Inbox", "dry_run": False, "desc": "Build Steve's morning to-do list from his email",       "sched_time": "07:30", "recommended": True},
+    {"flag": "rommel-todo",   "label": "Rommel To-Do",    "group": "Inbox", "dry_run": False, "desc": "Build Rommel's morning to-do list from their inbox",      "sched_time": "07:35", "recommended": True},
     {"flag": "ella-digest",   "label": "Ella Digest",     "group": "Inbox", "dry_run": False, "desc": "Write Ella's daily summary of her case emails",         "sched_time": "17:00", "recommended": True},
     {"flag": "pending-llt",   "label": "Pending LLT",     "group": "Inbox", "dry_run": True,  "desc": "Draft status-update emails for landlord-tenant matters"},
     # HOURLY around the clock on purpose, and no sched_time (create_task
@@ -439,11 +446,18 @@ def letterstream_summary() -> dict:
                            "detail": detail})
 
     releases = []
+    batches = state.get("mail_batches") or {}
     for tag, entry in sorted((state.get("mail_pending") or {}).items()):
         cost = entry.get("cost")
         bits = []
         if isinstance(cost, (int, float)):
             bits.append(f"${cost:.2f}")
+        # A batched piece waits on one YES covering its whole batch.
+        batch = batches.get(entry.get("batch") or "")
+        if batch:
+            bits.append(f"in batch {batch['tag']} "
+                        f"({len(batch.get('members') or [])} pieces, "
+                        f"${batch.get('total')})")
         if entry.get("requester"):
             bits.append(f"waiting on {entry['requester']}")
         releases.append({"tag": tag,

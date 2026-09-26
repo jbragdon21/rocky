@@ -13,7 +13,13 @@ Rocky — Virtual Paralegal
       Generate a consolidated daily case digest (Phase D Stage 3).
 
   python rocky.py --steve-todo                            (7:30 AM)
-      Generate Steve Metzger's daily to-do list from his inbox.
+  python rocky.py --rommel-todo                           (7:35 AM)
+      Generate one person's daily to-do list from their inbox: the last 24
+      hours of mail they have not yet replied to, sorted by Claude into
+      Urgent / Action Needed / FYI and emailed to them. One command per
+      person (TODO_USERS in this file; config "todo_users" overrides and
+      can add more). Each mailbox needs its own Exchange Full Access
+      delegation to rocky@ — no Azure change. See TODO_LISTS.md.
 
   python rocky.py --ella-digest [--hours N]               (5:00 PM)
       Generate Ella Aiken's daily case digest from her inbox folders.
@@ -103,7 +109,7 @@ Rocky — Virtual Paralegal
       vault-inbox schedule entries (disable those when this runs).
       --once = one cycle then exit (testing).
 
-  python rocky.py --letterstream [--dry-run] [--limit N] | --fetch <tracking#> | --ingest <proof.pdf> | --probe | --status  (legacy alias --affidavits)
+  python rocky.py --letterstream [--dry-run] [--limit N] | --mail <packet.pdf> | --mail-batch <folder> | --fetch <tracking#> | --ingest <proof.pdf> | --probe | --status  (legacy alias --affidavits)
       LetterStream: for each LetterStream certified mailing,
       download the proof-of-mailing PDF, generate the Certified Mailing
       Affidavit (.docx, conformed /s/ signature), and email it with the
@@ -112,8 +118,10 @@ Rocky — Virtual Paralegal
       flags James. --fetch pulls one proof from the LetterStream API by
       USPS certified tracking number (the discovery path — the API has
       no job-list call); --ingest feeds a manually downloaded proof PDF
-      through instead; --probe verifies API auth. See
-      LETTERSTREAM.md.
+      through instead; --mail requests one outbound mailing and
+      --mail-batch requests every PDF in a folder as one batch (one
+      confirmation email, one YES releases all); --probe verifies API
+      auth. See LETTERSTREAM.md.
 
   python rocky.py --litigation [--poll] [--dry-run] | --chat | --digest [--date YYYY-MM-DD] | --report <BMC|B&A|BHI|BCC> | --cleanup [--limit N] | --learn [--days N] | --voice-rebuild | --status
       Litigation Updater: Bozzuto claims tracking on Smartsheet. Watches
@@ -3632,22 +3640,66 @@ def run_daily_digest_cli() -> None:
 
 
 # =============================================================================
-# Steve's Daily To-Do List
+# Daily To-Do Lists
 # =============================================================================
-# Reads Steve Metzger's inbox for today, skips emails he's already replied to,
-# and sends him a to-do list extracted by Claude. Scheduled daily at 7:30 AM.
+# Reads one person's inbox for the last 24 hours, skips the emails they have
+# already replied to, and emails them a to-do list extracted by Claude. One
+# command per person, named for them: --steve-todo (7:30 AM, Steve Metzger),
+# --rommel-todo (7:35 AM, Rommel Loria). Each gets its own instance lock and
+# its own dashboard button; nothing is shared but the code.
 #
-# IT prerequisite: rocky@gallagherllp.com needs delegated Read access on
-# smetzger@gallagherllp.com's mailbox (Exchange Admin Center → Recipients →
-# Mailboxes → smetzger → Mailbox delegation → Read → add rocky).
+# IT prerequisite, PER PERSON: rocky@gallagherllp.com needs an Exchange
+# delegation on that mailbox — "Read and manage (Full Access)" in the admin
+# center, i.e. Add-MailboxPermission -AccessRights FullAccess. (Exchange has
+# no read-only Full Access; this process reads and nothing else, and rocky@
+# can never send as that person.) This runs on rocky@'s own DELEGATED token,
+# so the delegation is the whole ask — no Azure change; the
+# existing Mail.Read(.Shared) grant covers any mailbox Exchange lets her open.
+# Note that an Ella-style folder digest for the same person is a DIFFERENT
+# ask: that reads on the app token, fenced by the Application Access Policy
+# group (see EMAIL_SAFETY.md §1 and TODO_LISTS.md).
 #
 # Graph API note: to detect replied-to emails we request the extended property
 # PidTagLastVerbExecuted (0x1081). Values 102=Reply, 103=ReplyAll, 104=Forward.
 
-STEVE_EMAIL = "smetzger@gallagherllp.com"
+# Built-in to-do recipients, keyed by the CLI suffix (--<key>-todo). Each
+# entry may set: mailbox (required), display_name, cc, hours (lookback,
+# default 24), focus (extra prompt guidance about that person's practice).
+# config.json "todo_users" merges over these per key and can add a person
+# without a rebuild — but a new person also needs a ROCKY_COMMANDS entry in
+# dashboard.py before they get a button and a scheduled task.
+TODO_USERS: dict[str, dict] = {
+    "steve": {
+        "mailbox": "smetzger@gallagherllp.com",
+        "display_name": "Steve",
+    },
+    "rommel": {
+        "mailbox": "rloria@gallagherllp.com",
+        "display_name": "Rommel",
+    },
+}
 
 # Reply/ReplyAll verb codes on PidTagLastVerbExecuted.
 _REPLIED_VERBS = {102, 103}
+
+
+def load_todo_user(key: str, config: dict) -> dict | None:
+    """
+    Resolve one to-do recipient: the built-in entry with config.json's
+    "todo_users" overrides layered on top. Returns None if the key is
+    unknown and config doesn't supply a mailbox for it.
+    """
+    person = dict(TODO_USERS.get(key, {}))
+    override = (config.get("todo_users") or {}).get(key) or {}
+    person.update(override)
+    if not person.get("mailbox"):
+        return None
+    person["key"] = key
+    person.setdefault("display_name", key.capitalize())
+    person.setdefault("cc", [])
+    person.setdefault("hours", 24)
+    person.setdefault("focus", "")
+    return person
 
 
 def fetch_inbox_emails_unreplied(
@@ -3714,25 +3766,25 @@ def fetch_inbox_emails_unreplied(
     return unreplied
 
 
-STEVE_TODO_PROMPT = """\
+TODO_PROMPT_TEMPLATE = """\
 You are Rocky, a virtual paralegal assistant at Gallagher LLP. You are reading \
-Steve Metzger's email inbox to generate his daily to-do list.
+{name}'s email inbox to generate their daily to-do list.
 
-Below are the emails Steve received today that he has NOT yet replied to. \
-For each email that requires action from Steve, extract a clear, concise to-do \
+Below are the emails {name} received today that they have NOT yet replied to. \
+For each email that requires action from {name}, extract a clear, concise to-do \
 item. Group the to-do items by priority:
 
 **URGENT** — deadlines today/tomorrow, court filings, time-sensitive client needs
-**ACTION NEEDED** — requires Steve's response or action but not immediately urgent
+**ACTION NEEDED** — requires {name}'s response or action but not immediately urgent
 **FYI / LOW PRIORITY** — informational, can wait, newsletters, FYIs
 
 For each to-do item include:
-- A clear one-line action statement (what Steve needs to do)
+- A clear one-line action statement (what {name} needs to do)
 - The sender name
 - The email subject (abbreviated if long)
 
 Skip emails that are purely informational with no action required (automated \
-notifications, marketing, newsletters) UNLESS they contain something Steve \
+notifications, marketing, newsletters) UNLESS they contain something {name} \
 should actually be aware of.
 
 If there are no actionable emails, say so.
@@ -3752,24 +3804,37 @@ Omit any section that has no items.
 """
 
 
-def steve_daily_todo(
+def build_todo_prompt(name: str, focus: str = "") -> str:
+    """The to-do system prompt for one person, plus their optional focus note."""
+    prompt = TODO_PROMPT_TEMPLATE.format(name=name)
+    if focus:
+        prompt += (
+            f"\nContext on {name}'s practice, to steer what counts as "
+            f"actionable:\n{focus}\n"
+        )
+    return prompt
+
+
+def daily_todo(
     client: Anthropic,
     token: str,
     rocky_email: str,
-    steve_email: str = STEVE_EMAIL,
+    person: dict,
 ) -> dict:
     """
-    Fetch Steve's unreplied inbox, extract to-do items via Claude, email the
-    list to Steve. Returns a result dict with status info.
+    Fetch one person's unreplied inbox, extract to-do items via Claude, email
+    the list to them. Returns a result dict with status info.
     """
     from outbound import send_mail_guarded
 
+    name = person["display_name"]
+    mailbox = person["mailbox"]
     now = datetime.now(timezone.utc)
-    since = now - timedelta(hours=24)
+    since = now - timedelta(hours=int(person.get("hours") or 24))
 
-    emails = fetch_inbox_emails_unreplied(token, steve_email, since)
+    emails = fetch_inbox_emails_unreplied(token, mailbox, since)
     if not emails:
-        log.info("No unreplied emails in Steve's inbox — skipping to-do generation.")
+        log.info(f"No unreplied emails in {name}'s inbox — skipping to-do generation.")
         return {"sent": False, "reason": "no_unreplied_emails", "email_count": 0}
 
     email_summaries: list[str] = []
@@ -3821,14 +3886,15 @@ def steve_daily_todo(
     response = client.messages.create(
         model=CLAUDE_MODEL,
         max_tokens=2048,
-        system=STEVE_TODO_PROMPT,
+        system=build_todo_prompt(name, person.get("focus", "")),
         messages=[
             {
                 "role": "user",
                 "content": (
                     f"Today is {now.strftime('%A, %B %d, %Y')}. "
-                    f"Here are Steve's {len(emails)} unreplied emails from the "
-                    f"last 24 hours:\n\n{all_emails_text}"
+                    f"Here are {name}'s {len(emails)} unreplied emails from the "
+                    f"last {int(person.get('hours') or 24)} hours:"
+                    f"\n\n{all_emails_text}"
                 ),
             }
         ],
@@ -3836,7 +3902,7 @@ def steve_daily_todo(
     todo_md = response.content[0].text
     log.info("Claude to-do extraction complete.")
 
-    html_body = _build_todo_html(todo_md, len(emails), now)
+    html_body = _build_todo_html(todo_md, len(emails), now, name)
     icon_attachment = []
     if ROCKY_ICON_PATH.exists():
         icon_attachment = [
@@ -3847,8 +3913,9 @@ def steve_daily_todo(
     result = send_mail_guarded(
         token=token,
         sender_mailbox=rocky_email,
-        to=[steve_email],
-        subject=f"Steve's Daily To-Do List — {now.strftime('%B %d, %Y')}",
+        to=[mailbox],
+        cc=list(person.get("cc") or []),
+        subject=f"{name}'s Daily To-Do List — {now.strftime('%B %d, %Y')}",
         body=html_body,
         body_type="HTML",
         attachments=icon_attachment,
@@ -3861,7 +3928,9 @@ def steve_daily_todo(
     }
 
 
-def _build_todo_html(todo_md: str, email_count: int, now: datetime) -> str:
+def _build_todo_html(
+    todo_md: str, email_count: int, now: datetime, name: str,
+) -> str:
     today = now.strftime("%B %d, %Y")
     now_str = now.strftime("%Y-%m-%d %H:%M UTC")
     body_html = _md_section_to_html(todo_md)
@@ -3871,7 +3940,7 @@ def _build_todo_html(todo_md: str, email_count: int, now: datetime) -> str:
 <head>
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-    <title>Steve's Daily To-Do List — {today}</title>
+    <title>{name}'s Daily To-Do List — {today}</title>
     <!--[if mso]>
     <style type="text/css">
         table {{border-collapse:collapse;}}
@@ -3901,7 +3970,7 @@ def _build_todo_html(todo_md: str, email_count: int, now: datetime) -> str:
                             <td valign="middle">
                                 <h1 style="margin:0;font-size:22px;font-weight:700;
                                            color:#ffffff;line-height:1.2;">
-                                    Steve's Daily To-Do List</h1>
+                                    {name}'s Daily To-Do List</h1>
                                 <p style="margin:4px 0 0 0;font-size:15px;
                                           color:#a0aec0;font-weight:500;">
                                     {today}</p>
@@ -3940,14 +4009,25 @@ def _build_todo_html(todo_md: str, email_count: int, now: datetime) -> str:
 </html>"""
 
 
-def run_steve_todo_cli() -> None:
-    """Entry point for `python rocky.py --steve-todo`."""
+def run_todo_cli(key: str) -> None:
+    """Entry point for `python rocky.py --<key>-todo` (e.g. --steve-todo)."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    config = load_config()
+
+    person = load_todo_user(key, config)
+    if not person:
+        log.error(
+            f"No to-do recipient configured for '{key}'. Known: "
+            f"{', '.join(sorted(TODO_USERS))}. Add one under "
+            f"\"todo_users\" in config.json to define another."
+        )
+        return
+
+    name = person["display_name"]
     log.info("=" * 60)
-    log.info("Rocky — Steve's Daily To-Do List")
+    log.info(f"Rocky — {name}'s Daily To-Do List")
     log.info("=" * 60)
 
-    config = load_config()
     app = get_msal_app(config)
     token = acquire_token(app)
     audit_token_scopes(token)
@@ -3955,15 +4035,16 @@ def run_steve_todo_cli() -> None:
     anthropic_client = Anthropic(api_key=config["anthropic_api_key"])
     rocky_email = config.get("rocky_email", "rocky@gallagherllp.com")
 
-    result = steve_daily_todo(
+    result = daily_todo(
         client=anthropic_client,
         token=token,
         rocky_email=rocky_email,
+        person=person,
     )
 
     if result.get("sent"):
         log.info(
-            f"To-do list sent to {STEVE_EMAIL} "
+            f"To-do list sent to {person['mailbox']} "
             f"({result['email_count']} emails reviewed)."
         )
     else:
@@ -3973,7 +4054,7 @@ def run_steve_todo_cli() -> None:
         )
 
     log.info("=" * 60)
-    log.info("Steve's Daily To-Do complete.")
+    log.info(f"{name}'s Daily To-Do complete.")
 
 
 # =============================================================================
@@ -4984,6 +5065,15 @@ def main():
     )
     if inbox_flag:
         command = inbox_flag.lstrip("-")
+    # Daily to-do lists are per-person (--steve-todo, --rommel-todo, ...).
+    # Each person locks on their own command name, so two people's lists may
+    # run at the same time but one person's can never double-run.
+    todo_flag = next(
+        (a for a in sys.argv[1:]
+         if a.startswith("--") and a.endswith("-todo")), None
+    )
+    if todo_flag:
+        command = todo_flag.lstrip("-")
     # Litigation Updater: subflags (--chat, --digest, ...) may precede the
     # --litigation flag, and the dashboard uses the aliases
     # --litigation-digest / --litigation-learn. All litigation commands
@@ -5025,8 +5115,8 @@ def main():
         run_daily_run_cli()
     elif "--daily-digest" in sys.argv:
         run_daily_digest_cli()
-    elif "--steve-todo" in sys.argv:
-        run_steve_todo_cli()
+    elif todo_flag:
+        run_todo_cli(todo_flag.lstrip("-").removesuffix("-todo"))
     elif "--ella-digest" in sys.argv:
         run_ella_digest_cli()
     elif "--pending-llt" in sys.argv:
@@ -5090,7 +5180,7 @@ def main():
         print("  --daily-cases  [RRID-XXXX]              Fetch emails, summarize, save")
         print("  --daily-run    [RRID-XXXX]              Run per-case folder skills")
         print("  --daily-digest [RRID-XXXX] [--hours N]  Generate daily case digest")
-        print("  --steve-todo                            Steve's daily to-do list from inbox")
+        print("  --steve-todo | --rommel-todo            One person's daily to-do list from their inbox")
         print("  --ella-digest  [--hours N]              Ella's daily case digest from inbox")
         print("  --pending-llt  [--dry-run] [--limit N]  Draft LLT status emails by property")
         print("  --pending-llt --ripe [--as-of M/D/YY] [--local] [--sheet NAME] [--dry-run] [--limit N]")
@@ -5125,10 +5215,13 @@ def main():
         print("                                          additions, the day's Remy development digest, and everything still")
         print("                                          pending; quiet day = no email")
         print("  --vault-digest [--hours N] [--dry-run]  Email the day's Vault additions only (SUPERSEDED by --multifamily-digest)")
-        print("  --letterstream [--dry-run] [--limit N] | --mail <packet.pdf> | --fetch <tracking#> | --ingest <proof.pdf> | --probe | --status")
+        print("  --letterstream [--dry-run] [--limit N] | --mail <packet.pdf> | --mail-batch <folder> | --fetch <tracking#> |")
+        print("                 --ingest <proof.pdf> | --probe | --status")
         print("                                          LetterStream (legacy alias --affidavits): certified mail — submit (preauth ->")
         print("                                          [CM-####] YES releases), track, then affidavit + proof to Hailey; her YES")
-        print("                                          files both in The Vault (see LETTERSTREAM.md)")
+        print("                                          files both in The Vault. --mail-batch (or several PDFs on one request email)")
+        print("                                          preauths each piece and confirms them in ONE [CMB-####] email whose single")
+        print("                                          YES releases the batch (see LETTERSTREAM.md)")
         print("  --litigation   [--poll] [--dry-run] | --chat | --digest [--date YYYY-MM-DD] |")
         print("                 --report <BMC|B&A|BHI|BCC> | --cleanup [--limit N] | --learn [--days N] |")
         print("                 --voice-rebuild | --status")

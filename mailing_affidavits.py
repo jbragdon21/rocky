@@ -55,14 +55,33 @@ must end up in The Vault. This process automates the loop:
         requester the exact recipient, page count, and LetterStream's
         quoted cost tagged [CM-####]. Only the requester or James can
         reply YES — that is the release step that bills the prepay
-        account (mail_max_cost caps the quote, default $50). Rocky then
+        account. Rocky imposes NO cost cap of its own (2026-09-21): the
+        LetterStream account's limits and prepay balance are the
+        ceiling, and the release email quotes the exact cost. Rocky then
         tracks the job each morning; when USPS accepts it, the proof is
         pulled via the API and the affidavit goes back to the requester
         for approval — zero manual steps from YES to vaulted affidavit.
 
+    BATCHES (built 2026-09-21):
+        SEVERAL PDFs on one request email = one mailing per PDF. Each is
+        preauth'd separately (its own recipient, its own [CM-####]) and
+        all of them are confirmed in ONE [CMB-####] email listing every
+        piece, its cost, and the batch total. A single YES releases the
+        whole batch; a single NO cancels it. A NO on one piece's
+        [CM-####] drops just that piece and leaves the batch releasable.
+        mail_batch_max_pieces caps how many PDFs one request may carry
+        (default 25) and letterstream_daily_submission_limit guards
+        LetterStream's 50-submissions/day API ceiling; there is no cost
+        cap. Each released piece still produces its own affidavit for
+        its own YES.
+
     python rocky.py --letterstream --mail <packet.pdf> [--dry-run]
         The same outbound request from the command line (requester =
         James).
+
+    python rocky.py --letterstream --mail-batch <folder-or-glob> [--dry-run]
+        Request every PDF in a folder (or matching a glob) as one batch,
+        with one confirmation email to James.
 
     python rocky.py --letterstream --fetch <tracking#-or-doc-id> [--dry-run]
         Pull ONE mailing's proof of mailing from the LetterStream API by
@@ -145,6 +164,23 @@ _TAG_RE = re.compile(r"\[(AM-\d{4})\]", re.IGNORECASE)
 MAIL_TAG_PREFIX = "CM"
 _CM_TAG_RE = re.compile(r"\[(CM-\d{4})\]", re.IGNORECASE)
 
+# A batch: several PDFs in one request email, preauth'd piece by piece
+# (each keeps its own [CM-####]) and confirmed in ONE [CMB-####] email
+# whose single YES releases every piece. `[CMB-0001]` cannot match
+# _CM_TAG_RE and vice versa, so the two loops never cross.
+MAIL_BATCH_TAG_PREFIX = "CMB"
+_CMB_TAG_RE = re.compile(r"\[(CMB-\d{4})\]", re.IGNORECASE)
+
+# Batch guards. Pieces: how many PDFs one request email may carry.
+# Daily: LetterStream's Method-2 ceiling of 50 API submissions per day.
+# There is deliberately NO cost cap (2026-09-21): the LetterStream
+# account's own prepay balance and limits are the ceiling, and nothing
+# bills until a human replies YES to an email that quotes the exact
+# cost. A second cap in Rocky only refused work the account would have
+# allowed.
+DEFAULT_BATCH_MAX_PIECES = 25
+DEFAULT_DAILY_SUBMISSION_LIMIT = 50
+
 # The firm's return address (the Brathwaite proof's cover page), config
 # key mail_from overrides.
 _DEFAULT_MAIL_FROM = {
@@ -222,6 +258,28 @@ def _next_mail_tag(state: dict) -> str:
     n = int(state.get("mail_counter") or 0) + 1
     state["mail_counter"] = n
     return f"{MAIL_TAG_PREFIX}-{n:04d}"
+
+
+def _next_mail_batch_tag(state: dict) -> str:
+    n = int(state.get("mail_batch_counter") or 0) + 1
+    state["mail_batch_counter"] = n
+    return f"{MAIL_BATCH_TAG_PREFIX}-{n:04d}"
+
+
+def _submissions_today(state: dict) -> int:
+    """How many jobs Rocky has preauth'd on LetterStream today (their
+    Method-2 API allows 50 submissions/day)."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    return int((state.get("submissions_by_day") or {}).get(today) or 0)
+
+
+def _record_submission(state: dict) -> None:
+    today = datetime.now().strftime("%Y-%m-%d")
+    counts = state.setdefault("submissions_by_day", {})
+    counts[today] = int(counts.get(today) or 0) + 1
+    # Keep a fortnight; the rest is noise in the state file.
+    for day in sorted(counts)[:-14]:
+        counts.pop(day, None)
 
 
 def _approvers(config: dict) -> list[str]:
@@ -792,30 +850,46 @@ def extract_mail_request(client, doc_text: str, body_text: str) -> dict | None:
 def handle_mail_request(
     client, config: dict, paths: dict, state: dict,
     pdf_bytes: bytes, filename: str, body_text: str, requester: str,
-    dry_run: bool, requester_name: str = "",
+    dry_run: bool, requester_name: str = "", notify: bool = True,
+    outcome: dict | None = None,
 ):
     """
     One certified-mail request -> LetterStream PREAUTH (nothing printed
     or billed) -> [CM-####] approval email to the requester quoting the
     exact recipient and LetterStream's cost. Returns the tag on success
     (True on a dry run), False otherwise (requester notified).
+
+    notify=False suppresses both the approval email and the failure
+    reply: the caller is a batch (handle_mail_batch) and reports every
+    piece in one [CMB-####] email instead. `outcome`, when given, is
+    filled with {tag, entry} or {error} so that caller can say what
+    happened to each piece.
     """
     import letterstream
     from pypdf import PdfReader
     from rocky import _sanitize_filename  # lazy
 
-    def fail(reason: str, notify: bool = True):
+    def fail(reason: str, notify_requester: bool = True):
         log.error(f"[affidavits] mail request from {requester}: {reason}")
         append_activity(paths, {"event": "mail_request_failed",
                                 "from": requester, "file": filename,
                                 "reason": reason})
-        if notify and not dry_run:
+        if outcome is not None:
+            outcome["error"] = reason
+        if notify and notify_requester and not dry_run:
             _reply_from_rocky(
                 config, requester, "Rocky — certified mail request failed",
                 f"Rocky couldn't process the certified-mail request for "
                 f"{filename!r}:\n\n    {reason}\n\nNothing was submitted "
                 f"or billed. James has been flagged in the log.")
         return False
+
+    daily_limit = int(config.get("letterstream_daily_submission_limit")
+                      or DEFAULT_DAILY_SUBMISSION_LIMIT)
+    if not dry_run and _submissions_today(state) >= daily_limit:
+        return fail(f"LetterStream's API accepts {daily_limit} submissions "
+                    f"per day and Rocky has used them all today — resend "
+                    f"tomorrow. Nothing was submitted.")
 
     ls = letterstream.LetterStreamClient(config, paths["local"])
     if not ls.configured:
@@ -849,7 +923,7 @@ def handle_mail_request(
         return fail("this exact document to this recipient was already "
                     "requested — Rocky won't submit it twice from email. "
                     "If a re-mail is intended, James can run it with "
-                    "rocky.exe --letterstream --mail", notify=True)
+                    "rocky.exe --letterstream --mail")
 
     # Firm naming convention: uploads and LetterStream job names read
     # "LastName Matter#" (job names must be unique account-wide, so the
@@ -878,17 +952,22 @@ def handle_mail_request(
             extra_fields=config.get("letterstream_extra_fields") or {})
     except letterstream.LetterStreamError as e:
         return fail(f"LetterStream submission error: {e}")
+    _record_submission(state)  # the API call happened, limit or not
     if not result.get("ok") or not result.get("authcode"):
         return fail("LetterStream preauth failed: "
                     + ("; ".join(result.get("errors"))
                        or result.get("details") or "unrecognized response"))
 
+    # No cost cap (2026-09-21): the account's limits govern, and the
+    # release email quotes the cost before anyone authorizes it. A quote
+    # Rocky can't read at all is still a failure — the approval email
+    # has no honest number to show.
     cost = result.get("cost")
-    max_cost = float(config.get("mail_max_cost") or 50.0)
-    if cost is None or cost > max_cost:
-        return fail(f"LetterStream quoted ${cost} which exceeds the "
-                    f"mail_max_cost cap (${max_cost:.2f}) — the job was "
-                    f"left unreleased and will not be billed")
+    if cost is None:
+        return fail("LetterStream accepted the job but returned no cost "
+                    "quote, so Rocky can't tell you what releasing it "
+                    "would spend — the job was left unreleased and will "
+                    "not be billed")
 
     tag = _next_mail_tag(state)
     label = _sanitize_filename((req.get("label") or "").strip()
@@ -915,10 +994,12 @@ def handle_mail_request(
         "dedup_key": dedup_key,
         "created": datetime.now(timezone.utc).isoformat(),
         "last_notified": None,
+        # Set by handle_mail_batch once every piece has been preauth'd.
+        "batch": None,
         "extraction": {"confidence": req.get("confidence"),
                        "reasoning": req.get("reasoning")},
     }
-    if _send_mail_approval_email(config, entry, reminder=False):
+    if notify and _send_mail_approval_email(config, entry, reminder=False):
         entry["last_notified"] = datetime.now(timezone.utc).isoformat()
     state.setdefault("mail_pending", {})[tag] = entry
     state.setdefault("mail_sha", []).append(dedup_key)
@@ -928,7 +1009,329 @@ def handle_mail_request(
                             "pages": pages, "cost": cost})
     log.info(f"[affidavits] {tag}: preauth'd {label!r} to "
              f"{req.get('name1')} (${cost}) — awaiting YES from {requester}")
+    if outcome is not None:
+        outcome["tag"] = tag
+        outcome["entry"] = entry
     return tag
+
+
+# =============================================================================
+# Batches: many PDFs in one request, one confirmation, one YES
+# =============================================================================
+
+def handle_mail_batch(
+    client, config: dict, paths: dict, state: dict,
+    items: list[tuple[str, bytes]], body_text: str, requester: str,
+    dry_run: bool, requester_name: str = "", source: str = "email",
+):
+    """
+    Several certified mailings requested together. Each PDF is preauth'd
+    on its own (its own recipient extraction, its own [CM-####] —
+    nothing prints or bills), and the requester gets ONE [CMB-####]
+    email listing every piece with its cost and the batch total. A
+    single YES on that email releases every piece.
+
+    Returns the batch tag on success (True on a dry run), False when no
+    piece survived preauth. The requester is emailed exactly once either
+    way, with per-piece failures itemized.
+    """
+    max_pieces = int(config.get("mail_batch_max_pieces")
+                     or DEFAULT_BATCH_MAX_PIECES)
+    if len(items) > max_pieces:
+        log.error(f"[affidavits] batch request from {requester}: "
+                  f"{len(items)} pieces exceeds mail_batch_max_pieces "
+                  f"({max_pieces}) — refused")
+        append_activity(paths, {"event": "mail_batch_failed",
+                                "from": requester, "pieces": len(items),
+                                "reason": f"over the {max_pieces}-piece cap"})
+        if not dry_run:
+            _reply_from_rocky(
+                config, requester, "Rocky — certified mail batch too large",
+                f"That request carried {len(items)} PDFs. Rocky takes up to "
+                f"{max_pieces} in one batch, so nothing was submitted or "
+                f"billed. Split it into smaller emails and resend.")
+        return False
+
+    if dry_run:
+        for filename, pdf_bytes in items:
+            handle_mail_request(client, config, paths, state, pdf_bytes,
+                                filename, body_text, requester, True,
+                                requester_name=requester_name, notify=False)
+        log.info(f"[affidavits] DRY-RUN: would batch {len(items)} mailings "
+                 f"for {requester} into one confirmation email")
+        return True
+
+    members, failures = [], []
+    for filename, pdf_bytes in items:
+        outcome: dict = {}
+        handle_mail_request(client, config, paths, state, pdf_bytes,
+                            filename, body_text, requester, False,
+                            requester_name=requester_name, notify=False,
+                            outcome=outcome)
+        if outcome.get("tag"):
+            members.append(outcome["entry"])
+        else:
+            failures.append({"filename": filename,
+                             "error": outcome.get("error")
+                             or "unknown failure (see rocky.log)"})
+
+    if not members:
+        append_activity(paths, {"event": "mail_batch_failed",
+                                "from": requester, "pieces": len(items),
+                                "reason": "no piece survived preauth"})
+        _reply_from_rocky(
+            config, requester, "Rocky — certified mail batch failed",
+            "Rocky could not preauth any of the mailings in that request. "
+            "Nothing was submitted or billed.\n\n"
+            + "\n".join(f"    {f['filename']}: {f['error']}"
+                        for f in failures)
+            + "\n\nFix what's noted above and resend.")
+        return False
+
+    tag = _next_mail_batch_tag(state)
+    total = round(sum(float(e.get("cost") or 0.0) for e in members), 2)
+    batch = {
+        "tag": tag,
+        "requester": requester.lower(),
+        "requester_name": requester_name or None,
+        "source": source,
+        # A display snapshot of each piece, so the confirmation and its
+        # reminders render from the batch record alone. Authcodes and
+        # the rest stay in mail_pending, which the release reads.
+        "members": [{"tag": e["tag"], "label": e.get("label"),
+                     "filename": e.get("filename"),
+                     "recipient": e.get("recipient"),
+                     "matter_number": e.get("matter_number"),
+                     "pages": e.get("pages"), "cost": e.get("cost"),
+                     "declined": False} for e in members],
+        "failures": failures,
+        "total": total,
+        "mailtype": members[0].get("mailtype"),
+        "created": datetime.now(timezone.utc).isoformat(),
+        "last_notified": None,
+    }
+    for entry in members:
+        entry["batch"] = tag
+
+    if _send_batch_approval_email(config, batch, reminder=False):
+        batch["last_notified"] = datetime.now(timezone.utc).isoformat()
+    state.setdefault("mail_batches", {})[tag] = batch
+    append_activity(paths, {"event": "mail_batch_preauth", "tag": tag,
+                            "from": requester, "source": source,
+                            "pieces": len(members),
+                            "tags": [e["tag"] for e in members],
+                            "failed": len(failures), "total": total})
+    log.info(f"[affidavits] {tag}: batch of {len(members)} mailings "
+             f"preauth'd (${total:.2f} total, {len(failures)} failed) — "
+             f"awaiting one YES from {requester}")
+    return tag
+
+
+def _batch_live_members(batch: dict) -> list[dict]:
+    return [m for m in (batch.get("members") or []) if not m.get("declined")]
+
+
+def _batch_note_decline(state: dict, entry: dict) -> None:
+    """A single piece of a batch was declined on its own [CM-####] tag —
+    drop it from the batch's confirmation snapshot so reminders and the
+    total stop counting it."""
+    batch = (state.get("mail_batches") or {}).get(entry.get("batch") or "")
+    if not batch:
+        return
+    for member in batch.get("members") or []:
+        if member.get("tag") == entry.get("tag"):
+            member["declined"] = True
+    batch["total"] = round(sum(float(m.get("cost") or 0.0)
+                               for m in _batch_live_members(batch)), 2)
+
+
+def _send_batch_approval_email(config: dict, batch: dict,
+                               reminder: bool) -> bool:
+    """The one confirmation email for a whole batch: every piece with its
+    recipient and cost, the total, and a single YES that releases them
+    all."""
+    tag = batch["tag"]
+    live = _batch_live_members(batch)
+    total = round(sum(float(m.get("cost") or 0.0) for m in live), 2)
+
+    lines = [
+        ("Reminder — this batch is still waiting for your reply.\n"
+         if reminder else "")
+        + f"Rocky prepared {len(live)} certified mailings on LetterStream. "
+          f"None of them is released yet — nothing prints, mails, or bills "
+          f"until you reply YES.",
+        "",
+    ]
+    for i, m in enumerate(live, 1):
+        r = m.get("recipient") or {}
+        addr = ", ".join(p for p in (r.get("addr1"), r.get("addr2")) if p)
+        city = f"{r.get('city')}, {r.get('state')} {r.get('zip')}"
+        cost = m.get("cost")
+        lines += [
+            f"  {i}. [{m.get('tag')}] {m.get('label')}",
+            f"       To:       {r.get('name1')}"
+            + (f" / {r.get('name2')}" if r.get("name2") else ""),
+            f"       Address:  {addr}, {city}",
+            f"       Matter:   {m.get('matter_number') or 'NOT GIVEN'}",
+            f"       Pages:    {m.get('pages')}"
+            + (f"    Cost: ${cost:.2f}" if isinstance(cost, (int, float))
+               else ""),
+            "",
+        ]
+    lines += [
+        f"    Pieces:   {len(live)}",
+        f"    Total:    ${total:.2f} (LetterStream quotes)",
+        f"    Mail type: {batch.get('mailtype') or 'certified'}",
+        "",
+    ]
+    if batch.get("failures"):
+        lines += ["These attachments could NOT be prepared and are not part "
+                  "of the batch:", ""]
+        lines += [f"    {f.get('filename')}: {f.get('error')}"
+                  for f in batch["failures"]]
+        lines += ["", "Fix those and send them as a new request.", ""]
+    lines += [
+        "CHECK EVERY ADDRESS. Reply YES once and Rocky releases all "
+        f"{len(live)} pieces for printing and mailing (this is the step "
+        f"that bills the account, ${total:.2f}). Reply NO to cancel the "
+        "whole batch — unreleased jobs cost nothing.",
+        "",
+        "To drop one piece, reply NO with just that piece's [CM-####] tag "
+        "in the subject line; then YES on this batch releases the rest.",
+        "",
+        "In the same reply, tell Rocky whether to prepare the Certified "
+        "Mailing Affidavits once they're mailed — this applies to the "
+        "whole batch:",
+        "    \"Yes, with affidavits\"  — release + affidavits "
+        "(a plain YES also includes them)",
+        "    \"Yes, no affidavits\"    — release only",
+        "",
+        f"(Keep [{tag}] in the subject line when replying.)",
+    ]
+
+    to = [batch["requester"]]
+    try:
+        import outbound
+        from rocky import acquire_token, get_msal_app  # lazy
+        token = acquire_token(get_msal_app(config))
+        result = outbound.send_mail_guarded(
+            token=token,
+            sender_mailbox=config.get("rocky_email", "rocky@gallagherllp.com"),
+            to=to,
+            cc=[a for a in (config.get("affidavit_cc") or [])
+                if a and a.lower() not in {t.lower() for t in to}],
+            subject=(("Reminder: " if reminder else "")
+                     + f"{len(live)} certified mailings ready to release "
+                       f"[{tag}] — ${total:.2f}"),
+            body="\n".join(lines),
+        )
+        return bool(result.get("sent"))
+    except Exception as e:
+        log.error(f"[affidavits] batch approval email for {tag} failed: {e}")
+        return False
+
+
+def _finalize_batch_approval(config: dict, paths: dict, state: dict,
+                             batch: dict, approved_by: str,
+                             want_affidavit: bool) -> int:
+    """YES on a [CMB-####]: release every piece still awaiting release,
+    then send one summary. Pieces LetterStream refuses stay unreleased
+    and keep the batch open for a retry."""
+    tag = batch["tag"]
+    mail_pending = state.get("mail_pending") or {}
+    released, failed, billed = [], [], 0.0
+
+    for member in _batch_live_members(batch):
+        entry = mail_pending.get(member.get("tag"))
+        if entry is None:
+            continue  # already released, cancelled, or gone
+        if _finalize_mail_approval(config, paths, state, entry, approved_by,
+                                   want_affidavit, notify=False):
+            released.append(entry)
+            billed += float(entry.get("cost") or 0.0)
+        else:
+            failed.append(entry)
+
+    append_activity(paths, {"event": "mail_batch_released", "tag": tag,
+                            "by": approved_by, "released": len(released),
+                            "failed": len(failed), "cost": round(billed, 2),
+                            "want_affidavit": want_affidavit})
+    log.info(f"[affidavits] {tag}: batch released by {approved_by} — "
+             f"{len(released)} of {len(released) + len(failed)} pieces, "
+             f"${billed:.2f} "
+             f"({'with' if want_affidavit else 'WITHOUT'} affidavits)")
+
+    body = [
+        f"Released {len(released)} certified mailing"
+        f"{'' if len(released) == 1 else 's'} (${billed:.2f} billed to the "
+        f"prepay account). LetterStream prints and mails them.",
+        "",
+    ]
+    body += [f"    [{e['tag']}] {e.get('label')} -> "
+             f"{(e.get('recipient') or {}).get('name1')}"
+             + (f"  (mailing date on the affidavit: "
+                f"{_pretty_date(e.get('communicated_date'))} at "
+                f"{e.get('communicated_time')})" if want_affidavit else "")
+             for e in released]
+    body += [""]
+    if failed:
+        body += [
+            "LetterStream refused these, so they stay unreleased and "
+            "unbilled. James has been flagged; reply YES again to retry.",
+            "",
+        ]
+        body += [f"    [{e['tag']}] {e.get('label')}: "
+                 f"{e.get('release_error') or 'see rocky.log'}"
+                 for e in failed]
+        body += [""]
+    body += ["Rocky tracks each mailing and will prepare the Certified "
+             "Mailing Affidavits automatically once they're mailed — each "
+             "comes back to you for its own YES, one affidavit per "
+             "mailing." if want_affidavit else
+             "Per your reply, no affidavits will be prepared for this "
+             "batch — Rocky just tracks the mailings to completion."]
+    _reply_from_rocky(
+        config, approved_by,
+        f"RE: certified mailings ready to release [{tag}]", "\n".join(body))
+
+    if failed:
+        _notify_james(config, f"Rocky — batch [{tag}]: {len(failed)} of "
+                              f"{len(released) + len(failed)} releases failed",
+                      "\n".join(f"[{e['tag']}] {e.get('label')}: "
+                                f"{e.get('release_error') or 'see rocky.log'}"
+                                for e in failed))
+    else:
+        state.get("mail_batches", {}).pop(tag, None)
+    return len(released)
+
+
+def _finalize_batch_decline(config: dict, paths: dict, state: dict,
+                            batch: dict, declined_by: str,
+                            reply_text: str) -> int:
+    """NO on a [CMB-####]: cancel every piece in the batch at once."""
+    tag = batch["tag"]
+    mail_pending = state.get("mail_pending") or {}
+    cancelled = []
+    for member in _batch_live_members(batch):
+        entry = mail_pending.get(member.get("tag"))
+        if entry is None:
+            continue
+        _finalize_mail_decline(config, paths, state, entry, declined_by,
+                               reply_text, notify=False)
+        cancelled.append(entry)
+    state.get("mail_batches", {}).pop(tag, None)
+    append_activity(paths, {"event": "mail_batch_declined", "tag": tag,
+                            "by": declined_by, "cancelled": len(cancelled),
+                            "reply": reply_text[:500]})
+    log.info(f"[affidavits] {tag}: batch of {len(cancelled)} cancelled by "
+             f"{declined_by}")
+    _reply_from_rocky(
+        config, declined_by,
+        f"RE: certified mailings ready to release [{tag}]",
+        f"Cancelled all {len(cancelled)} mailings in that batch. None was "
+        f"ever released — nothing will be mailed or billed.\n\n"
+        + "\n".join(f"    [{e['tag']}] {e.get('label')}" for e in cancelled))
+    return len(cancelled)
 
 
 def _send_mail_approval_email(config: dict, entry: dict,
@@ -1003,9 +1406,12 @@ def _wants_affidavit(reply_text: str) -> bool:
 
 def _finalize_mail_approval(config: dict, paths: dict, state: dict,
                             entry: dict, approved_by: str,
-                            want_affidavit: bool = True) -> int:
+                            want_affidavit: bool = True,
+                            notify: bool = True) -> int:
     """YES on a [CM-####]: authorize the preauth'd job (the billing
-    step), then track it until mailed."""
+    step), then track it until mailed. notify=False leaves the emails to
+    the caller (a batch release sends one summary instead of one email
+    per piece) and records any refusal in entry["release_error"]."""
     import letterstream
 
     tag = entry["tag"]
@@ -1021,15 +1427,17 @@ def _finalize_mail_approval(config: dict, paths: dict, state: dict,
         log.error(f"[affidavits] {tag}: doauth failed: {reason}")
         append_activity(paths, {"event": "mail_release_failed", "tag": tag,
                                 "reason": reason})
-        _reply_from_rocky(
-            config, approved_by,
-            f"RE: Certified mailing ready to release [{tag}]",
-            f"Rocky tried to release [{tag}] but LetterStream refused:\n\n"
-            f"    {reason}\n\nThe job stays unreleased (nothing billed). "
-            f"James has been flagged in the log; you can reply YES again "
-            f"to retry once resolved.")
-        _notify_james(config, f"Rocky — certified mailing [{tag}] release "
-                              f"failed", f"doauth failed: {reason}")
+        entry["release_error"] = reason
+        if notify:
+            _reply_from_rocky(
+                config, approved_by,
+                f"RE: Certified mailing ready to release [{tag}]",
+                f"Rocky tried to release [{tag}] but LetterStream refused:"
+                f"\n\n    {reason}\n\nThe job stays unreleased (nothing "
+                f"billed). James has been flagged in the log; you can reply "
+                f"YES again to retry once resolved.")
+            _notify_james(config, f"Rocky — certified mailing [{tag}] release "
+                                  f"failed", f"doauth failed: {reason}")
         return 0
 
     now_local = datetime.now()
@@ -1037,6 +1445,7 @@ def _finalize_mail_approval(config: dict, paths: dict, state: dict,
     entry["released"] = datetime.now(timezone.utc).isoformat()
     entry["released_by"] = approved_by
     entry["want_affidavit"] = want_affidavit
+    entry.pop("release_error", None)
     # Firm policy (2026-08-17): the affidavit's mailing date/time is when
     # the mailing was communicated to LetterStream (this release), not
     # when LetterStream later hands it to USPS.
@@ -1053,6 +1462,8 @@ def _finalize_mail_approval(config: dict, paths: dict, state: dict,
     log.info(f"[affidavits] {tag}: released to LetterStream production "
              f"by {approved_by} "
              f"({'with' if want_affidavit else 'WITHOUT'} affidavit)")
+    if not notify:
+        return 1
     _reply_from_rocky(
         config, approved_by,
         f"RE: Certified mailing ready to release [{tag}] — "
@@ -1073,9 +1484,11 @@ def _finalize_mail_approval(config: dict, paths: dict, state: dict,
 
 def _finalize_mail_decline(config: dict, paths: dict, state: dict,
                            entry: dict, declined_by: str,
-                           reply_text: str) -> None:
+                           reply_text: str, notify: bool = True) -> None:
     tag = entry["tag"]
     state.get("mail_pending", {}).pop(tag, None)
+    if entry.get("batch"):
+        _batch_note_decline(state, entry)
     try:
         src = Path(entry.get("file") or "")
         if src.exists():
@@ -1088,12 +1501,16 @@ def _finalize_mail_decline(config: dict, paths: dict, state: dict,
     append_activity(paths, {"event": "mail_declined", "tag": tag,
                             "by": declined_by, "reply": reply_text[:500]})
     log.info(f"[affidavits] {tag}: mailing cancelled by {declined_by}")
-    _reply_from_rocky(
-        config, declined_by,
-        f"RE: Certified mailing ready to release [{tag}] — "
-        f"{entry.get('label')}",
-        "Cancelled. The job was never released — nothing will be mailed "
-        "or billed.")
+    if notify:
+        _reply_from_rocky(
+            config, declined_by,
+            f"RE: Certified mailing ready to release [{tag}] — "
+            f"{entry.get('label')}",
+            "Cancelled. The job was never released — nothing will be mailed "
+            "or billed."
+            + (f"\n\nThe rest of batch [{entry['batch']}] is untouched — "
+               f"reply YES on the batch email to release the others."
+               if entry.get("batch") else ""))
 
 
 def _trackx_item(track) -> dict:
@@ -1380,7 +1797,8 @@ def poll_approvals(client, config: dict, paths: dict, state: dict,
     from rocky import acquire_app_token  # lazy
 
     counts = {"approved": 0, "declined": 0, "unclear": 0, "submitted": 0,
-              "mail_requests": 0, "released": 0, "mail_declined": 0}
+              "mail_requests": 0, "released": 0, "mail_declined": 0,
+              "batches": 0}
     pending = state.get("pending") or {}
     keyword = (config.get("affidavit_subject_keyword")
                or "proof of mailing").lower()
@@ -1407,8 +1825,9 @@ def poll_approvals(client, config: dict, paths: dict, state: dict,
                   .get("address") or "").lower()
         am_tags = {t.upper() for t in _TAG_RE.findall(subject)}
         cm_tags = {t.upper() for t in _CM_TAG_RE.findall(subject)}
+        cmb_tags = {t.upper() for t in _CMB_TAG_RE.findall(subject)}
 
-        if not am_tags and not cm_tags:
+        if not am_tags and not cm_tags and not cmb_tags:
             # Not a reply to Rocky — maybe a submission. The proof
             # keyword is checked first (more specific than "certified
             # mail", which many proof emails would also contain).
@@ -1469,6 +1888,49 @@ def poll_approvals(client, config: dict, paths: dict, state: dict,
                                         "from": sender,
                                         "reply": reply_text[:500]})
                 _reply_unclear(config, entry, sender)
+
+        mail_batches = state.get("mail_batches") or {}
+        for tag in sorted(cmb_tags):
+            batch = mail_batches.get(tag)
+            if batch is None:
+                log.info(f"[affidavits] reply for {tag} but no such batch "
+                         f"is awaiting release — ignored")
+                continue
+            # The requester releases their own batch, same as a single
+            # mailing; James can release or cancel any of them.
+            if sender not in {batch.get("requester"), james} - {""}:
+                log.info(f"[affidavits] batch release reply to {tag} from "
+                         f"{sender}, who is neither the requester nor "
+                         f"James — ignored")
+                continue
+            if dry_run:
+                log.info(f"[affidavits] DRY-RUN: would record "
+                         f"{decision or 'unclear'} for batch {tag} "
+                         f"from {sender}")
+                continue
+            if decision == "yes":
+                released = _finalize_batch_approval(
+                    config, paths, state, batch, sender,
+                    want_affidavit=_wants_affidavit(reply_text))
+                counts["released"] += released
+                counts["batches"] += 1
+            elif decision == "no":
+                counts["mail_declined"] += _finalize_batch_decline(
+                    config, paths, state, batch, sender, reply_text)
+                counts["batches"] += 1
+            else:
+                counts["unclear"] += 1
+                append_activity(paths, {"event": "reply_unclear",
+                                        "tag": tag, "from": sender,
+                                        "reply": reply_text[:500]})
+                _reply_from_rocky(
+                    config, sender,
+                    f"RE: certified mailings ready to release [{tag}]",
+                    f"Rocky couldn't tell whether that was an approval. "
+                    f"Reply YES to release all "
+                    f"{len(_batch_live_members(batch))} mailings in the "
+                    f"batch (prints, mails, and bills) or NO to cancel "
+                    f"them — keeping [{tag}] in the subject line.")
 
         mail_pending = state.get("mail_pending") or {}
         for tag in sorted(cm_tags):
@@ -1589,8 +2051,10 @@ def _handle_mail_request_email(
     state: dict, message: dict, dry_run: bool,
 ) -> int:
     """A firm sender emailed rocky@ asking to send certified mail:
-    subject contains mail_request_keyword, ONE PDF attached (the complete
-    packet to mail). Returns how many requests were preauth'd."""
+    subject contains mail_request_keyword, with one PDF attached (the
+    complete packet to mail) or several (a batch — each PDF is one
+    mailing, all confirmed in a single [CMB-####] email). Returns how
+    many requests were preauth'd."""
     from rocky import fetch_attachments  # lazy
 
     sender_info = (message.get("from") or {}).get("emailAddress") or {}
@@ -1602,26 +2066,42 @@ def _handle_mail_request_email(
     pdfs = [a for a in fetch_attachments(token, mailbox, message["id"])
             if (a.get("name") or "").lower().endswith(".pdf")
             and a.get("contentBytes")]
-    if len(pdfs) != 1:
+    if not pdfs:
         log.info(f"[affidavits] certified-mail request from {sender} has "
-                 f"{len(pdfs)} PDF attachment(s) — needs exactly one")
+                 f"no PDF attachments — ignored")
         if not dry_run:
             _reply_from_rocky(
                 config, sender,
                 f"RE: {message.get('subject') or 'Certified mail'}"[:150],
-                f"Rocky found {len(pdfs)} PDF attachments on your "
-                f"certified-mail request. Attach exactly ONE PDF — the "
-                f"complete packet to be mailed, in mailing order — and "
-                f"resend. Nothing was submitted.")
+                "Rocky found no PDF attachments on your certified-mail "
+                "request. Attach the complete packet to be mailed, in "
+                "mailing order — one PDF per mailing, several PDFs for a "
+                "batch — and resend. Nothing was submitted.")
         return 0
 
     body = (message.get("body") or {}).get("content") \
         or message.get("bodyPreview") or ""
-    result = handle_mail_request(
-        client, config, paths, state, pdfs[0]["contentBytes"],
-        pdfs[0].get("name") or "document.pdf", body, sender, dry_run,
-        requester_name=(sender_info.get("name") or "").strip())
-    return 1 if result else 0
+    requester_name = (sender_info.get("name") or "").strip()
+
+    if len(pdfs) == 1:
+        result = handle_mail_request(
+            client, config, paths, state, pdfs[0]["contentBytes"],
+            pdfs[0].get("name") or "document.pdf", body, sender, dry_run,
+            requester_name=requester_name)
+        return 1 if result else 0
+
+    # A batch: one mailing per PDF, in attachment order.
+    items = [(a.get("name") or f"document-{i}.pdf", a["contentBytes"])
+             for i, a in enumerate(pdfs, 1)]
+    log.info(f"[affidavits] certified-mail batch from {sender}: "
+             f"{len(items)} PDFs")
+    result = handle_mail_batch(
+        client, config, paths, state, items, body, sender, dry_run,
+        requester_name=requester_name, source=f"mail:{sender}")
+    if not isinstance(result, str):
+        return len(items) if result else 0  # dry run, or nothing preauth'd
+    batch = (state.get("mail_batches") or {}).get(result) or {}
+    return len(batch.get("members") or [])
 
 
 def _finalize_approval(config: dict, paths: dict, state: dict,
@@ -1769,11 +2249,18 @@ def send_reminders(config: dict, paths: dict, state: dict,
                    dry_run: bool) -> int:
     days = int(config.get("affidavit_reminder_days") or 3)
     now = datetime.now(timezone.utc)
+    batches = state.get("mail_batches") or {}
     sent = 0
-    queues = [(state.get("pending") or {}, _send_approval_email),
-              (state.get("mail_pending") or {}, _send_mail_approval_email)]
-    for queue, send in queues:
+    # Pieces belonging to a live batch are reminded by the batch email,
+    # never one by one.
+    queues = [(state.get("pending") or {}, _send_approval_email, False),
+              (state.get("mail_pending") or {}, _send_mail_approval_email,
+               True),
+              (batches, _send_batch_approval_email, False)]
+    for queue, send, skip_batched in queues:
         for tag, entry in sorted(queue.items()):
+            if skip_batched and batches.get(entry.get("batch") or ""):
+                continue
             last = entry.get("last_notified") or entry.get("created")
             try:
                 last_dt = datetime.fromisoformat(last)
@@ -1842,11 +2329,22 @@ def print_status(config: dict, paths: dict) -> None:
                  if entry.get("approver") else ""))
     mail_pending = state.get("mail_pending") or {}
     in_flight = state.get("in_flight") or {}
+    batches = state.get("mail_batches") or {}
+    print(f"  Submissions today:         {_submissions_today(state)} of "
+          f"{config.get('letterstream_daily_submission_limit') or DEFAULT_DAILY_SUBMISSION_LIMIT}"
+          f" (LetterStream's API ceiling)")
+    print(f"  Batches awaiting one YES:  {len(batches)}")
+    for tag, b in sorted(batches.items()):
+        live = _batch_live_members(b)
+        print(f"    [{tag}] {len(live)} pieces, ${b.get('total')} total, "
+              f"awaiting {b.get('requester')} — "
+              f"{', '.join(m.get('tag') for m in live)}")
     print(f"  Mailings awaiting release: {len(mail_pending)}")
     for tag, e in sorted(mail_pending.items()):
         print(f"    [{tag}] {e.get('label')} -> "
               f"{(e.get('recipient') or {}).get('name1')} "
-              f"(${e.get('cost')}, requested by {e.get('requester')})")
+              f"(${e.get('cost')}, requested by {e.get('requester')}"
+              + (f", batch {e['batch']}" if e.get("batch") else "") + ")")
     print(f"  Mailings in flight:        {len(in_flight)}")
     for tag, e in sorted(in_flight.items()):
         print(f"    [{tag}] {e.get('label')} — released "
@@ -1902,6 +2400,41 @@ def run_cli(config: dict, data_dir: Path) -> None:
         fetch_by_reference(client, config, paths, state, fetch_raw, dry_run)
         if not dry_run:
             save_state(paths, state)
+        return
+
+    batch_raw = _argv_value("--mail-batch")
+    if batch_raw:
+        target = Path(batch_raw)
+        if target.is_dir():
+            files = sorted(p for p in target.iterdir()
+                           if p.suffix.lower() == ".pdf")
+        else:
+            # A glob ("C:\\path\\Notices\\*.pdf") or a single file.
+            parent = target.parent if str(target.parent) else Path(".")
+            files = sorted(parent.glob(target.name)) if any(
+                ch in target.name for ch in "*?[") else (
+                [target] if target.exists() else [])
+        if not files:
+            print(f"No PDFs found at: {batch_raw}")
+            sys.exit(1)
+        print(f"Batching {len(files)} PDFs:")
+        for f in files:
+            print(f"  {f.name}")
+        result = handle_mail_batch(
+            client, config, paths, state,
+            [(f.name, f.read_bytes()) for f in files],
+            "(command-line batch request by James)",
+            requester=(config.get("user_email") or "").lower(),
+            dry_run=dry_run,
+            requester_name=config.get("user_display_name") or "James Bragdon",
+            source="cli")
+        if not dry_run:
+            save_state(paths, state)
+        print(f"Preauth'd as [{result}] — one confirmation email sent; "
+              f"reply YES to release the whole batch."
+              if isinstance(result, str) else
+              ("Dry run complete." if result else
+               "Failed — see rocky.log and the email Rocky sent."))
         return
 
     mail_raw = _argv_value("--mail")

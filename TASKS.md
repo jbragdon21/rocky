@@ -55,6 +55,7 @@ All done. Rocky laptop is live and running.
 
 ### Additional daily commands
 - [x] `--steve-todo` — generates Steve Metzger's daily to-do list from his inbox (7:30 AM)
+- [x] `--rommel-todo` — the same process for Rommel Loria (7:35 AM); to-do lists are now per-person (`TODO_USERS` + config `todo_users`) — see `TODO_LISTS.md`
 - [x] `--ella-digest` — Ella Aiken's daily case digest from her delegated mailbox (5:00 PM)
 - [x] `--ella-auth` — one-time auth setup for Ella's mailbox access
 
@@ -87,6 +88,7 @@ All done. Rocky laptop is live and running.
 | `--daily-run [RRID-XXXX]` | 4:30 PM | Run per-case instruction-driven folder skills |
 | `--daily-digest [RRID-XXXX] [--hours N]` | 5:00 PM | Generate consolidated case digest (file + email) |
 | `--steve-todo` | 7:30 AM | Steve's daily to-do list from inbox |
+| `--rommel-todo` | 7:35 AM | Rommel's daily to-do list from inbox (blocked until IT grants rocky@ Read on `rloria@`) |
 | `--ella-digest [--hours N]` | 5:00 PM | Ella's daily case digest |
 | `--pending-llt [--dry-run]` | On demand | Download LLT + contacts from SharePoint, draft status emails by property |
 | `--remy-digest [--date YYYY-MM-DD] [--dry-run]` | None (manual only) | Summarize the day's Remy app changes from GitHub, commit the digest — generated in-process by `--multifamily-digest` since 2026-08-30 |
@@ -94,6 +96,16 @@ All done. Rocky laptop is live and running.
 ---
 
 ## Active — open items
+
+### Rommel Loria onboarding (code complete 2026-09-25, access pending)
+- [ ] IT: Exchange mailbox delegation — `rocky@` gets **Full Access** ("Read and manage") on `rloria@gallagherllp.com`; mirror what's on `smetzger@`
+- [ ] IT: add `rloria@gallagherllp.com` to the Application Access Policy security group (needed for the later folder digest, not for the to-do list)
+- [ ] When granted: update the mailbox table in `EMAIL_SAFETY.md` §1 (four → five mailboxes)
+- [ ] Build + deploy `rocky.exe`, then run `rocky.exe --rommel-todo` once by hand to confirm the read works
+- [ ] Dashboard → schedule "Rommel To-Do" at 7:35 AM (or re-run Auto-setup, which now includes it)
+- [ ] Ask Rommel what counts as urgent in that practice and put it in config `todo_users.rommel.focus`
+- [ ] Later, for a folder digest: Outlook Rules sorting mail per matter + a `case info.xlsx` like Ella's
+- [ ] Later, for OneDrive review: Rommel shares the folder with `rocky@`, pinned "Always keep on this device" on the Rocky laptop
 
 ### Pending LLT Matters pipeline (code complete, activation pending)
 - [ ] IT: Add `Sites.Read.All` (delegated) to Rocky app registration + admin consent

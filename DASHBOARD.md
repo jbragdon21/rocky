@@ -16,7 +16,9 @@ control it from any device:
 - **Pause / Resume Rocky** (the kill switch).
 - **Certified Mail card** — everything the LetterStream process is waiting on,
   read live from its state file: affidavits awaiting Hailey's YES, mailings
-  awaiting the requester's release, and released jobs still in the mail. Plus
+  awaiting the requester's release (pieces that belong to a batch are marked
+  with their `[CMB-####]` and its total, since one YES covers them all), and
+  released jobs still in the mail. Plus
   a **Fetch proof** box — paste a USPS certified tracking number (or
   LetterStream doc id) and Rocky pulls that mailing's proof and starts the
   affidavit-for-approval flow (the day-to-day discovery path; see
