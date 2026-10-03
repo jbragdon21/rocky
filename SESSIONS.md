@@ -24,6 +24,45 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-10-03 (4) — LetterStream inbox housekeeping
+
+James asked for two things: certified-mail requests should move to the
+Letterstream folder once processed, and YES/NO approval replies should
+be deleted. The move had existed since 8/23, but only for requests that
+were actually preauth'd.
+
+**What changed**
+
+- `mailing_affidavits.poll_approvals`
+  - Any certified-mail request from a firm sender that Rocky answered
+    now moves to rocky@'s `Inbox\Letterstream`, including "no PDFs"
+    replies and failed preauths. The cursor is already past those
+    emails, so leaving them in the inbox never bought a retry.
+  - New `_delete_decision_reply()`: once a reply has recorded YES or NO
+    for at least one `[AM-]`/`[CM-]`/`[CMB-]` tag, the reply is deleted.
+    Logged as a `reply_deleted` activity event.
+  - `_mail_write_token()` factored out so the move and the delete share
+    the cached delegated token.
+- `rocky.delete_message()`: Graph DELETE, which is a soft delete (the
+  message goes to Deleted Items). Best-effort; a 404 counts as success.
+- Config `letterstream_delete_decision_replies` (default `true`).
+- Tests: scratchpad `test_ls_cleanup.py` (YES and NO deleted; unclear,
+  stranger, and not-pending replies kept; request filed even at
+  handled=0; external request not filed; flag off and dry run delete
+  nothing).
+
+**Decisions**
+
+- Only replies whose decision was recorded get deleted. Unclear
+  replies, replies from non-approvers, and replies to non-pending tags
+  (typos, a second YES) stay in the inbox where a person will see them.
+- Soft delete only. The reply text is already in `activity.jsonl`.
+
+**Open:** rebuild and deploy (`python build_exe.py`), then restart the
+monitor and dashboard on the Rocky laptop.
+
+---
+
 ## Session 2026-10-03 (3) — Litigation Updater: already-on-sheet check, NO files the mail
 
 After the first deploy James saw two identical Tri-Tech proposals.

@@ -1763,6 +1763,32 @@ def _parse_decision(body: str) -> tuple[str | None, str]:
 _MOVE_TOKEN: dict[str, str | None] = {}
 
 
+def _mail_write_token(config: dict) -> str | None:
+    if "token" not in _MOVE_TOKEN:
+        from rocky import acquire_mail_move_token  # lazy
+        _MOVE_TOKEN["token"] = acquire_mail_move_token(config)
+    return _MOVE_TOKEN["token"]
+
+
+def _delete_decision_reply(config: dict, paths: dict, mailbox: str,
+                           message: dict, tags: list[str]) -> None:
+    """Delete a YES/NO reply once its decision is recorded (config
+    letterstream_delete_decision_replies, default on). Graph soft delete —
+    it sits in Deleted Items, and activity.jsonl already holds the
+    decision and reply text. Best-effort, like the moves."""
+    if not config.get("letterstream_delete_decision_replies", True):
+        return
+    token = _mail_write_token(config)
+    if not token:
+        return
+    from rocky import delete_message  # lazy
+    if delete_message(token, mailbox, message["id"]):
+        append_activity(paths, {"event": "reply_deleted", "tags": tags,
+                                "subject": message.get("subject")})
+        log.info(f"[affidavits] deleted processed reply for "
+                 f"{', '.join(tags)}")
+
+
 def _file_processed_mail(config: dict, paths: dict, state: dict,
                          mailbox: str, message: dict) -> None:
     """Move a consumed request/proof email into Inbox\\Letterstream
@@ -1772,10 +1798,7 @@ def _file_processed_mail(config: dict, paths: dict, state: dict,
             if "letterstream_processed_folder" in config else "Letterstream")
     if not (name or "").strip():
         return
-    if "token" not in _MOVE_TOKEN:
-        from rocky import acquire_mail_move_token  # lazy
-        _MOVE_TOKEN["token"] = acquire_mail_move_token(config)
-    move_token = _MOVE_TOKEN["token"]
+    move_token = _mail_write_token(config)
     if not move_token:
         return
     from rocky import file_message_to_inbox_subfolder  # lazy
@@ -1832,6 +1855,7 @@ def poll_approvals(client, config: dict, paths: dict, state: dict,
             # keyword is checked first (more specific than "certified
             # mail", which many proof emails would also contain).
             handled = 0
+            firm_request = False
             if message.get("hasAttachments"):
                 if keyword in subject.lower():
                     handled = _handle_proof_submission(
@@ -1843,7 +1867,11 @@ def poll_approvals(client, config: dict, paths: dict, state: dict,
                         client, token, mailbox, config, paths, state,
                         message, dry_run)
                     counts["mail_requests"] += handled
-            if handled and not dry_run:
+                    # Every firm request Rocky answered is processed, even
+                    # one that came back "no PDFs" or failed preauth — the
+                    # cursor is past it, so leaving it buys no retry.
+                    firm_request = sender.endswith("@gallagherllp.com")
+            if (handled or firm_request) and not dry_run:
                 # A consumed request/proof email leaves the inbox — moved
                 # LAST (a Graph move changes the message id).
                 _file_processed_mail(config, paths, state, mailbox, message)
@@ -1853,6 +1881,7 @@ def poll_approvals(client, config: dict, paths: dict, state: dict,
         body = (message.get("body") or {}).get("content") \
             or message.get("bodyPreview") or ""
         decision, reply_text = _parse_decision(body)
+        decided: list[str] = []   # tags whose YES/NO this reply recorded
 
         for tag in sorted(am_tags):
             entry = pending.get(tag)
@@ -1878,10 +1907,12 @@ def poll_approvals(client, config: dict, paths: dict, state: dict,
                 vaulted_any |= _finalize_approval(config, paths, state,
                                                   entry, sender)
                 counts["approved"] += 1
+                decided.append(tag)
             elif decision == "no":
                 _finalize_decline(config, paths, state, entry, sender,
                                   reply_text)
                 counts["declined"] += 1
+                decided.append(tag)
             else:
                 counts["unclear"] += 1
                 append_activity(paths, {"event": "reply_unclear", "tag": tag,
@@ -1914,10 +1945,12 @@ def poll_approvals(client, config: dict, paths: dict, state: dict,
                     want_affidavit=_wants_affidavit(reply_text))
                 counts["released"] += released
                 counts["batches"] += 1
+                decided.append(tag)
             elif decision == "no":
                 counts["mail_declined"] += _finalize_batch_decline(
                     config, paths, state, batch, sender, reply_text)
                 counts["batches"] += 1
+                decided.append(tag)
             else:
                 counts["unclear"] += 1
                 append_activity(paths, {"event": "reply_unclear",
@@ -1952,10 +1985,12 @@ def poll_approvals(client, config: dict, paths: dict, state: dict,
                 counts["released"] += _finalize_mail_approval(
                     config, paths, state, entry, sender,
                     want_affidavit=_wants_affidavit(reply_text))
+                decided.append(tag)
             elif decision == "no":
                 _finalize_mail_decline(config, paths, state, entry,
                                        sender, reply_text)
                 counts["mail_declined"] += 1
+                decided.append(tag)
             else:
                 counts["unclear"] += 1
                 append_activity(paths, {"event": "reply_unclear",
@@ -1968,6 +2003,11 @@ def poll_approvals(client, config: dict, paths: dict, state: dict,
                     f"Reply YES to release the mailing (prints, mails, "
                     f"and bills) or NO to cancel — keeping [{tag}] in "
                     f"the subject line.")
+        if decided:
+            # The decision is recorded (activity.jsonl keeps the reply
+            # text), so the reply itself goes. Unclear, ignored, and
+            # stray replies stay in the inbox for a human to see.
+            _delete_decision_reply(config, paths, mailbox, message, decided)
         _advance_cursor(state, cursor_key, message)
 
     if not dry_run and not messages:

@@ -717,6 +717,21 @@ def file_message_to_inbox_subfolder(
     return False
 
 
+def delete_message(token: str, mailbox: str, message_id: str) -> bool:
+    """Delete a message (Graph soft delete: it lands in Deleted Items,
+    still recoverable). Best-effort: False on failure; 404 = already gone."""
+    try:
+        r = requests.delete(
+            f"{GRAPH_API_BASE}/users/{mailbox}/messages/{message_id}",
+            headers={"Authorization": f"Bearer {token}"}, timeout=30)
+        if r.status_code != 404:
+            r.raise_for_status()
+        return True
+    except Exception as e:
+        log.warning(f"Could not delete message {message_id[:20]}...: {e}")
+    return False
+
+
 def load_case_index() -> list[dict]:
     """
     Load the Rocky Case Index spreadsheet from OneDrive. Returns a list of

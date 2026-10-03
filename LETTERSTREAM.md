@@ -250,6 +250,21 @@ daily task is redundant (safe, but skip it).
    (Application Access Policy already covers rocky@), approval emails go
    out from rocky@ through `outbound.send_mail_guarded` (internal-only
    allowlist — Level 0 holds).
+6. **Inbox housekeeping (rocky@ only)** — uses the delegated
+   Mail.ReadWrite.Shared token from rocky@'s cached sign-in (consented
+   2026-07-05); without it, mail just stays put.
+   - Every certified-mail request Rocky answers is moved, attachments
+     and all, to `Inbox\Letterstream` (`letterstream_processed_folder`,
+     `""` disables). That includes requests Rocky answered with "no
+     PDFs" or couldn't preauth (2026-10-03). Proof submissions move once
+     an affidavit has been proposed from them.
+   - A YES/NO reply to an `[AM-]`, `[CM-]` or `[CMB-]` email is
+     **deleted** once its decision is recorded (2026-10-03,
+     `letterstream_delete_decision_replies`, default `true`). This is a
+     Graph soft delete, so the reply lands in Deleted Items, and
+     `activity.jsonl` keeps its text. Unclear replies, replies from
+     someone who isn't the approver, and replies to tags that aren't
+     pending all stay in the inbox.
 
 ## API reality (calibrated 2026-08-06 against the real docs)
 
