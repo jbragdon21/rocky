@@ -122,6 +122,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import logging
 import re
@@ -842,7 +843,10 @@ def _doc_blocks(docs: list[dict]) -> str:
     blocks = []
     for d in docs:
         text = (d.get("text") or "").strip()
-        if text:
+        if text and d.get("pdf_bytes"):
+            body = (text[:DOC_TEXT_CAP] + "\n(this text layer is incomplete — "
+                    "the scanned pages are attached below; read them)")
+        elif text:
             body = text[:DOC_TEXT_CAP]
         elif d.get("pdf_bytes"):
             body = "(scanned document — its pages are attached below)"
@@ -1288,13 +1292,48 @@ def _docs_from_attachments(attachments: list[dict],
                 or SCAN_PDF_PAGES)
     docs = []
     for a in attachments:
-        content = a.get("contentBytes")
+        name, content = a["name"], a.get("contentBytes")
         text = extract_text_from_attachment(
-            a["name"], a.get("contentType") or "", content)
-        docs.append({"filename": a["name"], "text": text,
-                     "pdf_bytes": scan_pdf_excerpt(a["name"], content, text,
-                                                   pages=pages)})
+            name, a.get("contentType") or "", content)
+        is_pdf = name.lower().endswith(".pdf")
+        # A thin text layer (e-filing stamp over a scan, typed cover sheet
+        # on scanned pages) is treated as a scan: send the pages too.
+        scan_text = text
+        if is_pdf and content and (text or "").strip() and \
+                _thin_text_layer(content, pages):
+            log.info(f"[litigation] {name!r}: thin text layer — attaching "
+                     f"the pages as well")
+            scan_text = None
+        pdf = scan_pdf_excerpt(name, content, scan_text, pages=pages)
+        # A dense scan can blow the excerpt size cap at 10 pages; fewer
+        # pages beat none (the caption page carries most of the entry).
+        for fewer in (pages // 2, 2):
+            if pdf is not None or not is_pdf or (scan_text or "").strip() \
+                    or not 0 < fewer < pages:
+                break
+            pdf = scan_pdf_excerpt(name, content, None, pages=fewer)
+            if pdf is not None:
+                log.info(f"[litigation] {name!r}: scan too large at {pages} "
+                         f"pages — attached the first {fewer}")
+        docs.append({"filename": name, "text": text, "pdf_bytes": pdf})
     return docs
+
+
+THIN_PAGE_CHARS = 100
+
+
+def _thin_text_layer(content: bytes, pages: int) -> bool:
+    """True when at least half of the first `pages` pages carry under
+    THIN_PAGE_CHARS of text — a stamp or a cover sheet, not a document.
+    A real text PDF's odd short page (signature page, exhibit slip) stays
+    well under half."""
+    from pypdf import PdfReader  # lazy
+    try:
+        counts = [len((p.extract_text() or "").strip())
+                  for p in PdfReader(io.BytesIO(content)).pages[:pages]]
+    except Exception:
+        return False
+    return bool(counts) and 2 * sum(c < THIN_PAGE_CHARS for c in counts) >= len(counts)
 
 
 def _next_ask_id(state: dict) -> str:
@@ -1310,6 +1349,59 @@ def queue_ask(paths: dict, state: dict, ask: dict) -> dict:
     log_event(paths, "ask_queued", ask_id=ask["id"], ask_kind=ask.get("kind"),
               claim=ask.get("claim"))
     return ask
+
+
+def _mail_keys(ref: dict | None) -> set[str]:
+    """Identity of a source mail: Graph id and Internet Message-ID. The
+    Graph id changes when the mail is filed after a YES; the Message-ID
+    doesn't, so either one matching means the same email."""
+    ref = ref or {}
+    return {k for k in (ref.get("message_id"), ref.get("internet_message_id"))
+            if k}
+
+
+def _ask_for_mail(state: dict, msg: dict) -> dict | None:
+    """The live or executed ask already raised from this mail, if any.
+    Declined asks don't count, so an explicit --backfill-days can still
+    re-propose a mail that was declined for a reason since fixed.
+
+    Needed because the mail cursor alone can't stop a re-read: Graph
+    stores receivedDateTime with sub-second precision but returns and
+    filters on whole seconds, so `receivedDateTime gt <cursor>` keeps
+    matching the newest message until other mail lands after it. Before
+    this check, one forward was re-queued every run for a day at a time
+    (353 asks from 4 emails, 2026-09-16..21)."""
+    keys = {msg.get("id"), msg.get("internetMessageId")} - {None, ""}
+    for a in state.get("asks") or []:
+        if a.get("status") != "declined" and keys & _mail_keys(a.get("msg")):
+            return a
+    return None
+
+
+def collapse_duplicate_asks(paths: dict, state: dict) -> list[dict]:
+    """Retire queued/proposed asks raised from a mail that an earlier,
+    non-declined ask already covers. Returns the retired asks (status
+    "duplicate", `duplicate_of` set). Cleanup asks have no mail and are
+    never touched."""
+    first_by_key: dict[str, dict] = {}
+    retired: list[dict] = []
+    for a in state.get("asks") or []:
+        keys = _mail_keys(a.get("msg"))
+        if not keys or a.get("status") == "declined":
+            continue
+        original = next((first_by_key[k] for k in keys if k in first_by_key),
+                        None)
+        if original is not None and a.get("status") in ("queued", "proposed"):
+            a["status"] = "duplicate"
+            a["duplicate_of"] = original["id"]
+            a["decided"] = _now_iso()
+            log_event(paths, "ask_duplicate", ask_id=a["id"],
+                      duplicate_of=original["id"], claim=a.get("claim"))
+            retired.append(a)
+            continue
+        for k in keys:
+            first_by_key.setdefault(k, a)
+    return retired
 
 
 def _msg_ref(msg: dict, mailbox: str) -> dict:
@@ -1376,6 +1468,16 @@ def intake_pass(client, graph_token: str, ss_token: str | None, config: dict,
                          f"{(msg.get('subject') or '')[:80]!r} "
                          f"(from {_sender_address(msg) or '?'})")
                 ignored_logged += 1
+            state["mail_cursor"] = msg.get("receivedDateTime") or state.get("mail_cursor")
+            continue
+
+        # Checked before the attachment download and the Claude call, so a
+        # re-read of the same mail costs nothing.
+        prior = _ask_for_mail(state, msg)
+        if prior is not None:
+            log.info(f"[litigation] already {prior['status']} as {prior['id']} "
+                     f"— skipped: {(msg.get('subject') or '')[:80]!r}")
+            counts["already_asked"] = counts.get("already_asked", 0) + 1
             state["mail_cursor"] = msg.get("receivedDateTime") or state.get("mail_cursor")
             continue
 
@@ -1607,8 +1709,12 @@ def execute_ask(client, ss_token: str | None, config: dict, paths: dict,
         row_id = None
         if not dry_run:
             row_id = add_row(ss_token, open_sheet, cells)
-        claim = ask.get("claim") or \
-            cells.get(claim_column_title(spec, open_sheet)) or "(unnamed)"
+        # The drafted name first: it's what the sheet now says, and it was
+        # read from the full document. The classify-time name can be a
+        # placeholder ("Unknown v. Bozzuto") from a scan the old build
+        # couldn't read — L0076 was filed to the vault under one.
+        claim = cells.get(claim_column_title(spec, open_sheet)) or \
+            ask.get("claim") or "(unnamed)"
         ask["claim"] = claim
         filed = file_documents(paths, claim,
                                (ask.get("classification") or {}).get("doc_label")
@@ -1928,6 +2034,25 @@ def _match_entity(config: dict, text: str) -> str | None:
     return None
 
 
+def _reup_due(config: dict, ask: dict, now: datetime | None = None) -> bool:
+    """True once a proposed ask has gone `litigation_reup_days` (default 7;
+    0 disables) without an answer since it was proposed or last re-upped."""
+    days = config.get("litigation_reup_days")
+    days = 7 if days is None else float(days)
+    if days <= 0:
+        return False
+    last = ask.get("reupped_at") or ask.get("proposed_at")
+    if not last:
+        return False
+    try:
+        last_dt = datetime.fromisoformat(last.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if last_dt.tzinfo is None:
+        last_dt = last_dt.replace(tzinfo=timezone.utc)
+    return (now or datetime.now(timezone.utc)) - last_dt >= timedelta(days=days)
+
+
 def chat_cycle(config: dict, paths: dict, dry_run: bool) -> dict:
     """One Teams poll: ingest replies, resolve the pending ask, handle
     free-text (reports, vault lookups, feedback), propose the next ask."""
@@ -2047,6 +2172,19 @@ def chat_cycle(config: dict, paths: dict, dry_run: bool) -> dict:
         _send(f"Understood — skipped. ({ask['id']})", ask_id=ask["id"])
         save_state(paths, state)
         result.setdefault("decided", []).append(ask["id"])
+
+    # --- Retire duplicate asks before anything is decided or proposed. ------
+    retired = collapse_duplicate_asks(paths, state)
+    if retired:
+        save_state(paths, state)
+        live = [a["id"] for a in retired if a.get("proposed_at")]
+        _send(f"Housekeeping: I cleared {len(retired)} duplicate "
+              f"ask{'s' if len(retired) != 1 else ''} — the same email had "
+              f"been queued more than once"
+              + (f". That includes {', '.join(live)}, which was waiting on "
+                 f"you here — no need to answer it" if live else "")
+              + ". Nothing was written to the sheet.")
+        result["duplicates_cleared"] = len(retired)
 
     # --- Handle the owner's messages, oldest first. -------------------------
     # Only the owner decides asks (fail-safe when owner_id is unresolved).
@@ -2174,8 +2312,26 @@ def chat_cycle(config: dict, paths: dict, dry_run: bool) -> dict:
             _send(routed.get("reply")
                   or "Noted — I've logged that for my weekly learning pass.")
 
+    # --- Re-up an ask that has sat unanswered (one live ask at a time means
+    # it silently holds up everything behind it). ----------------------------
+    pending = next((a for a in asks if a.get("status") == "proposed"), None)
+    if pending is not None and _reup_due(config, pending):
+        waiting = sum(1 for a in asks if a.get("status") == "queued")
+        since = (pending.get("proposed_at") or "")[:10]
+        sent = _send(f"Still waiting on this one (first asked {since})"
+                     + (f" — {waiting} more item{'s' if waiting != 1 else ''} "
+                        f"queued behind it" if waiting else "")
+                     + ":\n\n" + _proposal_text(pending),
+                     ask_id=pending["id"])
+        if sent:
+            pending["reupped_at"] = sent.get("createdDateTime") or _now_iso()
+            pending["reup_count"] = int(pending.get("reup_count") or 0) + 1
+            log_event(paths, "ask_reupped", ask_id=pending["id"],
+                      count=pending["reup_count"], queued_behind=waiting)
+            result["reupped"] = pending["id"]
+
     # --- Propose the next queued ask (one live ask at a time). --------------
-    still_pending = any(a.get("status") == "proposed" for a in asks)
+    still_pending = pending is not None
     if not still_pending:
         nxt = next((a for a in asks if a.get("status") == "queued"), None)
         if nxt is not None:
@@ -2794,6 +2950,12 @@ def print_status(config: dict, paths: dict) -> None:
     print(f"  Teams chat:              "
           f"{'created' if state.get('chat_id') else 'not yet created'}")
     print(f"  asks:                    {by_status or 'none'}")
+    pending = next((a for a in asks if a.get("status") == "proposed"), None)
+    if pending is not None:
+        print(f"  waiting on you:          {pending['id']} {pending.get('claim') or ''}"
+              f" (asked {(pending.get('proposed_at') or '?')[:10]}"
+              + (f", re-upped {pending['reup_count']}x" if pending.get("reup_count") else "")
+              + ")")
     print(f"  vault documents:         {len(catalog)}")
     print(f"  brain:                   {paths['brain']}")
     print(f"  learn cursor:            {state.get('learn_cursor') or '(never run)'}")

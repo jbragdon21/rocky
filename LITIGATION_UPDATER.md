@@ -75,9 +75,22 @@ guessing. A Claude/API failure **holds the mail cursor** so nothing is
 lost — the same mail is retried next run.
 
 **One live ask at a time.** A proposal sits in the chat until it gets a
-YES or NO; everything detected after it waits in the queue. So an
-unanswered ask from weeks ago silently stalls every new claim behind it
-— `--litigation --status` prints the pending one.
+YES or NO; everything detected after it waits in the queue. An ask left
+unanswered for `litigation_reup_days` (default **7**; `0` turns it off)
+is re-posted with "Still waiting on this one (first asked …) — N more
+items queued behind it", and again every week after that. Same `[L####]`
+tag, so a YES to either copy decides it. `--litigation --status` prints
+the pending ask, its date, and how many times it's been re-upped.
+
+**One ask per email.** A mail that already has a live or executed ask is
+skipped before the attachment download and the Claude call; only a
+*declined* ask lets an explicit `--backfill-days` re-propose it. The
+cursor alone can't guarantee this: Graph stores `receivedDateTime` to
+the sub-second but filters on whole seconds, so the newest message kept
+matching `gt <cursor>` until other mail arrived. That is how 4 forwards
+became 353 asks (9/16–9/21/26). Duplicates already in the queue are
+retired (status `duplicate`, `duplicate_of` set) at the start of every
+chat cycle, with a single housekeeping note in the chat.
 
 ### Scanned attachments
 
@@ -93,6 +106,13 @@ Vault's 4, because the Vault only has to recognize a document while a
 claims entry needs the allegations, not just the caption page. A PDF
 `pypdf` cannot open is left off the call entirely rather than risk a 400
 on the whole request; that shows up in the log as "unreadable as PDF."
+
+A **thin text layer** counts as a scan too: when at least half of those
+first pages carry under 100 characters each (a court e-filing stamp over
+an image, a typed cover sheet on a scanned complaint), the pages are
+attached alongside the little text there is. If a dense scan's excerpt
+is over the 10 MB cap, Rocky retries with half the pages, then 2, rather
+than sending nothing.
 
 Wired 2026-09-16. Before that the litigation calls were text-only, so a
 scanned complaint classified as "text not extractable" with the parties,

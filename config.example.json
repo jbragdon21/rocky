@@ -237,6 +237,7 @@
   "litigation_backfill_days": 7,
   "_litigation_scan_comment": "Scanned notices: a PDF with no text layer (a stamped complaint, a faxed demand) has its first litigation_scan_pdf_pages pages attached to the classify/draft calls so Claude reads the pages themselves — the same path the Vault uses, wired in 2026-09-16 after a scanned King County complaint came back as 'text not extractable'. Default 10 (the Vault's 4 is enough to recognize a document; a claims entry needs the allegations). Lower it to trim tokens, raise it if captions and counts routinely run long.",
   "litigation_scan_pdf_pages": 10,
+  "litigation_reup_days": 7,
 
   "_pacer_monitor_comment": "PACER Monitor (--pacer --sync 7:00 AM, --pacer-sweep 6:30 AM, --pacer-digest 5:15 PM, --pacer-mail every monitor cycle). Watches federal dockets through the CourtListener/RECAP API and discovers new cases through the PACER Case Locator. pacer_monitor_root is the shared database folder; blank derives 'PACER Monitor Database' beside Rocky Cases. Pin it 'Always keep on this device' on the Rocky laptop. Authoritative records are JSONL under _db\\; the SQLite index (C:\\Rocky\\pacer\\index.db) is derived and rebuilt by --reindex. See PACER_MONITOR.md.",
   "pacer_monitor_root": "C:\\Users\\jbragdon\\OneDrive - gejlaw.com\\PACER Monitor Database",
