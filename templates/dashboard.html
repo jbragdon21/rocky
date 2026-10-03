@@ -118,6 +118,23 @@ header {
     line-height: 1.4;
 }
 
+/* Shown only when a newer build has landed beside the running one. */
+.build-stale {
+    display: none;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--yellow);
+    background: rgba(210, 153, 34, 0.12);
+    color: var(--yellow);
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.build-stale.show { display: flex; }
+
 /* Kill switch button */
 .btn-dormant {
     padding: 6px 16px;
@@ -257,6 +274,11 @@ main {
 .log-line.level-warning { color: var(--yellow); }
 .log-line.level-error   { color: var(--red); }
 .log-line.level-debug   { color: var(--text-dim); }
+
+/* Plain-mode Vault lines: a filing that needs a look, and the rolling
+   "nothing new" heartbeat. */
+.log-line.attn  { color: var(--yellow); }
+.log-line.quiet { color: var(--text-dim); }
 
 .log-line .timestamp { color: var(--text-dim); }
 .log-line .level-tag {
@@ -814,6 +836,10 @@ main {
         <div class="header-meta">
             <div id="header-time"></div>
             <div id="header-log-info"></div>
+            <div id="header-build"></div>
+        </div>
+        <div id="build-stale" class="build-stale" title="A newer build has synced into the program folder. Restart the dashboard to run it.">
+            ⟳ New build — restart
         </div>
         <button id="btn-dormant" class="btn-dormant" onclick="toggleDormant()">
             ⏸ Pause Rocky
@@ -1050,6 +1076,7 @@ main {
         "email-brain": "Writing-style library",
         "affidavits": "Certified mail",
         "monitor": "Monitor",
+        "vault": "The Vault",
     };
 
     // Lines that are pure noise in Plain mode.
@@ -1169,6 +1196,97 @@ main {
         [/(Program|Data) dir:.*$/i,                     ""],   // drop path-only setup lines
     ];
 
+    // --- The Vault: results, not steps ---
+    //
+    // The Vault sweeps run hourly per source and every 10 minutes inside the
+    // monitor loop, and each sweep writes a dozen step lines (grounding
+    // loaded, N messages scanned, attachment X isn't vault material, index
+    // rebuilt...). In Plain mode only the outcomes show: each document filed
+    // or set aside for review, a source's tally when it found something, and
+    // any warning or error. Sweeps that found nothing collapse into one
+    // rolling "nothing new" line that stays at the bottom and counts up.
+    // Technical mode still shows every line.
+
+    const VAULT_SOURCES = {
+        "inbox": "James Inbox", "vault-mail": "Rocky Inbox", "dropbox": "Dropbox",
+    };
+
+    let vaultQuiet = null;   // { entry, checks, since, day } — the rolling no-news line
+
+    function parseCounts(s) {
+        const out = {};
+        for (const m of s.matchAll(/'(\w+)':\s*(\d+)/g)) out[m[1]] = parseInt(m[2], 10);
+        return out;
+    }
+
+    function tallyText(c) {
+        const parts = [];
+        if (c.filed)        parts.push(`${c.filed} filed`);
+        if (c.needs_review) parts.push(`${c.needs_review} set aside for review`);
+        if (c.duplicates)   parts.push(`${c.duplicates} already in the Vault`);
+        return parts.join(", ") || "nothing new";
+    }
+
+    // "Property\Tenant\Lease - Tenant - 2026-08-07.pdf" -> "Lease — Tenant, Property"
+    function describeFiled(path) {
+        const parts = path.split("\\");
+        if (parts.length < 3) return shortenPaths(path);
+        const doc = parts[parts.length - 1].split(" - ")[0];
+        return `${doc} — ${parts[1]}, ${parts[0]}`;
+    }
+
+    function vaultHeartbeat(entry) {
+        const day = entry.raw.slice(0, 10);
+        if (vaultQuiet && vaultQuiet.day === day) {
+            // Retire the previous rolling line; this one replaces it.
+            const prev = vaultQuiet.entry;
+            prev._plain = { hide: true, html: "" };
+            if (prev._el) prev._el.style.display = "none";
+            vaultQuiet = { ...vaultQuiet, entry, checks: vaultQuiet.checks + 1 };
+        } else {
+            vaultQuiet = { entry, checks: 1, since: prettyTime(entry.raw), day };
+        }
+        const n = vaultQuiet.checks;
+        return {
+            msg: n === 1
+                ? "Checked for new documents — nothing new."
+                : `Checked for new documents ${n} times since ${vaultQuiet.since} — nothing new.`,
+            cls: "quiet",
+        };
+    }
+
+    // Returns { hide: true }, { msg, cls? }, or null (fall through to the
+    // general rules).
+    function vaultPlain(msg, level, entry) {
+        let m;
+        if ((m = msg.match(/^(DRY-RUN )?filed: '(.+)' -> (.+)$/))) {
+            vaultQuiet = null;
+            return { msg: (m[1] ? "Test run — would file " : "Filed ") + describeFiled(m[3]) };
+        }
+        if ((m = msg.match(/^(DRY-RUN )?needs_review: '(.+)' -> .+$/))) {
+            vaultQuiet = null;
+            return {
+                msg: `${m[1] ? "Test run — would set aside" : "Set aside"} “${m[2]}” for review — couldn't tell where it belongs.`,
+                cls: "attn",
+            };
+        }
+        if ((m = msg.match(/^(inbox|vault-mail|dropbox): \{(.*)\}$/))) {
+            const c = parseCounts(m[2]);
+            if (!c.filed && !c.needs_review) return vaultHeartbeat(entry);
+            vaultQuiet = null;
+            return { msg: `✓ ${VAULT_SOURCES[m[1]]} sweep: ${tallyText(c)}.` };
+        }
+        if ((m = msg.match(/^ingest-folder (DRY-RUN )?complete: \{(.*)\}$/))) {
+            vaultQuiet = null;
+            const c = parseCounts(m[2]);
+            return { msg: `✓ Folder import ${m[1] ? "test run " : ""}done — ${c.files || 0} file(s) looked at: ${tallyText(c)}.` };
+        }
+        if (level !== "info") { vaultQuiet = null; return null; }
+        // Manual jobs that end in a one-line result keep it.
+        if (/^(cleanup complete|reclassify-review .*complete|digest\b)/.test(msg)) return null;
+        return { hide: true };
+    }
+
     function prettyTime(raw) {
         const m = raw.match(/^\d{4}-\d{2}-\d{2}\s+(\d{2}):(\d{2}):\d{2}/);
         if (!m) return "";
@@ -1186,21 +1304,34 @@ main {
     }
 
     // Returns { hide, html } for Plain mode.
-    function humanize(raw) {
+    function humanize(entry) {
+        const raw = entry.raw;
         const m = raw.match(/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}[,.\d]*)\s+\[(\w+)\]\s*(.*)$/);
         const level = parseLevel(raw);
         let msg = m ? m[3] : raw;
 
         // Pull off a subsystem tag like "[Maple]" for a friendly label.
         let proc = "";
+        let tag = "";
         const pm = msg.match(/^\[([\w-]+)\]\s*(.*)$/);
-        if (pm) { proc = PROCESS_NAMES[pm[1].toLowerCase()] || pm[1]; msg = pm[2]; }
+        if (pm) { tag = pm[1].toLowerCase(); proc = PROCESS_NAMES[tag] || pm[1]; msg = pm[2]; }
 
-        if (PLAIN_HIDE.some(re => re.test(msg)) || msg.trim() === "")
+        // Noise filters never swallow a problem ("Dropbox token error" is not
+        // token-usage chatter).
+        const problem = level === "error" || level === "warning";
+        if ((!problem && PLAIN_HIDE.some(re => re.test(msg))) || msg.trim() === "")
             return { hide: true, html: "" };
 
-        for (const [re, repl] of PLAIN_RULES) {
-            if (re.test(msg)) { msg = msg.replace(re, repl); break; }
+        let cls = "";
+        const vault = tag === "vault" ? vaultPlain(msg, level, entry) : null;
+        if (vault) {
+            if (vault.hide) return { hide: true, html: "" };
+            msg = vault.msg;
+            cls = vault.cls || "";
+        } else {
+            for (const [re, repl] of PLAIN_RULES) {
+                if (re.test(msg)) { msg = msg.replace(re, repl); break; }
+            }
         }
         msg = shortenPaths(msg)
             .replace(/'([\w.@\\/-]+)'/g, "$1")   // unquote emails/filenames from lists
@@ -1214,12 +1345,12 @@ main {
                    : "";
         const procTag = proc ? `<span class="plain-proc">${escapeHtml(proc)}</span> ` : "";
         const timeTag = time ? `<span class="timestamp">${time}</span>  ` : "";
-        return { hide: false, html: `${timeTag}${lead}${procTag}${escapeHtml(msg)}` };
+        return { hide: false, cls, html: `${timeTag}${lead}${procTag}${escapeHtml(msg)}` };
     }
 
     function entryHidden(entry) {
         if (plainMode) {
-            if (entry._plain === undefined) entry._plain = humanize(entry.raw);
+            if (entry._plain === undefined) entry._plain = humanize(entry);
             return entry._plain.hide;
         }
         return false;
@@ -1237,9 +1368,12 @@ main {
     function renderLine(entry) {
         const div = document.createElement("div");
         div.className = `log-line level-${entry.level}`;
+        // Kept so a later Vault "nothing new" line can retire this one.
+        entry._el = div;
         if (plainMode) {
-            if (entry._plain === undefined) entry._plain = humanize(entry.raw);
+            if (entry._plain === undefined) entry._plain = humanize(entry);
             div.innerHTML = entry._plain.html;
+            if (entry._plain.cls) div.classList.add(entry._plain.cls);
         } else {
             div.innerHTML = techFormat(entry.raw);
         }
@@ -1340,6 +1474,7 @@ main {
 
     window.clearLog = function() {
         logLines = [];
+        vaultQuiet = null;
         viewer.innerHTML = "";
         updateLineCount();
     };
@@ -1589,11 +1724,35 @@ main {
                 document.getElementById("header-log-info").textContent =
                     `rocky.log · ${formatBytes(data.log_size)} · ${timeAgo(data.log_modified)}`;
             }
+            renderBuild(data.build);
 
         } catch (e) {
             console.warn("Status fetch failed:", e);
         }
     };
+
+    // --- Build stamp ---
+    // Answers "is the laptop running my latest rebuild?" without RDP-ing in.
+    // `stale` means a newer image landed in the program folder after this
+    // process started, so the running code is one build behind.
+
+    function formatBuild(epoch) {
+        if (!epoch) return "unknown";
+        return new Date(epoch * 1000).toLocaleString([], {
+            month: "short", day: "numeric",
+            hour: "numeric", minute: "2-digit",
+        });
+    }
+
+    function renderBuild(build) {
+        if (!build) return;
+        const label = build.frozen ? "build" : "dev";
+        document.getElementById("header-build").textContent =
+            `${label} · dash ${formatBuild(build.dashboard_build)}` +
+            ` · rocky ${formatBuild(build.rocky_build)}`;
+        document.getElementById("build-stale")
+            .classList.toggle("show", !!build.stale);
+    }
 
     // --- Certified mail (LetterStream) card ---
 

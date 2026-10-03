@@ -49,6 +49,54 @@ STATE_DIR = DATA_DIR / "state"
 LOG_PATH = DATA_DIR / "rocky.log"
 
 # ---------------------------------------------------------------------------
+# Build stamp — which build is actually live
+# ---------------------------------------------------------------------------
+# When the exes are launched straight from OneDrive, "did my rebuild reach the
+# laptop?" is otherwise invisible. Two signals answer it:
+#
+#   dashboard_build / rocky_build  build times of the images in PROGRAM_DIR
+#   stale                          a newer image landed beside us since start
+#
+# Windows permits renaming a running .exe (only deletion is blocked), and
+# OneDrive lands an update by renaming the new file into place — so the mtime
+# can change under a live process while it keeps executing the old code. That
+# is exactly the case `stale` catches: restart to pick up the new build.
+
+_SELF_PATH = (
+    Path(sys.executable) if getattr(sys, "frozen", False)
+    else Path(__file__).resolve()
+)
+
+
+def _mtime(path: Path) -> float | None:
+    """File mtime as an epoch, or None if it isn't readable."""
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None
+
+
+_STARTED_FROM_MTIME = _mtime(_SELF_PATH)
+_STARTED_AT = time.time()
+
+
+def build_info() -> dict:
+    """Build times of the live images, plus whether a newer one has landed."""
+    frozen = bool(getattr(sys, "frozen", False))
+    rocky_path = PROGRAM_DIR / ("rocky.exe" if frozen else "rocky.py")
+    on_disk = _mtime(_SELF_PATH)
+    return {
+        "dashboard_build": _STARTED_FROM_MTIME,
+        "rocky_build": _mtime(rocky_path),
+        "program_dir": str(PROGRAM_DIR),
+        "frozen": frozen,
+        "started_at": _STARTED_AT,
+        "stale": bool(
+            _STARTED_FROM_MTIME and on_disk and on_disk > _STARTED_FROM_MTIME
+        ),
+    }
+
+# ---------------------------------------------------------------------------
 # Flask app
 # ---------------------------------------------------------------------------
 
@@ -913,6 +961,7 @@ def api_status():
         "letterstream": letterstream_summary(),
         "log_size": log_stat.st_size if log_stat else 0,
         "log_modified": log_stat.st_mtime if log_stat else None,
+        "build": build_info(),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     })
 
@@ -1054,7 +1103,15 @@ def main():
     )
     args = parser.parse_args()
 
+    bi = build_info()
+    built = (
+        datetime.fromtimestamp(bi["dashboard_build"]).strftime("%Y-%m-%d %H:%M")
+        if bi["dashboard_build"] else "unknown"
+    )
+
     print(f"Rocky Dashboard → http://localhost:{args.port}")
+    print(f"  Build:         {built}")
+    print(f"  Program dir:   {bi['program_dir']}")
     print(f"  Watching log:  {LOG_PATH}")
     print(f"  State dir:     {STATE_DIR}")
     print()

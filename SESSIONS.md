@@ -24,6 +24,109 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-10-03 (2) — Litigation Updater: duplicate asks, weekly re-up, thin-text scans
+
+James asked whether the chat would work for new litigation matters. It
+would not have. **L0076 sat unanswered from 9/17 to 10/3**, and behind
+it were **353 queued asks raised from just 4 emails** (Harvey Shaw 135,
+Hong & Echarri 124, King County/Hunt 93, Bulgin 1). James answered L0076
+YES at 9:42 AM; the next proposal (L0077) was a duplicate of it. The new
+Tri-Tech complaint (L0426, 10/1 forward) was ~350th in line.
+
+**What changed**
+
+- `litigation_updater.py`
+  - `_ask_for_mail()` — intake skips mail that already has a non-declined
+    ask (matched on Graph id *or* Internet Message-ID, since filing
+    changes the Graph id). Checked before attachments/Claude, so re-reads
+    are free. Intake counts gain `already_asked`.
+  - `collapse_duplicate_asks()` — runs at the top of every `chat_cycle`;
+    retires queued/proposed duplicates (status `duplicate`,
+    `duplicate_of`, `ask_duplicate` event) and posts one housekeeping
+    note. First deploy will clear ~349 and post once.
+  - `_reup_due()` + re-up block in `chat_cycle` — the pending ask is
+    re-posted after `litigation_reup_days` (default 7, 0 = off) with
+    "Still waiting… N queued behind it"; `reupped_at`/`reup_count` on the
+    ask, `ask_reupped` event. `--status` shows the pending ask and age.
+  - `_docs_from_attachments()` — `_thin_text_layer()` (≥ half of first
+    N pages under 100 chars) attaches the pages alongside the text; an
+    excerpt over the 10 MB cap retries at N/2 then 2 pages. `_doc_blocks`
+    tells Claude when a text layer is incomplete.
+  - `execute_ask` new-entry: vault filing uses the **drafted** claim
+    column first. L0076 was filed under "Unknown v. Bozzuto (Unknown
+    Property)" though the row correctly says Robert Hunt (The Heights at
+    Bear Creek).
+- `LITIGATION_UPDATER.md`, `config.example.json` (`litigation_reup_days`).
+
+**Root cause of the duplicates.** Graph keeps `receivedDateTime` to the
+sub-second but the cursor (and `$filter`) work in whole seconds, so
+`receivedDateTime gt <cursor>` keeps re-matching the newest message
+until other mail lands after it. Every loop ran exactly until the next
+unrelated rocky@ mail. Dedup by message identity, not a cursor tweak.
+
+**PDF extraction findings.** All 7 vault PDFs probed: 4 text, 3 pure
+image; the 9/16 scan path handles all of them correctly. The "Unknown
+Claimant" classifications of 9/16–9/21 came from the **old exe** (scan
+fix written 9/16, deployed 9/26). Remaining real gaps were the
+thin-layer and oversize cases above. Tests in scratchpad
+`test_dedupe.py` / `test_thin.py`.
+
+**Open items**
+
+- Rebuild + deploy (`python build_exe.py`). Until then the old exe keeps
+  proposing duplicates and can re-queue Tri-Tech every run.
+- Vault folder `Litigation Update Vault\Unknown v. Bozzuto (Unknown
+  Property)\` should be renamed to `Robert Hunt (The Heights at Bear
+  Creek)` and its `catalog.jsonl` entry updated by hand.
+- `doc_label` is still the classify-time label ("scanned image - text
+  not extracted") on L0076's vault file.
+
+**Watch-outs**
+
+- Vault PDF paths exceed MAX_PATH; scripts reading them need the `\\?\`
+  prefix.
+
+---
+
+## Session 2026-10-03 — Dashboard: Vault shows results, not steps
+
+James: the Vault crowded out everything else in the live log. The monitor runs
+`--vault-mail` and `--vault-inbox` every 10 minutes (plus the hourly tasks), and
+each sweep writes about a dozen step lines even when it finds nothing.
+
+**What changed**
+
+- `templates/dashboard.html` (Plain mode only) — `vaultPlain()` handles
+  `[vault]` lines. It shows `filed:` / `needs_review:` lines as
+  "Filed Lease — Tenant, Property" or "Set aside … for review" (yellow),
+  shows the per-source tally when anything was filed, and shows warnings and
+  errors. Every other info line is hidden. A zero-result tally becomes a
+  dimmed rolling line ("Checked … N times since 8:00 AM — nothing new"):
+  each new one hides the last. The count restarts after a Vault result, a
+  Vault problem, or midnight. `humanize()` now takes the entry, and
+  `renderLine()` keeps `entry._el` so the rolling line can retire its
+  predecessor.
+- `PLAIN_HIDE` noise filters no longer apply to warning/error lines.
+  `/token/` was hiding "Dropbox token error …" outright (this was an existing bug).
+- `DASHBOARD.md` — one paragraph on the above.
+
+**Decisions made**
+
+- Done in the viewer, not by quieting `vault.py`. Technical mode and
+  `rocky.log` keep every step: the "ignored: no 'Vault' in subject" lines are
+  how "I forwarded it, where is it?" gets answered.
+- Allowlist, not blocklist: a new Vault info line is hidden in Plain mode
+  until a rule shows it. Manual one-line results (`cleanup complete`,
+  `reclassify-review … complete`, `digest …`) are let through.
+
+**Watch-outs**
+
+- Flask caches the template, so restart the dashboard to see changes.
+  Tested against a synthetic 112-line log (8 lines shown); not yet seen
+  against a real day of monitor traffic.
+
+---
+
 ## Session 2026-09-25 — To-do lists become per-person; Rommel Loria added
 
 James asked for the Steve To-Do List process for Rommel Loria

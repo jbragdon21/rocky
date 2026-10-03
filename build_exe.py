@@ -7,7 +7,8 @@ Run from the Rocky source directory:
     python build_exe.py --dashboard  Build only dashboard.exe
 
 Output: dist/rocky.exe, dist/dashboard.exe (single file, all dependencies bundled).
-Copies the .exe files to OneDrive Program Files after building.
+Copies the .exe files (plus restart_dashboard.cmd) to OneDrive Program
+Files after building. The Rocky laptop runs them straight from there.
 """
 
 import shutil
@@ -20,6 +21,34 @@ DIST_DIR = ROOT / "dist"
 TARGET = Path(
     r"C:\Users\jbragdon\OneDrive - gejlaw.com\Program Files\Rocky"
 )
+
+
+def deploy_support_files():
+    """
+    Copy the non-exe files the program folder needs into OneDrive.
+
+    ``restart_dashboard.cmd`` is overwritten every build - it is source, and
+    it locates itself via %~dp0 so one copy serves both laptops.
+
+    ``instructions.md`` is copied only when missing. rocky.py reads it from
+    PROGRAM_DIR, which is this OneDrive folder for the frozen build, and
+    James edits it directly there - so the repo copy seeds it once and after
+    that the OneDrive copy is authoritative. Overwriting it every build would
+    silently discard classifier tuning.
+    """
+    TARGET.mkdir(parents=True, exist_ok=True)
+
+    src = ROOT / "restart_dashboard.cmd"
+    if src.exists():
+        shutil.copy2(src, TARGET / src.name)
+        print(f"Copied to:  {TARGET / src.name}")
+
+    instructions = TARGET / "instructions.md"
+    if not instructions.exists():
+        shutil.copy2(ROOT / "instructions.md", instructions)
+        print(f"Seeded:     {instructions}")
+    else:
+        print(f"Left as-is: {instructions} (edited in place, not overwritten)")
 
 
 def build_rocky():
@@ -148,6 +177,9 @@ def main():
             print("\n" + "=" * 60 + "\n")
     if build_d:
         ok = build_dashboard() and ok
+
+    print("\n" + "=" * 60 + "\n")
+    deploy_support_files()
 
     if not ok:
         sys.exit(1)

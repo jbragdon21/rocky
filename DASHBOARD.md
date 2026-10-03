@@ -4,7 +4,11 @@ The dashboard is a small web page that shows what Rocky is doing and lets you
 control it from any device:
 
 - **Live activity log** — in **Plain English** by default (toggle to Technical
-  for the raw log). The viewer tails **two** files merged into one stream:
+  for the raw log). Vault sweeps show results only: each document filed or
+  set aside for review, a source's tally when it found something, and any
+  warning or error. Sweeps that found nothing fold into one dimmed rolling
+  line ("Checked for new documents 14 times since 8:00 AM — nothing new")
+  that restarts after a result, a problem, or midnight. The viewer tails **two** files merged into one stream:
   Rocky's own `rocky.log`, and today's Maple updater run log
   (`Maple updater agent\logs\scheduled_run_<date>.log` in the Maple OneDrive
   folder). The updater writes that log line-by-line during every run — however
