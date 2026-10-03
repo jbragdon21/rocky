@@ -489,7 +489,10 @@ def delete_row(token: str, sheet_id, row_id: int) -> None:
 
 
 def find_row(sheet: dict, row_id: int) -> dict | None:
-    return next((r for r in sheet.get("rows", []) if r.get("id") == row_id),
+    # Compared as strings: Claude's JSON sometimes returns the id quoted,
+    # and an int/str mismatch would read as "no such row".
+    want = str(row_id).strip()
+    return next((r for r in sheet.get("rows", []) if str(r.get("id")) == want),
                 None)
 
 
@@ -969,6 +972,93 @@ def draft_entry(client, config: dict, paths: dict, open_sheet: dict,
     result = _claude_json(client, prompt, max_tokens=2000,
                           attachments=_scan_blocks(docs))
     return result if isinstance(result, dict) else None
+
+
+EXISTING_MATCH_FLOOR = 0.8
+
+
+def _norm_case_no(value) -> str:
+    """Case number reduced to lowercase alphanumerics; '' when too short to
+    identify a case (a bare '12' would match half the sheet)."""
+    s = re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+    return s if len(s) >= 5 else ""
+
+
+def find_existing_entry(client, config: dict, paths: dict, state: dict,
+                        sheets: list[dict], meta: dict) -> dict | None:
+    """Is this new notice a matter already on an open claims sheet, or
+    already waiting in the chat from a different email? Returns
+    {"via": "live_ask"|"case_number"|"claude", "claim", "confidence",
+    "reason", plus "ask_id" or "row_id"/"sheet_key"}, or None.
+
+    Case numbers are compared first (free and exact); Claude is asked only
+    when that doesn't settle it, and only against the open sheets."""
+    case_no = _norm_case_no(meta.get("case_number"))
+    if case_no:
+        for a in state.get("asks") or []:
+            if a.get("kind") == "new_entry" and \
+                    a.get("status") in ("queued", "proposed") and \
+                    _norm_case_no((a.get("classification") or {})
+                                  .get("case_number")) == case_no:
+                return {"via": "live_ask", "ask_id": a["id"],
+                        "claim": a.get("claim"), "confidence": 1.0,
+                        "reason": f"same case number as {a['id']}, which "
+                                  f"is already waiting in the chat"}
+    case_col = config.get("litigation_case_number_column") or "Case No."
+    for entry in sheets:
+        sheet = entry["sheet"]
+        name_col = claim_column_title(entry, sheet)
+        for r in sheet.get("rows", []):
+            d = row_to_dict(sheet, r)
+            if case_no and _norm_case_no(d.get(case_col)) == case_no:
+                return {"via": "case_number", "row_id": r.get("id"),
+                        "sheet_key": entry["key"], "claim": d.get(name_col),
+                        "confidence": 1.0,
+                        "reason": f"same case number ({d.get(case_col)})"}
+    if not sheets:
+        return None
+
+    blocks = []
+    for entry in sheets:
+        sheet = entry["sheet"]
+        titles = set(sheet_column_titles(sheet))
+        extra = [c for c in ("Claimant", "Property Name (State)", "Project",
+                             "Property", case_col, "Court/Agency",
+                             "Date Filed", "Type of Case") if c in titles]
+        blocks.append(f"-- Sheet: {entry['key']} --\n"
+                      + _rows_compact(sheet, claim_column_title(entry, sheet),
+                                      extra))
+    notice = {k: meta.get(k) for k in ("claim_name", "doc_label", "parties",
+                                       "court_or_forum", "case_number",
+                                       "summary")}
+    prompt = (
+        _preamble(config, paths)
+        + "A new legal notice was just classified:\n"
+        + json.dumps(notice, indent=1)
+        + "\n\nIs this a matter that ALREADY has a row on the open claims "
+          "sheets below — the same claimant and the same dispute (a new "
+          "filing in an existing case, a re-sent copy, or the same claim "
+          "under a slightly different name)? A different claimant at the "
+          "same property, or a different case by the same claimant, is NOT "
+          "a match.\n\nOpen claims (row_id | claim | ...):\n"
+        + "\n\n".join(blocks)
+        + "\n\nReturn ONLY a JSON object: {\"row_id\": <int or null>, "
+          "\"confidence\": 0.0-1.0, \"reason\": \"one sentence\"}."
+    )
+    result = _claude_json(client, prompt, max_tokens=400)
+    if not isinstance(result, dict) or not result.get("row_id"):
+        return None
+    try:
+        confidence = float(result.get("confidence") or 0)
+    except (TypeError, ValueError):
+        return None
+    entry, row = _locate_row(sheets, result.get("row_id"))
+    if row is None or confidence < EXISTING_MATCH_FLOOR:
+        return None
+    sheet = entry["sheet"]
+    return {"via": "claude", "row_id": row["id"], "sheet_key": entry["key"],
+            "claim": row_to_dict(sheet, row).get(claim_column_title(entry, sheet)),
+            "confidence": confidence, "reason": result.get("reason") or ""}
 
 
 def correlate_claim(client, config: dict, paths: dict, sheets: list[dict],
@@ -1495,13 +1585,33 @@ def intake_pass(client, graph_token: str, ss_token: str | None, config: dict,
                             "this mail retries next run")
                 break
             home = spec_for_entity(config, meta.get("entity"))
-            queue_ask(paths, state, {
+            # Already on the sheet, or already waiting from another email?
+            # A failure here never blocks the notice — it's proposed as-is.
+            try:
+                match = find_existing_entry(client, config, paths, state,
+                                            _get_open_sheets(), meta)
+            except Exception as e:
+                log.warning(f"[litigation] existing-entry check failed: {e}")
+                match = None
+            ask = queue_ask(paths, state, {
                 "kind": "new_entry", "msg": _msg_ref(msg, mailbox),
                 "claim": meta.get("claim_name"),
                 "sheet_key": home["key"] if home else None,
                 "classification": meta, "intent": intent,
+                "existing_match": match,
             })
-            counts["queued"] += 1
+            if match and match.get("via") == "live_ask":
+                # The same case from a second email: one proposal is enough.
+                ask["status"] = "duplicate"
+                ask["duplicate_of"] = match["ask_id"]
+                ask["decided"] = _now_iso()
+                log_event(paths, "ask_duplicate", ask_id=ask["id"],
+                          duplicate_of=match["ask_id"], claim=ask.get("claim"),
+                          reason=match.get("reason"))
+                if not dry_run:
+                    _file_source_mail(config, paths, state, ask)
+            else:
+                counts["queued"] += 1
 
         elif intent in ("closure", "update"):
             sheets = _get_open_sheets()
@@ -1619,8 +1729,8 @@ def _ensure_processed_folder(token: str, mailbox: str, state: dict,
 
 def _file_source_mail(config: dict, paths: dict, state: dict,
                       ask: dict) -> None:
-    """After a YES executes, move the ask's source mail out of rocky@'s
-    inbox into the processed subfolder. Best-effort: any failure is
+    """After a YES executes or a NO skips it, move the ask's source mail
+    out of rocky@'s inbox into the processed subfolder. Best-effort: any failure is
     logged and the ask's outcome stands. (Runs after execution because a
     Graph move changes the message id the executor re-fetches by.)"""
     ref = ask.get("msg") or {}
@@ -1869,6 +1979,22 @@ def _proposal_text(ask: dict) -> str:
     kind = ask.get("kind")
     if kind == "new_entry":
         meta = ask.get("classification") or {}
+        match = ask.get("existing_match") or {}
+        if match.get("row_id"):
+            rec = (f"⚠ This looks like it's ALREADY on the "
+                   f"{match.get('sheet_key') or ''} sheet as "
+                   f"\"{match.get('claim')}\" — {match.get('reason')}. "
+                   f"I recommend NO; if it's a new filing in that case, "
+                   f"forward it with \"update the claims smartsheet\" "
+                   f"instead.")
+            return (f"[{ask['id']}] New legal notice — "
+                    f"{meta.get('doc_label') or meta.get('doc_type') or 'document'}"
+                    f" ({meta.get('entity') or 'entity unclear'}).\n"
+                    f"Parties: {meta.get('parties') or '?'}"
+                    + (f" | No. {meta.get('case_number')}"
+                       if meta.get("case_number") else "")
+                    + f"\n{rec}\nReply YES to add a new entry anyway, NO "
+                      f"to skip.")
         rec = ("I suggest creating a new claims entry."
                if meta.get("recommend_entry")
                else "Based on your standing rules I do NOT think this needs "
@@ -2169,6 +2295,14 @@ def chat_cycle(config: dict, paths: dict, dry_run: bool) -> dict:
         ask["decided"] = _now_iso()
         log_event(paths, "ask_decided", ask_id=ask["id"],
                   decision="declined", reply=reply_text[:200])
+        # A skipped email is handled too: file it so rocky@'s Inbox only
+        # holds what's still undecided. (Re-proposing it later now means
+        # moving it back to the Inbox before --backfill-days.)
+        if not dry_run and not any(
+                a is not ask and a.get("status") in ("queued", "proposed")
+                and _mail_keys(a.get("msg")) & _mail_keys(ask.get("msg"))
+                for a in asks):
+            _file_source_mail(config, paths, state, ask)
         _send(f"Understood — skipped. ({ask['id']})", ask_id=ask["id"])
         save_state(paths, state)
         result.setdefault("decided", []).append(ask["id"])

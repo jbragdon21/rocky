@@ -24,6 +24,40 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-10-03 (3) — Litigation Updater: already-on-sheet check, NO files the mail
+
+After the first deploy James saw two identical Tri-Tech proposals.
+Cause: the Rocky laptop was still partly on the **old exe** (the cleanup
+ran once at 16:23 UTC, but later runs re-queued Tri-Tech L0442–L0444,
+and L0442 was proposed at 16:48 without being collapsed). The running
+monitor likely held `rocky.exe` open, so OneDrive couldn't swap the
+file. **Restart the monitor + dashboard after a deploy.**
+
+**What changed** (`litigation_updater.py`)
+
+- `find_existing_entry()` — each new notice is checked: same case number
+  as a live ask from another email → retired as `duplicate`, mail filed;
+  same case number as an open-sheet row, or Claude match ≥ 0.8
+  (`EXISTING_MATCH_FLOOR`) → proposal leads with "⚠ ALREADY on the sheet"
+  and recommends NO. Stored on the ask as `existing_match`. Failures
+  never block the notice.
+- Declined asks now file the source mail too (unless another live ask
+  shares it).
+- `find_row` compares ids as strings. A quoted row id from Claude used to
+  read as "no such row", which also silently weakened closure/update
+  correlation.
+- Tests: scratchpad `test_existing.py` (plus the earlier two).
+
+**Decisions**
+
+- Sheet matches are flagged, not auto-skipped: a refiled case or a new
+  filing can need a row, and nothing is decided silently. Only a
+  same-case duplicate of an ask *already in the chat* is auto-retired.
+- Only open sheets are checked. A closed claim reappearing isn't
+  flagged.
+
+---
+
 ## Session 2026-10-03 (2) — Litigation Updater: duplicate asks, weekly re-up, thin-text scans
 
 James asked whether the chat would work for new litigation matters. It

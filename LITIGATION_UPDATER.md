@@ -118,11 +118,25 @@ Wired 2026-09-16. Before that the litigation calls were text-only, so a
 scanned complaint classified as "text not extractable" with the parties,
 entity, and allegations all unknown.
 
-**After a YES executes** (entry added / row updated / claim closed), the
-source mail is moved out of rocky@'s inbox into the **"Litigation
-Updater"** subfolder (`litigation_processed_folder`; created under the
-Inbox if missing; set to `""` to disable). Declined asks leave the mail
-in place. The move is best-effort — a failure is logged and never
+**After a YES executes** (entry added / row updated / claim closed) **or
+a NO skips it**, the source mail is moved out of rocky@'s inbox into the
+**"Litigation Updater"** subfolder (`litigation_processed_folder`;
+created under the Inbox if missing; set to `""` to disable), so the
+Inbox holds only what's undecided. (Declines were left in place until
+2026-10-03; to re-propose a declined mail now, move it back to the Inbox
+and run `--backfill-days`.)
+
+**Already on the sheet?** Every new notice is checked before it's
+proposed. Case numbers are compared first, for free, ignoring
+punctuation and case. If another email's ask for the **same case
+number** is already waiting in the chat, the new one is retired as a
+`duplicate` and its mail filed: you get one proposal per case. If an
+**open-sheet row** has that case number, or Claude judges (≥ 0.8) that a
+row is the same claimant and dispute, the proposal leads with "⚠ This
+looks like it's ALREADY on the BMC sheet as …" and recommends NO. A YES
+still adds it: a refiled case can legitimately need a second row. A
+failed check never blocks a notice; it is proposed as before.
+`litigation_case_number_column` (default `Case No.`). The move is best-effort — a failure is logged and never
 un-does the sheet write — and runs *after* execution because a Graph
 move changes the message id the executor re-fetches attachments by.
 Auth: `litigation_mail_move_via` — `"delegated"` (default; rocky@'s
