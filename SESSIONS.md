@@ -58,8 +58,9 @@ were actually preauth'd.
   (typos, a second YES) stay in the inbox where a person will see them.
 - Soft delete only. The reply text is already in `activity.jsonl`.
 
-**Open:** rebuild and deploy (`python build_exe.py`), then restart the
-monitor and dashboard on the Rocky laptop.
+**Deployed** 10/3 (`python build_exe.py`; rocky.exe + dashboard.exe
+copied to OneDrive Program Files\Rocky). **Open:** restart the monitor
+and dashboard on the Rocky laptop.
 
 ---
 
