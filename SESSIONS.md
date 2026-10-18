@@ -59,6 +59,84 @@ process name.
 
 ---
 
+## Session 2026-10-18 (7) — Kirsten Digest podcast (two-host audio week update)
+
+James asked for a second feature on the Kirsten Digest: the week rewritten
+as a news-style "week update" between two speakers, 5 minutes max, voiced
+by ElevenLabs and attached to the digest draft.
+
+**What changed**
+
+- New `kirsten_podcast.py`. After the cards are written, one Claude call
+  (temperature 0.4) turns them into `{"turns": [{speaker, text}]}`. Hosts
+  George and Sarah (ElevenLabs premade voices `JBFqnCBsd6RMkjVDRZzb`,
+  `EXAVITQu4vr4xnSDxMaL`). ElevenLabs Text to Dialogue
+  (`POST /v1/text-to-dialogue`, `eleven_v3`, `mp3_44100_64`) voices it.
+  The MP3 is attached to the draft after it's created: one POST under 3
+  MB, a Graph upload session above that (Mail.ReadWrite covers both).
+- `kirsten_digest.py`: `collect()` split out of `build()` so the run has
+  the cards; `render_report(audio=True)` adds "An audio summary of this
+  report is attached." to the footer. New flags `--no-podcast` and
+  `--audio` (dry run voices the script only with `--audio`, since that
+  spends ElevenLabs credits). Files: `_Kirsten Digests\YYYY-MM-DD.mp3` and
+  `YYYY-MM-DD podcast.txt`. Dry run: `state\kirsten_podcast_preview.*`.
+- Config: `elevenlabs_api_key` (none = no podcast, digest drafts as
+  before), `kirsten_podcast` (false = off), `kirsten_podcast_voices`,
+  `kirsten_podcast_hosts`, `kirsten_podcast_model`. In
+  config.example.json. build_exe.py bundles the module.
+- Tests `tests/test_kirsten_podcast.py` (10). Suite 86 pass.
+
+**Decisions**
+
+- The script is built from the finished cards only, never raw activity,
+  so it inherits the cards' client-safe filtering. Failed cards are left
+  out of the audio.
+- The hosts aren't Gallagher people. They open by calling it an audio
+  summary of the written report, never name firm staff, and give no
+  opinions on outcomes.
+- Length: the prompt asks for 600 words, code enforces 700 (about 4.7
+  min). Over 700 gets one "shorten" retry, then a hard cut that keeps the
+  sign-off. Sonnet 4.5 ran 900–1,200 words on the first pass in all three
+  real tries, so the retry is the normal path, not the exception.
+- ElevenLabs takes about 2,000 characters per dialogue request, so turns go
+  out in batches of at most 1,900 characters and the MP3 bytes are joined.
+  A 5-minute script is about 3 requests.
+- A podcast failure never blocks the report: logged, and the draft goes
+  in without audio. If the attach fails after the footer says audio is
+  attached, the log tells James to attach the file by hand or delete the
+  line.
+
+**Verified**
+
+- Three real script runs from the 10 live cards (no audio): 551 to 682
+  words, news-style, pending items kept pending. Found that the
+  HRI card lists the **July 24, 2026 mediation as a next step** (no
+  activity this week, so the card leaned on a stale memo), and DC AG Novel
+  Vouchers had a past June 15 date too. The podcast prompt now gets TODAY
+  and drops past dates. The written card still has the bug.
+- **ElevenLabs not called yet**: no key in config. Request shape is from
+  the API reference and covered by mocked tests only.
+
+**Open**
+
+- Add `elevenlabs_api_key` to `C:\Rocky\config.json` on the Rocky laptop
+  (and the dev config to test), then
+  `rocky.exe --kirsten-digest --dry-run --audio` and listen to
+  `state\kirsten_podcast_preview.mp3`. Then rebuild and deploy.
+- ~~Card bug: `next_steps` can carry a date before today.~~ **Fixed this
+  session.** Next steps now come back as `{date, text}` and
+  `next_step_bullets` drops any dated before today, falling back to "No
+  action needed..." if none are left (same pattern as `week_bullets`).
+  The status line can't be filtered in code, so the prompt rule now
+  covers it: a past date from an old memo is done, not upcoming. Rerun of
+  HRI and DC AG Novel Vouchers: "mediation ... was scheduled for July 24",
+  "response ... was due June 15". Suite 88 pass.
+- Confidentiality: the cards (privileged client report content) now also
+  go to ElevenLabs. Zero-retention (`enable_logging=false`) is
+  Enterprise-only.
+
+---
+
 ## Session 2026-10-18 (6) — Kirsten Digest (Weekly Gallagher-Bozzuto Litigation Report)
 
 James asked for a weekly Sunday 6 PM report to the client, in the Maple

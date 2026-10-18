@@ -160,3 +160,20 @@ def test_firm_names_from_gallagher_senders():
                      "from_address": "SCowin@GallagherLLP.com"}]},
     ]
     assert kd.firm_names(events) == ["Sam Cowin", "Tyler Fultz"]
+
+
+def test_next_steps_drop_past_dates():
+    items = [{"date": "2026-07-24", "text": "July 24, 2026 — mediation."},
+             {"date": "2026-11-04", "text": "Nov. 4 — opposition due."},
+             {"date": None, "text": "We are confirming the filing status."},
+             "Plain string stays.",
+             {"date": "2026-10-18", "text": "Today stays."}]
+    assert kd.next_step_bullets(items, "2026-10-18") == [
+        "Nov. 4 — opposition due.", "We are confirming the filing status.",
+        "Plain string stays.", "Today stays."]
+
+
+def test_next_steps_all_past_fall_back_to_nothing_pending():
+    items = [{"date": "2026-06-15", "text": "June 15 — response due."}]
+    assert kd.next_step_bullets(items, "2026-10-18") == [kd.NOTHING_PENDING]
+    assert kd.next_step_bullets([], "2026-10-18") == [kd.NOTHING_PENDING]

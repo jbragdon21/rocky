@@ -29,6 +29,12 @@
     "sstephey@gallagherllp.com"
   ],
 
+  "_kirsten_podcast_comment": "Kirsten Digest podcast (inside --kirsten-digest): the week's cards rewritten by Claude as a two-host audio week update (5 min max), voiced by ElevenLabs Text to Dialogue (eleven_v3), attached to the draft as an MP3 and saved beside the report in Rocky Cases\\_Kirsten Digests. No elevenlabs_api_key = no podcast. kirsten_podcast false turns it off. Voices default to ElevenLabs premade George and Sarah; hosts' names should match the voices.",
+  "elevenlabs_api_key": "",
+  "kirsten_podcast": true,
+  "kirsten_podcast_voices": ["JBFqnCBsd6RMkjVDRZzb", "EXAVITQu4vr4xnSDxMaL"],
+  "kirsten_podcast_hosts": ["George", "Sarah"],
+
   "_maple_updater_comment": "Path to the Maple updater's run-daily-update.ps1 (lives in the Maple OneDrive folder, not in Rocky). The dashboard's 'Maple Updater' button/schedule runs this script. Defaults IN CODE to the production path on the Rocky laptop (rocky profile); set this on machines where the Maple folder mounts elsewhere.",
   "maple_updater_script": "C:\\Users\\jbragdon\\OneDrive - gejlaw.com\\Program Files\\Maple\\Maple updater agent\\run-daily-update.ps1",
 

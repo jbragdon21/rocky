@@ -86,12 +86,15 @@ Rocky — Virtual Paralegal
       they are never drafted twice; stale (earlier-dated) outbox files are
       warned about, never drafted. No digest file = quiet day, exits quietly.
 
-  python rocky.py --kirsten-digest [--days N] [--dry-run] [--force] [RRID-XXXX ...]  (Sunday 6:00 PM weekly)
+  python rocky.py --kirsten-digest [--days N] [--dry-run] [--force] [--no-podcast] [--audio] [RRID-XXXX ...]  (Sunday 6:00 PM weekly)
       The Kirsten Digest, sent as the "Weekly Gallagher-Bozzuto Litigation
       Report": a week in review and next steps for every case marked yes in
       the case index's "Kirsten Digest?" column, from each case's
       activity.jsonl. Drafted into James's Drafts To Kirsten Woelper, cc
-      scowin@ and jdugan@; James sends. See kirsten_digest.py.
+      scowin@ and jdugan@; James sends. With elevenlabs_api_key set, a
+      two-host audio week update (5 min max) is attached as an MP3
+      (--no-podcast skips it; a dry run writes the script, --audio voices
+      it). See kirsten_digest.py and kirsten_podcast.py.
 
 
   python rocky.py --vault [--dry-run] [--source inbox|vault-mail|dropbox] [--backfill-days N] [--limit N]  (3:00 PM daily)
@@ -5416,7 +5419,7 @@ def main():
         print("                                          8 AM-7 PM); feeds the Multifamily Digest")
         print("  --maple-pma-activity [--dry-run] [--backfill-days N]  Export PMA emails folder to JSONL for the Maple updater (legacy alias: --pma-activity)")
         print("  --maple-digest [--date YYYY-MM-DD] [--yesterday] [--dry-run]  Draft the Maple PMA digest into James's Drafts (James sends)")
-        print("  --kirsten-digest [--days N] [--dry-run] [--force] [RRID-XXXX ...]")
+        print("  --kirsten-digest [--days N] [--dry-run] [--force] [--no-podcast] [--audio] [RRID-XXXX ...]")
         print("                                          Weekly Gallagher-Bozzuto Litigation Report (Sunday 6 PM): drafts")
         print("                                          week in review + next steps for every case marked yes in the")
         print("                                          case index's Kirsten Digest? column, To Kirsten, into James's Drafts")

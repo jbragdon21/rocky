@@ -3,6 +3,7 @@ Kirsten Digest — the weekly Gallagher-Bozzuto litigation report
 ===============================================================
 
     python rocky.py --kirsten-digest [--days N] [--dry-run] [--force]
+                                     [--no-podcast] [--audio]
                                      [RRID-XXXX ...]          (Sunday 6:00 PM)
 
 Internally "the Kirsten Digest"; externally (the email itself) "the Weekly
@@ -36,6 +37,12 @@ per case, footer). Colors live in THEME below.
 A copy of each report is saved to <cases_root>\\_Kirsten Digests\\
 YYYY-MM-DD.html. state\\kirsten_digest.json records the last drafted date,
 so a second run the same day drafts nothing unless --force.
+
+The podcast (kirsten_podcast.py): the finished cards rewritten as a two-host
+audio week update of five minutes at most, voiced by ElevenLabs and attached
+to the draft as YYYY-MM-DD.mp3. Needs elevenlabs_api_key; --no-podcast skips
+it. A dry run writes the script only; add --audio to voice it too (spends
+ElevenLabs credits). If the podcast fails, the report drafts without it.
 """
 
 from __future__ import annotations
@@ -89,7 +96,7 @@ Return ONLY a JSON object with these keys:
 {
   "status": "<one sentence, at most 25 words: where the case stands now (court or forum, stage, the next key date if one is known)>",
   "week": [{"date": "<YYYY-MM-DD the development itself happened, or null if unknown>", "text": "<bullet>"}, ...],
-  "next_steps": ["<bullet>", ...]
+  "next_steps": [{"date": "<YYYY-MM-DD of the upcoming date the bullet leads with, or null if undated>", "text": "<bullet>"}, ...]
 }
 
 "week" — WEEK IN REVIEW
@@ -100,10 +107,10 @@ Return ONLY a JSON object with these keys:
 
 "next_steps" — NEXT STEPS
 - 1 to 4 bullets in strict date order, soonest first (undated items last): what happens next and who does it. Write each as what we will do ("We will...", "Gallagher is preparing...") or what is expected of others, never as an imperative to-do. Wrong: "Establish whether the response was filed", "Obtain the call records", "Resolve the conflict", "Return X's call". Right: "We are confirming the filing status with OHR", "We have asked Allegro for the call records". Lead with any upcoming date (e.g. "Nov. 4 — opposition due; Gallagher is preparing it."). Call out plainly anything Gallagher needs from Bozzuto (documents, a decision, settlement authority, a witness).
-- Never list a date that is before TODAY as upcoming. A past hearing or deadline is done.
+- Never list a date that is before TODAY as upcoming, here or in "status". A past hearing, mediation, or deadline is done: the background memo may be months old and still call it scheduled. If no source says what happened at it, say its result is unconfirmed rather than calling it upcoming.
 - Never calculate a date. Use only dates stated in the sources. If a deadline is defined relative to another event ("21 days before mediation") and no source states the date, write it that way without a date.
 - Every hearing, conference, or deadline on or after TODAY that the sources state belongs here, even in a quiet week.
-- If nothing is pending, return ["No action needed at this time; we will report any developments."]
+- If nothing is pending, return [{"date": null, "text": "No action needed at this time; we will report any developments."}]
 
 AUDIENCE — the client. Write for an experienced in-house reader: plain, direct, professional. Refer to the firm as "we" or "Gallagher" and to the client as "Bozzuto". Gallagher's work is "we" or "Gallagher": never credit it to individual Gallagher attorneys or staff by name. The reader is Kirsten herself: never name her in the third person. Write her own actions as "you" ("you coordinated with leadership on...") or as Bozzuto's.
 - Never mention Rocky, AI, activity logs, case folders, file indexes, memoranda being updated, documents being saved, renamed, filed into folders, or any other internal file housekeeping.
@@ -310,6 +317,31 @@ def week_bullets(items, week_start: str) -> list[str]:
     return out
 
 
+NOTHING_PENDING = ("No action needed at this time; we will report any "
+                   "developments.")
+
+
+def next_step_bullets(items, today: str) -> list[str]:
+    """Bullet texts, dropping any the model dated before today. With no
+    activity in the week the card leans on the status memo, which can
+    still list a hearing or mediation that has already happened."""
+    out = []
+    for item in items or []:
+        if isinstance(item, dict):
+            text = str(item.get("text") or "").strip()
+            date = str(item.get("date") or "")[:10]
+            if today and re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) \
+                    and date < today:
+                log.info(f"[kirsten] dropped past next step ({date}): "
+                         f"{text[:80]}")
+                continue
+        else:
+            text = str(item).strip()
+        if text:
+            out.append(text)
+    return out or [NOTHING_PENDING]
+
+
 def summarize_case(client, model: str, case: dict, lines: list[str],
                    memo: str, background: str, window: str,
                    week_start: str = "", firm: list[str] | None = None
@@ -347,8 +379,8 @@ Write the JSON object for this case."""
     if not data:
         return {"error": "the summary came back unreadable"}
     week = week_bullets(data.get("week"), week_start[:10])
-    steps = [str(b).strip() for b in data.get("next_steps") or []
-             if str(b).strip()]
+    steps = next_step_bullets(data.get("next_steps"),
+                              datetime.now().strftime("%Y-%m-%d"))
     return {"status": str(data.get("status") or "").strip(),
             "week": week[:6], "next_steps": steps[:5]}
 
@@ -409,12 +441,14 @@ def render_card(title: str, subtitle: str, section: dict) -> str:
 
 
 def render_report(cards: list[tuple[str, str, dict]], week_label: str,
-                  generated: datetime) -> str:
+                  generated: datetime, audio: bool = False) -> str:
     t = THEME
     active = sum(1 for _, _, s in cards if s.get("week"))
     strip = (f'{len(cards)} case{"s" if len(cards) != 1 else ""} &nbsp;&middot;'
              f'&nbsp; {active} with activity this week')
     body = "".join(render_card(*c) for c in cards)
+    audio_note = ("<br>An audio summary of this report is attached."
+                  if audio else "")
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -462,7 +496,7 @@ def render_report(cards: list[tuple[str, str, dict]], week_label: str,
     <div style="font-size:11px;color:{t['muted']};line-height:1.6;margin-top:14px;">
       Prepared by Gallagher LLP for Bozzuto, {generated.strftime('%B')} {generated.day}, {generated.year}.<br>
       Each case shows where it stands, what happened this week, and what comes next.
-      Please reply with any questions.
+      Please reply with any questions.{audio_note}
     </div>
   </td></tr>
 
@@ -490,18 +524,28 @@ def _card_title(case: dict) -> tuple[str, str]:
 def build(config: dict, days: int, rrids: list[str] | None = None
           ) -> tuple[str | None, str, list[str]]:
     """Returns (html or None, reason, card names)."""
+    cards, reason, label = collect(config, days, rrids)
+    if cards is None:
+        return None, reason, []
+    return (render_report(cards, label, datetime.now()), reason,
+            [c[0] for c in cards])
+
+
+def collect(config: dict, days: int, rrids: list[str] | None = None
+            ) -> tuple[list | None, str, str]:
+    """Returns (cards or None, reason, week label)."""
     import rocky
     from anthropic import Anthropic
 
     cases = rocky.load_case_index()
     if not cases:
-        return None, "case index unreadable (see warning above)", []
+        return None, "case index unreadable (see warning above)", ""
     if not kirsten_column(cases):
         return None, ("no 'Kirsten Digest?' column in the Rocky Case Index "
-                      "(add it with yes/no per case)"), []
+                      "(add it with yes/no per case)"), ""
     selected = select_cases(cases, rrids)
     if not selected:
-        return None, "no open case is marked yes for the Kirsten Digest", []
+        return None, "no open case is marked yes for the Kirsten Digest", ""
 
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=days)
@@ -538,9 +582,7 @@ def build(config: dict, days: int, rrids: list[str] | None = None
     # Cases with something to report first, then the quiet ones.
     cards.sort(key=lambda c: (not c[2].get("week") and not c[2].get("error"),
                               c[0].lower()))
-    html = render_report(cards, _week_label(local_start, local_end),
-                         datetime.now())
-    return html, "ok", [c[0] for c in cards]
+    return cards, "ok", _week_label(local_start, local_end)
 
 
 def _state_path(data_dir: Path) -> Path:
@@ -581,10 +623,31 @@ def run_cli(config: dict, data_dir: Path) -> None:
     log.info(f"Rocky — Kirsten Digest ({REPORT_NAME}), last {days} days"
              f"{' — DRY RUN' if dry_run else ''}")
     log.info("=" * 60)
-    html, reason, names = build(config, days, rrids)
-    if html is None:
+    cards, reason, week_label = collect(config, days, rrids)
+    if cards is None:
         log.warning(f"[kirsten] no report: {reason}")
         return
+    names = [c[0] for c in cards]
+
+    import kirsten_podcast
+    archive_dir = rocky.ROCKY_CASES_ROOT / ARCHIVE_DIRNAME
+    mp3 = None
+    if "--no-podcast" in args:
+        log.info("[kirsten] --no-podcast: no audio this run")
+    elif not kirsten_podcast.enabled(config):
+        log.info("[kirsten] podcast off (no elevenlabs_api_key, or "
+                 "kirsten_podcast false)")
+    elif dry_run:
+        mp3 = kirsten_podcast.make(
+            config, cards, week_label,
+            data_dir / "state" / "kirsten_podcast_preview.mp3",
+            data_dir / "state" / "kirsten_podcast_preview.txt",
+            audio="--audio" in args)
+    else:
+        mp3 = kirsten_podcast.make(
+            config, cards, week_label, archive_dir / f"{today}.mp3",
+            archive_dir / f"{today} podcast.txt")
+    html = render_report(cards, week_label, datetime.now(), audio=bool(mp3))
 
     end = datetime.now()
     subject = (f"{REPORT_NAME} — Week Ending "
@@ -601,10 +664,11 @@ def run_cli(config: dict, data_dir: Path) -> None:
         preview.write_text(html, encoding="utf-8")
         log.info(f"[kirsten] DRY RUN — would draft {subject!r} into "
                  f"{mailbox}'s Drafts, To {to}, Cc {cc}, {len(names)} "
-                 f"case(s): {names}. Preview: {preview}")
+                 f"case(s): {names}. Preview: {preview}"
+                 + (f"; audio {mp3}" if mp3 else ""))
         return
 
-    archive = rocky.ROCKY_CASES_ROOT / ARCHIVE_DIRNAME / f"{today}.html"
+    archive = archive_dir / f"{today}.html"
     try:
         archive.parent.mkdir(exist_ok=True)
         archive.write_text(html, encoding="utf-8")
@@ -620,6 +684,11 @@ def run_cli(config: dict, data_dir: Path) -> None:
     if not result.get("created"):
         log.warning(f"[kirsten] draft FAILED: {result.get('reason')}")
         return
+    if mp3 and not kirsten_podcast.attach(token, mailbox,
+                                          result["message_id"], mp3):
+        log.warning(f"[kirsten] the draft went in WITHOUT the audio, but its "
+                    f"footer says one is attached. Attach {mp3} by hand or "
+                    f"delete that line before sending.")
     state.update(last_drafted=today, message_id=result.get("message_id"),
                  cases=names)
     try:
