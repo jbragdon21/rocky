@@ -84,8 +84,11 @@ Gallagher-Bozzuto Litigation Report".
   PermissionError). Until it exists the run logs a warning and drafts
   nothing.
 - Theming from James, then edit `THEME`.
-- Not built or deployed. After `python build_exe.py`, use the dashboard
-  on the Rocky laptop: Kirsten Digest → 📅, or Set up recommended.
+- **Deployed 10/18** (`python build_exe.py`; rocky.exe and dashboard.exe
+  to OneDrive Program Files\Rocky; kirsten_digest.py confirmed in the
+  bundle). Still to do on the Rocky laptop: restart the dashboard, then
+  Kirsten Digest → 📅 (pre-fills Weekly SUN 18:00), or Set up
+  recommended. First live run: Sunday 10/25 6 PM, after the column is in.
 
 ---
 
