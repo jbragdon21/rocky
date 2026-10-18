@@ -227,10 +227,14 @@ def list_chat_members(token: str, chat_id: str) -> list[dict]:
             for m in resp.json().get("value", [])]
 
 
-def send_chat_message(token: str, chat_id: str, content: str) -> dict | None:
-    """Send a plain-text message. Returns the created Graph message object
-    (callers log it + keep the id for reply correlation), or None."""
-    payload = {"body": {"contentType": "text", "content": content}}
+def send_chat_message(token: str, chat_id: str, content: str,
+                      html: bool = False) -> dict | None:
+    """Send a message — plain text by default, or `html` (Teams collapses
+    the line breaks in a plain-text post, so anything structured should be
+    sent as HTML). Returns the created Graph message object (callers log it
+    + keep the id for reply correlation), or None."""
+    payload = {"body": {"contentType": "html" if html else "text",
+                        "content": content}}
     resp = _graph_call("POST", f"{GRAPH_API_BASE}/chats/{chat_id}/messages",
                        token, payload=payload)
     if resp is None or resp.status_code not in (200, 201):

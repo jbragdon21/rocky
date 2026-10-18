@@ -24,6 +24,172 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-10-18 — Monitor relaunches itself on a new build
+
+James runs `rocky.exe --monitor` on the Rocky laptop straight from OneDrive
+and asked for a 12-hour kill-and-relaunch task to catch new builds.
+Did this instead:
+
+- **`rocky.py` `run_monitor_cli`:** between cycles (never mid-child) it
+  compares rocky.exe's mtime to the one it started with. If the mtime has
+  changed and then holds for 30 s (`_new_build_landed`), it starts a
+  detached `--monitor` with the same args (`_relaunch_monitor`) and exits.
+  New builds are live within about one interval (10 min).
+- **`acquire_instance_lock`:** a relaunched monitor (env
+  `ROCKY_MONITOR_RELAUNCH=1`) retries the lock for up to 120 s, so it
+  waits for its predecessor to exit and doesn't bow out. Every other
+  command, and an ordinary second `--monitor`, still exits at once.
+- **`tests/test_monitor_relaunch.py`:** covers mtime settling, a missing
+  image mid-rename, lock waiting vs. bowing out (6 tests).
+
+Decisions:
+- **No timed `taskkill`.** `/IM rocky.exe` would kill one-shot scheduled
+  runs mid-job, and Task Scheduler's "stop existing instance" ends the
+  whole tree. A relaunch at a cycle boundary interrupts nothing.
+- The relaunch sets `PYINSTALLER_RESET_ENVIRONMENT=1` (PyInstaller 6.9+).
+  Without it the new onefile process would reuse the old one's `_MEI`
+  temp dir, which is deleted the moment the old process exits.
+- If the spawn fails, the old monitor logs it and keeps running. It
+  re-baselines the mtime, so it doesn't retry every cycle.
+
+Open / watch-outs:
+- **Not yet verified frozen on the Rocky laptop.** After the next build,
+  confirm in rocky.log: "[monitor] new build of rocky.exe landed —
+  relaunching", followed by a fresh "Rocky — monitor:" banner. The new
+  process is detached and started by the old one, not by Task Scheduler,
+  so the scheduler shows the boot task as finished. Keep the at-boot
+  task; it is still what starts the first monitor.
+- In dev (`python rocky.py --monitor`), editing rocky.py also triggers a
+  relaunch.
+
+**Also in this commit (parallel session, same day):**
+
+- **Monitor runs a background Litigation Updater poll** each cycle
+  (`_monitor_litigation`: `--litigation --poll --follow-if-active`).
+  It runs in the background because a follow session can outlast the
+  loop's 15-minute child timeout and would stall LetterStream. If the
+  previous cycle's run is still going, the cycle skips it. Config
+  `monitor_litigation: false` turns it off. The child also sets
+  `PYINSTALLER_RESET_ENVIRONMENT`, since a follow session can outlive a
+  monitor relaunch.
+- pypdf WARNING-level parse glitches are kept off the dashboard's Heads-up
+  feed. The `--cleanup` usage now lists `--length-only` and `--dry-run`.
+
+**Committed and pushed; NOT repackaged.** Neither the relaunch nor the
+litigation poll is live on the Rocky laptop until the next `build_exe.py`,
+which is waiting on further changes.
+
+---
+
+## Session 2026-10-04 (2) — Litigation Updater: follow after poll, phone-readable chat
+
+James: the queue only moved when he intervened, and proposals were one
+solid block of text on a phone. (The length audit below is already live
+on the Rocky laptop; L0445–L0447 came from it on 10/4.)
+
+**What changed**
+
+- `_dispatch` (default/--poll): after `run_poll`, if any ask is queued or
+  proposed, `follow_chat(..., idle_minutes=10)` keeps the chat hot (15s
+  checks). New `idle_minutes` exit: no inbound for 10 min ends the
+  session even with asks still queued. Cap 45 min. Config
+  `litigation_follow_after_poll` / `_minutes` / `_idle_minutes`;
+  `--no-follow` skips it; dry runs never follow.
+- Chat messages now go out as HTML (`teams.send_chat_message(html=True)`;
+  the inbox cleaner still sends plain text). Teams collapses newlines in
+  plain-text posts, which was the "huge block" problem. `_teams_html()`
+  renders a light markup (`**bold**`, `> ` quotes, blank-line paragraphs);
+  `communications.jsonl` keeps the markup.
+- `_proposal_text` rewritten for phones: bold `[L####]` title line, facts
+  one per line, the proposed text quoted on its own, text being replaced
+  clipped to 25 words + " . . .", reply line last. Length asks drop the
+  rule-breach "why" (word counts shown instead). Update asks store
+  `before` and show only what a running-log update adds. New-entry acks
+  list fields one per line, narrative cells clipped.
+- Tests: `tests/test_litigation_chat.py` (9). Suite: 27 pass.
+- Closure instructions (James's Fontenot example): `detect_intent` now
+  reads the claim name from "move X to (the) closed …" (`_CLOSE_TO_RE`;
+  pronouns like "it" are dropped), and a closure note quoted in what he
+  typed, in straight or curly quotes, is used word for word
+  (`quoted_closure_note`). It is never redrafted, the proposal says
+  "(your wording)", and it carries through an identify ask. Quotes in
+  the forwarded chain are ignored. A chat revision redrafts it and
+  clears the flag. Tests: `tests/test_litigation_intent.py` (6); suite
+  33 pass.
+
+**Watch-outs**
+
+- A follow session holds the litigation lock, so `--report`, `--cleanup`,
+  or the dashboard's litigation buttons started during it exit as
+  "already running".
+- A reply after the session ends waits for the next poll. With one 10:00
+  poll a day, that can be a day. Schedule the poll hourly, which is
+  cheap and incremental.
+- First live HTML post is the real check that Teams renders the
+  blockquote. Fallback: drop `<blockquote>` in `_teams_html`.
+
+**Not yet deployed.**
+
+---
+
+## Session 2026-10-04 — Litigation Updater: cleanup length audit
+
+The 8/30 conciseness rules (brain.md, voice_summary/voice_disclosure)
+postdate both cleanup runs (8/2, 8/5), so no row had been checked for
+length. Some Summary of Claim cells were four-paragraph retellings.
+
+**What changed** (`litigation_updater.py`)
+
+- `run_cleanup` split: `_compliance_review()` (the old body, unchanged)
+  + `run_length_audit()`. New `--length-only` skips the compliance pass.
+- Length audit: `length_prefilter()` (no Claude) checks words /
+  sentences / paragraphs against `LENGTH_LIMITS` — Summary of Claim
+  150/7/1, routine claims (Type of Case slip/trip/fall/injury/
+  habitability/property damage, never class action) 80/3; Disclosure
+  130/5/1. `rewrite_long_cell()` sends flagged cells to Claude with the
+  voice guide; the rewrite is rejected (one retry with feedback) if it
+  is still over limits or drops a dollar amount, docket number, or the
+  row's Case No. Queued as `cleanup_fix` with `check: "length"` and a
+  `dropped` list shown in the proposal.
+- Pacing: at most `litigation_length_audit_batch` (10) live length asks;
+  extra cells are `deferred` and NOT sent to Claude until a later run.
+  Dedup keys on (row, column, hash of current text), so a declined cell
+  is not re-proposed unless it's edited.
+- `--cleanup --dry-run` now really is dry: nothing queued, no
+  state/conventions/missing_info writes. **Before this it still queued
+  asks** (dry_run only reached the log line). Every run writes
+  `_litigation\cleanup_reports\cleanup_<stamp>.md` + `.csv`.
+- `execute_ask`: a length fix is skipped if the cell changed since it
+  was proposed (whole-cell rewrite would undo the edit).
+- `revise_ask` cleanup_fix cap 300 → 1500 tokens (paragraph rewrites).
+- `load_brain` now warns when it falls back to the seed.
+- Cleanup refuses to run if voice_summary/voice_disclosure are missing
+  (wrong litigation_root or an unpinned folder).
+- Tests: `tests/test_litigation_cleanup.py` (18, Smartsheet + Claude
+  mocked).
+
+**Data files** (backups `*.bak-2026-10-04` next to each)
+
+- `voice_summary.md`: Bastola exemplar rewritten to one paragraph; the
+  "rare second paragraph" allowance removed; routine-claim rule +
+  illustrative habitability exemplar added.
+- `brain.md`: routine-claim rule added, so a `--voice-rebuild` keeps it.
+
+**Watch-outs**
+
+- `--voice-rebuild` regenerates voice_summary.md from sheet samples and
+  would overwrite today's hand edits (the brain rule survives; the
+  exemplars may not). Re-check after any rebuild.
+- Status/Action Items and Exposure/Analysis are not audited: no rule
+  limits them, and Status/Action Items is a running log. Config
+  `litigation_length_limits` can add them.
+- Dev-laptop config.json has no litigation keys. Run the audit on the
+  Rocky laptop.
+
+**Not yet deployed.**
+
+---
+
 ## Session 2026-10-03 (4) — LetterStream inbox housekeeping
 
 James asked for two things: certified-mail requests should move to the

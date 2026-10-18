@@ -240,6 +240,13 @@
   "_litigation_scan_comment": "Scanned notices: a PDF with no text layer (a stamped complaint, a faxed demand) has its first litigation_scan_pdf_pages pages attached to the classify/draft calls so Claude reads the pages themselves — the same path the Vault uses, wired in 2026-09-16 after a scanned King County complaint came back as 'text not extractable'. Default 10 (the Vault's 4 is enough to recognize a document; a claims entry needs the allegations). Lower it to trim tokens, raise it if captions and counts routinely run long.",
   "litigation_scan_pdf_pages": 10,
   "litigation_reup_days": 7,
+  "_litigation_follow_comment": "After every --poll with an ask waiting, Rocky stays on the Litigation Updates chat (checking every 15s) so each YES brings the next proposal immediately. Ends after litigation_follow_idle_minutes with no replies or litigation_follow_minutes total; keep the total under the poll interval. litigation_follow_after_poll: false (or --no-follow) turns it off.",
+  "litigation_follow_after_poll": true,
+  "litigation_follow_minutes": 45,
+  "litigation_follow_idle_minutes": 10,
+  "_litigation_length_comment": "Cleanup length audit (2026-10-04). litigation_length_audit_batch: most length-rewrite asks in the queue at once (live runs; re-run --cleanup --length-only for the next batch). litigation_length_limits: optional per-column overrides of the built-in limits (Summary of Claim 150 words / 7 sentences / 1 paragraph, routine claims 80 / 3; Third Party Disclosure Summary 130 / 5 / 1), keyed by column title — e.g. {\"Status/Action Items\": {\"words\": 50}} adds a column, null drops one. Routine = Type of Case matching slip / trip / fall / bodily or personal injury / habitability / property damage, never a class action.",
+  "litigation_length_audit_batch": 10,
+  "litigation_length_limits": {},
 
   "_pacer_monitor_comment": "PACER Monitor (--pacer --sync 7:00 AM, --pacer-sweep 6:30 AM, --pacer-digest 5:15 PM, --pacer-mail every monitor cycle). Watches federal dockets through the CourtListener/RECAP API and discovers new cases through the PACER Case Locator. pacer_monitor_root is the shared database folder; blank derives 'PACER Monitor Database' beside Rocky Cases. Pin it 'Always keep on this device' on the Rocky laptop. Authoritative records are JSONL under _db\\; the SQLite index (C:\\Rocky\\pacer\\index.db) is derived and rebuilt by --reindex. See PACER_MONITOR.md.",
   "pacer_monitor_root": "C:\\Users\\jbragdon\\OneDrive - gejlaw.com\\PACER Monitor Database",

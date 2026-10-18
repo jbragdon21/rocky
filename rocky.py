@@ -103,8 +103,11 @@ Rocky — Virtual Paralegal
       The fast loop: every monitor_interval_minutes (default 10) run the
       LetterStream sweep and the Vault mail sources as subprocesses, so
       certified-mail requests, YES replies, and Vault submissions are
-      handled within minutes. Each subprocess keeps its own lock,
-      cursors, and failure isolation; ROCKY STOP pauses the loop.
+      handled within minutes, plus a background Litigation Updater poll
+      (--litigation --poll --follow-if-active; monitor_litigation: false
+      turns it off). Each subprocess keeps its own lock,
+      cursors, and failure isolation; ROCKY STOP pauses the loop. When
+      OneDrive lands a new rocky.exe, it relaunches itself between cycles.
       Replaces the 8:00 AM letterstream and hourly vault-mail /
       vault-inbox schedule entries (disable those when this runs).
       --once = one cycle then exit (testing).
@@ -123,7 +126,7 @@ Rocky — Virtual Paralegal
       confirmation email, one YES releases all); --probe verifies API
       auth. See LETTERSTREAM.md.
 
-  python rocky.py --litigation [--poll] [--dry-run] | --chat | --digest [--date YYYY-MM-DD] | --report <BMC|B&A|BHI|BCC> | --cleanup [--limit N] | --learn [--days N] | --voice-rebuild | --status
+  python rocky.py --litigation [--poll] [--dry-run] | --chat | --digest [--date YYYY-MM-DD] | --report <BMC|B&A|BHI|BCC> | --cleanup [--length-only] [--limit N] [--dry-run] | --learn [--days N] | --voice-rebuild | --status
       Litigation Updater: Bozzuto claims tracking on Smartsheet. Watches
       rocky@'s inbox for legal notices (legalnotices@bozzuto.com and
       forwards saying add-to/update/move-to-closed the claims smartsheet),
@@ -289,6 +292,10 @@ logging.basicConfig(
     ],
 )
 log = logging.getLogger("rocky")
+# pypdf logs recoverable parse glitches in malformed PDFs ("FloatObject ...
+# invalid; use 0.0 instead") at WARNING; extraction still succeeds, so keep
+# them off the dashboard's Heads-up feed.
+logging.getLogger("pypdf").setLevel(logging.ERROR)
 
 
 # =============================================================================
@@ -4800,21 +4807,131 @@ MONITOR_DEFAULT_COMMANDS = ["--letterstream", "--vault-mail", "--vault-inbox",
                             "--pacer-mail"]
 
 
-def _self_command(flag: str) -> list[str]:
+# The Litigation Updater rides along on every cycle too, but in the
+# BACKGROUND: after its poll it may stay on the Teams chat for up to
+# litigation_follow_minutes while James answers, which the foreground loop's
+# 15-minute timeout would kill (and which would stall LetterStream behind
+# it). A cycle that finds the previous litigation run still going skips it.
+# --follow-if-active: follow only when the chat just moved (a reply, a new
+# proposal, a re-up), so the litigation lock isn't held around the clock.
+# Config monitor_litigation: false turns it off.
+MONITOR_LITIGATION_ARGS = ["--litigation", "--poll", "--follow-if-active"]
+
+
+def _self_command(flag: str, *extra: str) -> list[str]:
     """How to invoke this same program with one flag, frozen or dev."""
     if getattr(sys, "frozen", False):
-        return [sys.executable, flag]
-    return [sys.executable, str(Path(__file__).resolve()), flag]
+        return [sys.executable, flag, *extra]
+    return [sys.executable, str(Path(__file__).resolve()), flag, *extra]
+
+
+def _monitor_litigation(proc, once: bool = False):
+    """Start a background litigation poll unless the last one is still
+    running. Returns the process to track (or None). The child unpacks its
+    own onefile copy (PYINSTALLER_RESET_ENVIRONMENT) because a follow session
+    can outlive this monitor across a new-build relaunch."""
+    import subprocess
+    if proc is not None:
+        code = proc.poll()
+        if code is None:
+            log.info("[monitor] litigation still running from the last "
+                     "cycle — skipped")
+            return proc
+        if code != 0:
+            log.warning(f"[monitor] litigation exited {code} (details in "
+                        f"rocky.log)")
+    env = dict(os.environ, PYINSTALLER_RESET_ENVIRONMENT="1")
+    try:
+        child = subprocess.Popen(
+            _self_command(*MONITOR_LITIGATION_ARGS), env=env,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL)
+    except Exception as e:
+        log.exception(f"[monitor] litigation failed to launch: {e}")
+        return None
+    if once:
+        try:
+            child.wait(timeout=3600)
+        except subprocess.TimeoutExpired:
+            log.warning("[monitor] --once: litigation still running after "
+                        "an hour — left running")
+    return child
+
+
+# The monitor is the one long-lived rocky.exe, and the laptop launches it
+# straight from OneDrive. OneDrive lands a new build by renaming it over the
+# running image (Windows allows the rename, only deletion is blocked), so the
+# children pick it up on their next run but the loop itself would not. Between
+# cycles the monitor compares its image's mtime to the one it started from;
+# on a change it starts a fresh `--monitor` and exits, never mid-child.
+MONITOR_RELAUNCH_ENV = "ROCKY_MONITOR_RELAUNCH"
+MONITOR_SETTLE_SECONDS = 30   # mtime must hold this long before relaunching
+
+
+def _self_image() -> Path:
+    """The file this process is running from: the .exe, or rocky.py in dev."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable)
+    return Path(__file__).resolve()
+
+
+def _image_mtime(path: Path) -> float | None:
+    """mtime of the image, or None mid-rename / unreadable (= no change)."""
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None
+
+
+def _new_build_landed(path: Path, started_mtime: float | None,
+                      settle: float = MONITOR_SETTLE_SECONDS) -> bool:
+    """True once the image's mtime differs from startup and holds for
+    `settle` seconds, so a sync still in flight is never launched."""
+    seen = _image_mtime(path)
+    if seen is None or started_mtime is None or seen == started_mtime:
+        return False
+    if settle:
+        time.sleep(settle)
+    return _image_mtime(path) == seen
+
+
+def _relaunch_monitor() -> bool:
+    """Start a fresh `--monitor` with the same args, detached. The child
+    waits for our instance lock (MONITOR_RELAUNCH_ENV), which frees when
+    we exit. Returns False if it could not be started; keep running then."""
+    import subprocess
+    args = sys.argv[1:]
+    cmd = ([sys.executable, *args] if getattr(sys, "frozen", False)
+           else [sys.executable, str(Path(__file__).resolve()), *args])
+    # PYINSTALLER_RESET_ENVIRONMENT (PyInstaller 6.9+): the new process must
+    # unpack its own onefile copy, not inherit our _MEI dir, which is
+    # deleted the moment we exit. The monitor's short-lived children can
+    # share ours; this one outlives us.
+    env = dict(os.environ, **{MONITOR_RELAUNCH_ENV: "1",
+                              "PYINSTALLER_RESET_ENVIRONMENT": "1"})
+    try:
+        subprocess.Popen(
+            cmd, env=env, close_fds=True,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=(subprocess.DETACHED_PROCESS
+                           | subprocess.CREATE_NEW_PROCESS_GROUP))
+        return True
+    except Exception as e:
+        log.exception(f"[monitor] relaunch failed, staying on this build: {e}")
+        return False
 
 
 def run_monitor_cli() -> None:
     """
     Entry point for `rocky.exe --monitor [--once]`. Runs forever (launch
-    at boot via Task Scheduler): every
+    at boot via Task Scheduler) and relaunches itself when OneDrive lands a
+    new rocky.exe (see _new_build_landed): every
     monitor_interval_minutes (default 10) it runs the LetterStream sweep
     and the Vault mail sources, so certified-mail requests, release
     replies, affidavit approvals, and Vault submissions are acted on
-    within minutes instead of at the next daily/hourly slot. Honors the
+    within minutes instead of at the next daily/hourly slot, and starts a
+    background Litigation Updater poll (_monitor_litigation). Honors the
     ROCKY STOP kill switch. A subprocess that finds its instance lock
     held (an overlapping scheduled run) exits quietly — overlap is safe,
     just redundant, so disable the hourly vault-mail/vault-inbox and
@@ -4828,11 +4945,17 @@ def run_monitor_cli() -> None:
     interval = int(config.get("monitor_interval_minutes") or 10) * 60
     commands = list(config.get("monitor_commands")
                     or MONITOR_DEFAULT_COMMANDS)
+    litigation = config.get("monitor_litigation", True)
+    litigation_proc = None
     once = "--once" in sys.argv
+    image = _self_image()
+    started_mtime = _image_mtime(image)
 
     log.info("=" * 60)
-    log.info(f"Rocky — monitor: {' '.join(commands)} every "
-             f"{interval // 60} min" + (" (single cycle)" if once else ""))
+    log.info(f"Rocky — monitor: {' '.join(commands)}"
+             + (" + litigation (background)" if litigation else "")
+             + f" every {interval // 60} min"
+             + (" (single cycle)" if once else ""))
     log.info("=" * 60)
 
     while True:
@@ -4853,8 +4976,16 @@ def run_monitor_cli() -> None:
                               f"min — killed; next cycle retries")
                 except Exception as e:
                     log.exception(f"[monitor] {flag} failed to launch: {e}")
+            if litigation:
+                litigation_proc = _monitor_litigation(litigation_proc, once)
         if once:
             break
+        if _new_build_landed(image, started_mtime):
+            log.info(f"[monitor] new build of {image.name} landed — "
+                     f"relaunching")
+            if _relaunch_monitor():
+                return
+            started_mtime = _image_mtime(image)   # don't retry every cycle
         try:
             time.sleep(interval)
         except KeyboardInterrupt:
@@ -4870,15 +5001,26 @@ def acquire_instance_lock(command: str):
     """
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     lock_path = STATE_DIR / f"rocky_{command}.lock"
-    try:
-        lock_fh = open(lock_path, "w")
-        msvcrt.locking(lock_fh.fileno(), msvcrt.LK_NBLCK, 1)
-        lock_fh.write(str(os.getpid()))
-        lock_fh.flush()
-        return lock_fh
-    except (OSError, IOError):
-        print(f"Another rocky {command} is already running. Exiting.")
-        sys.exit(0)
+    # A relaunched monitor starts while its predecessor still holds the
+    # lock, so it waits for the old one to exit instead of bowing out.
+    deadline = time.time() + (
+        120 if command == "monitor" and os.environ.pop(MONITOR_RELAUNCH_ENV,
+                                                       None) else 0)
+    while True:
+        lock_fh = None
+        try:
+            lock_fh = open(lock_path, "w")
+            msvcrt.locking(lock_fh.fileno(), msvcrt.LK_NBLCK, 1)
+            lock_fh.write(str(os.getpid()))
+            lock_fh.flush()
+            return lock_fh
+        except (OSError, IOError):
+            if lock_fh is not None:
+                lock_fh.close()
+            if time.time() >= deadline:
+                print(f"Another rocky {command} is already running. Exiting.")
+                sys.exit(0)
+            time.sleep(2)
 
 
 # =============================================================================
@@ -5238,7 +5380,7 @@ def main():
         print("                                          preauths each piece and confirms them in ONE [CMB-####] email whose single")
         print("                                          YES releases the batch (see LETTERSTREAM.md)")
         print("  --litigation   [--poll] [--dry-run] | --chat | --digest [--date YYYY-MM-DD] |")
-        print("                 --report <BMC|B&A|BHI|BCC> | --cleanup [--limit N] | --learn [--days N] |")
+        print("                 --report <BMC|B&A|BHI|BCC> | --cleanup [--length-only] [--limit N] [--dry-run] | --learn [--days N] |")
         print("                 --voice-rebuild | --status")
         print("                                          Litigation Updater: Bozzuto claims Smartsheet — notices, updates,")
         print("                                          closures over the Litigation Updates Teams chat (see LITIGATION_UPDATER.md)")

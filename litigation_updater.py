@@ -34,6 +34,11 @@ and only writes to the Smartsheet after James says YES.
                correlation, but the drafted text updates the open row
                in place.
           2. Run the Teams chat cycle (below).
+          3. If any ask is waiting, stay on the chat (--chat --follow) so
+             each YES brings the next proposal right away: up to
+             litigation_follow_minutes (45), ending after
+             litigation_follow_idle_minutes (10) with no replies.
+             --no-follow (or litigation_follow_after_poll: false) skips it.
 
     python rocky.py --litigation --chat [--follow [--minutes N]]
         Teams cycle only: read replies in the "Litigation Updates" chat,
@@ -62,11 +67,20 @@ and only writes to the Smartsheet after James says YES.
         Reports\\ and emailed from rocky@ to James. Also available by
         chat: "please run a litigation update for BMC".
 
-    python rocky.py --litigation --cleanup [--limit N] [--dry-run]
-        Initial learning phase: review every open-sheet entry against
-        the sheet's own conventions, queue out-of-compliance fixes as
-        one-at-a-time Teams proposals (approve/decline each), and write
-        the missing-information list to _litigation\\missing_info.md.
+    python rocky.py --litigation --cleanup [--length-only] [--limit N] [--dry-run]
+        Review every open-sheet entry against the sheet's own conventions,
+        queue out-of-compliance fixes as one-at-a-time Teams proposals
+        (approve/decline each), and write the missing-information list to
+        _litigation\\missing_info.md. Then the LENGTH AUDIT: a word /
+        sentence / paragraph pre-filter (LENGTH_LIMITS, from the 8/30
+        brain.md rules) flags over-detailed Summary of Claim and Third
+        Party Disclosure Summary cells; Claude condenses each per its voice
+        guide, and the rewrite is queued as a cleanup_fix — at most
+        litigation_length_audit_batch (default 10) in the queue at once, so
+        re-run for the next batch. --length-only skips the conventions
+        review. --dry-run queues nothing; the flagged cells and proposed
+        rewrites go to _litigation\\cleanup_reports\\cleanup_<stamp>.md and
+        .csv (written on live runs too, as the record of what was queued).
 
     python rocky.py --litigation --learn [--days N]
         Weekly: send the Teams conversation since the last learn pass to
@@ -262,6 +276,7 @@ def get_paths(config: dict, data_dir: Path) -> dict:
         "brain": meta / "brain.md",
         "missing": meta / "missing_info.md",
         "conventions": meta / "conventions.md",
+        "cleanup_reports": meta / "cleanup_reports",
         "template": meta / "report_template.j2",
         "voices": meta / "voices",
         "local": local,
@@ -337,7 +352,11 @@ def _read_jsonl(path: Path) -> list[dict]:
 def load_brain(paths: dict) -> str:
     try:
         return paths["brain"].read_text(encoding="utf-8")
-    except OSError:
+    except OSError as e:
+        # The seed carries none of the learned rules — say so, or every
+        # draft silently loses them (e.g. an unpinned, cloud-only brain.md).
+        log.warning(f"[litigation] brain.md unreadable ({e}) — using the "
+                    f"built-in seed, WITHOUT the learned rules")
         return BRAIN_SEED
 
 
@@ -1274,6 +1293,18 @@ _CLOSE_RE = re.compile(
 _CLOSE_NAME_RE = re.compile(
     r"\b(?:move|transfer)\s+(?:the\s+)?(.{2,60}?)\s+"
     r"(?:claim|case|matter|entry)\b", re.I)
+# "move Fontenot to the closed claims spreadsheet": the name sits between
+# the verb and "to closed", with no "claim" word after it (2026-10-04).
+_CLOSE_TO_RE = re.compile(
+    r"\b(?:move|transfer)\s+(?:the\s+)?(.{2,60}?)\s+"
+    r"(?:(?:claim|case|matter|entry)\s+)?(?:to|into|over\s+to)\s+"
+    r"(?:the\s+)?closed\b", re.I)
+_PRONOUN_HINTS = {"it", "this", "that", "this one", "them", "these"}
+# A closure note James quotes in his instruction is used word for word:
+# 'with the closure note "settled by insurer without contribution."'
+_QUOTED_NOTE_RE = re.compile(
+    r"\bnote\b[^\"\u201c\u201d]{0,30}?[\"\u201c]([^\"\u201c\u201d]{3,800})"
+    r"[\"\u201d]", re.I)
 _UPDATE_RE = re.compile(
     r"\bupdate\b.{0,60}?\b(?:claims?|litigation)\b.{0,30}?"
     r"\b(?:smartsheet|spread\s*sheet|sheet)\b", re.I | re.S)
@@ -1334,8 +1365,12 @@ def detect_intent(msg: dict, notice_senders: set[str]) -> tuple[str | None, str 
     note = f"{msg.get('subject') or ''}\n{forwarding_note(msg)}"
 
     def _closure(where: str) -> tuple[str, str | None]:
-        m = _CLOSE_NAME_RE.search(where) or _CLOSE_NAME_RE.search(text)
-        return "closure", (m.group(1).strip() if m else None)
+        for pattern, scope in ((_CLOSE_TO_RE, where), (_CLOSE_NAME_RE, where),
+                               (_CLOSE_NAME_RE, text)):
+            m = pattern.search(scope)
+            if m and m.group(1).strip().lower() not in _PRONOUN_HINTS:
+                return "closure", m.group(1).strip()
+        return "closure", None
 
     if _NOTE_CLOSE_RE.search(note):
         return _closure(note)
@@ -1351,6 +1386,15 @@ def detect_intent(msg: dict, notice_senders: set[str]) -> tuple[str | None, str 
     if _UPDATE_RE.search(text):
         return "update", None
     return None, None
+
+
+def quoted_closure_note(msg: dict) -> str | None:
+    """The closure note James quoted in what he TYPED (subject + forwarding
+    note, never the quoted chain), or None. Used verbatim, not redrafted."""
+    from vault import forwarding_note  # lazy
+    note = f"{msg.get('subject') or ''}\n{forwarding_note(msg)}"
+    m = _QUOTED_NOTE_RE.search(note)
+    return " ".join(m.group(1).split()) if m else None
 
 
 def _eligible_attachments(token: str, mailbox: str, msg: dict) -> list[dict]:
@@ -1629,6 +1673,8 @@ def intake_pass(client, graph_token: str, ss_token: str | None, config: dict,
                     "kind": "identify", "msg": _msg_ref(msg, mailbox),
                     "intent": intent, "hint": hint,
                     "reason": corr.get("reason"),
+                    "verbatim_note": (quoted_closure_note(msg)
+                                      if intent == "closure" else None),
                 })
                 counts["queued"] += 1
             else:
@@ -1636,8 +1682,9 @@ def intake_pass(client, graph_token: str, ss_token: str | None, config: dict,
                 row_dict = row_to_dict(sheet, row)
                 claim = row_dict.get(claim_column_title(entry, sheet), "")
                 if intent == "closure":
-                    note = draft_closure_note(client, config, paths,
-                                              row_dict, ctx, docs)
+                    verbatim = quoted_closure_note(msg)
+                    note = verbatim or draft_closure_note(
+                        client, config, paths, row_dict, ctx, docs)
                     if note is None:
                         log.warning("[litigation] closure-note draft failed — "
                                     "cursor held")
@@ -1646,6 +1693,7 @@ def intake_pass(client, graph_token: str, ss_token: str | None, config: dict,
                         "kind": "closure", "msg": _msg_ref(msg, mailbox),
                         "row_id": row["id"], "claim": claim, "note": note,
                         "sheet_key": entry["key"],
+                        "note_verbatim": bool(verbatim),
                     })
                 else:
                     cells = draft_update(client, config, paths, sheet,
@@ -1659,6 +1707,9 @@ def intake_pass(client, graph_token: str, ss_token: str | None, config: dict,
                         "kind": "update", "msg": _msg_ref(msg, mailbox),
                         "row_id": row["id"], "claim": claim, "cells": cells,
                         "sheet_key": entry["key"],
+                        # Prior values, so the proposal can show only what
+                        # a running-log update adds.
+                        "before": {c: row_dict.get(c, "") for c in cells},
                     })
                 counts["queued"] += 1
 
@@ -1834,10 +1885,14 @@ def execute_ask(client, ss_token: str | None, config: dict, paths: dict,
                   sheet=spec["key"], row_id=row_id, cells=cells,
                   dry_run=dry_run)
         ask["applied"] = not dry_run
-        entry_lines = "\n".join(f"  {t}: {v}" for t, v in cells.items())
+        # The entry is already on the sheet — the ack lists it field by
+        # field and clips the narrative cells, so it stays phone-readable.
+        entry_lines = "\n".join(f"**{t}:** {_clip(v)}"
+                                for t, v in cells.items() if str(v).strip())
         return (f"{'DRY RUN — would add' if dry_run else 'Added'} "
-                f"\"{claim}\" to the {spec['key']} claims sheet:\n{entry_lines}\n"
-                f"({len(filed)} document(s) filed to the vault.) ({ask['id']})")
+                f"\"{claim}\" to the {spec['key']} claims sheet:\n\n"
+                f"{entry_lines}\n\n"
+                f"{len(filed)} document(s) filed to the vault. ({ask['id']})")
 
     if kind == "closure":
         open_sheet = get_sheet(ss_token, spec["sheet_id"])
@@ -1892,6 +1947,19 @@ def execute_ask(client, ss_token: str | None, config: dict, paths: dict,
         row = find_row(open_sheet, ask.get("row_id"))
         if row is None:
             return f"That row no longer exists — skipped. ({ask['id']})"
+        # A length rewrite replaces a whole narrative cell and its "current"
+        # is the verbatim cell text — if the cell was edited since (an
+        # update ask, a hand edit), writing would silently undo that edit.
+        if ask.get("check") == "length":
+            now = row_to_dict(open_sheet, row).get(ask.get("column"), "")
+            if " ".join(now.split()) != " ".join(
+                    str(ask.get("current") or "").split()):
+                log_event(paths, "cleanup_fix_stale", ask_id=ask["id"],
+                          claim=ask.get("claim"), column=ask.get("column"))
+                return (f"{ask.get('column')!r} on \"{ask.get('claim')}\" "
+                        f"changed since I proposed this, so I left it alone "
+                        f"— the next length audit will look at it fresh. "
+                        f"({ask['id']})")
         if not dry_run:
             update_row(ss_token, open_sheet, ask["row_id"],
                        {ask["column"]: ask["proposed"]})
@@ -1932,14 +2000,16 @@ def resolve_identify(client, ss_token: str | None, config: dict, paths: dict,
     attachments = _refetch_attachments(config, ask)
     docs = _docs_from_attachments(attachments, config)
     if ask.get("intent") == "closure":
-        note = draft_closure_note(client, config, paths, row_dict,
-                                  ctx, docs)
+        verbatim = ask.get("verbatim_note")
+        note = verbatim or draft_closure_note(client, config, paths,
+                                              row_dict, ctx, docs)
         if note is None:
             return ("Drafting the closure note failed — tell me again in a "
                     "bit.", False)
         queue_ask(paths, state, {"kind": "closure", "msg": ref,
                                  "row_id": row["id"], "claim": claim,
-                                 "note": note, "sheet_key": entry["key"]})
+                                 "note": note, "sheet_key": entry["key"],
+                                 "note_verbatim": bool(verbatim)})
     else:
         cells = draft_update(client, config, paths, open_sheet, row_dict,
                              ctx, docs, update_cols=entry["update_columns"])
@@ -1948,7 +2018,9 @@ def resolve_identify(client, ss_token: str | None, config: dict, paths: dict,
                     False)
         queue_ask(paths, state, {"kind": "update", "msg": ref,
                                  "row_id": row["id"], "claim": claim,
-                                 "cells": cells, "sheet_key": entry["key"]})
+                                 "cells": cells, "sheet_key": entry["key"],
+                                 "before": {c: row_dict.get(c, "")
+                                            for c in cells}})
     return (f"Got it — that's \"{claim}\". I'll propose the "
             f"{ask.get('intent')} next. ({ask['id']})", True)
 
@@ -1975,69 +2047,174 @@ _DOC_RE = re.compile(
     r"\bdo\s+(?:you|we)\s+have\b|\bcan\s+you\s+(?:send|find|pull)\b", re.I)
 
 
+# Chat messages are written in a light markup — **bold**, "> " quote lines,
+# blank-line paragraphs — that reads fine raw in communications.jsonl and
+# renders through _teams_html for the chat. Teams collapses the line breaks
+# of a plain-text post, which is what made proposals one solid block on a
+# phone.
+CLIP_WORDS = 25
+
+
+def _clip(text, words: int = CLIP_WORDS) -> str:
+    """The first `words` words, then " . . ." — for text being REPLACED or
+    already on the sheet, where the opening is enough to recognize it."""
+    parts = str(text or "").split()
+    if len(parts) <= words:
+        return " ".join(parts)
+    return " ".join(parts[:words]) + " . . ."
+
+
+def _quote(text) -> str:
+    """A "> " block, one line per paragraph of the original."""
+    paras = [p.strip() for p in str(text or "").splitlines() if p.strip()]
+    return "\n".join(f"> {p}" for p in paras) or "> (blank)"
+
+
+def _teams_html(text: str) -> str:
+    """Render the chat markup as Teams HTML: escape, **bold**, runs of "> "
+    lines as a blockquote, blank lines as paragraph breaks, other newlines
+    as <br>."""
+    import html as _html  # lazy
+    out: list[str] = []
+    for block in re.split(r"\n\s*\n", (text or "").strip()):
+        lines = block.split("\n")
+        chunks: list[str] = []
+        quote: list[str] = []
+        plain: list[str] = []
+
+        def _flush_plain():
+            if plain:
+                chunks.append("<p>" + "<br>".join(plain) + "</p>")
+                plain.clear()
+
+        def _flush_quote():
+            if quote:
+                chunks.append("<blockquote>" + "<br><br>".join(quote)
+                              + "</blockquote>")
+                quote.clear()
+
+        for line in lines:
+            esc = _html.escape(line, quote=False)
+            esc = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", esc)
+            if line.startswith("> ") or line == ">":
+                _flush_plain()
+                quote.append(esc[5:] if esc.startswith("&gt; ") else "")
+            else:
+                _flush_quote()
+                plain.append(esc)
+        _flush_plain()
+        _flush_quote()
+        out.append("".join(chunks))
+    return "".join(out)
+
+
+def _update_delta(before: str, after: str) -> tuple[str, bool]:
+    """What an update ADDS to a running-log cell. (text, True) when `after`
+    keeps `before` verbatim and only adds to it — the proposal then shows
+    just the addition; otherwise (after, False)."""
+    b, a = (before or "").strip(), (after or "").strip()
+    if b and b != a and b in a:
+        added = a.replace(b, "", 1).strip()
+        if added:
+            return added, True
+    return a, False
+
+
 def _proposal_text(ask: dict) -> str:
     kind = ask.get("kind")
+    aid = ask["id"]
     if kind == "new_entry":
         meta = ask.get("classification") or {}
+        doc = (meta.get("doc_label") or meta.get("doc_type") or "document")
+        facts = [f"Entity: {meta.get('entity') or 'unclear'}",
+                 f"Parties: {meta.get('parties') or '?'}"]
+        if meta.get("court_or_forum"):
+            facts.append(f"Court: {meta['court_or_forum']}")
+        if meta.get("case_number"):
+            facts.append(f"Case No.: {meta['case_number']}")
+        head = f"**[{aid}] New legal notice: {doc}**\n" + "\n".join(facts)
         match = ask.get("existing_match") or {}
         if match.get("row_id"):
-            rec = (f"⚠ This looks like it's ALREADY on the "
-                   f"{match.get('sheet_key') or ''} sheet as "
-                   f"\"{match.get('claim')}\" — {match.get('reason')}. "
-                   f"I recommend NO; if it's a new filing in that case, "
-                   f"forward it with \"update the claims smartsheet\" "
-                   f"instead.")
-            return (f"[{ask['id']}] New legal notice — "
-                    f"{meta.get('doc_label') or meta.get('doc_type') or 'document'}"
-                    f" ({meta.get('entity') or 'entity unclear'}).\n"
-                    f"Parties: {meta.get('parties') or '?'}"
-                    + (f" | No. {meta.get('case_number')}"
-                       if meta.get("case_number") else "")
-                    + f"\n{rec}\nReply YES to add a new entry anyway, NO "
-                      f"to skip.")
+            return (head + "\n\n"
+                    f"⚠ **Looks like it's ALREADY on the "
+                    f"{match.get('sheet_key') or ''} sheet** as "
+                    f"\"{match.get('claim')}\" — {match.get('reason')}.\n"
+                    "I recommend NO. If it's a new filing in that case, "
+                    "forward it with \"update the claims smartsheet\" "
+                    "instead.\n\n"
+                    "Reply **YES** to add a new entry anyway, **NO** to skip.")
         rec = ("I suggest creating a new claims entry."
                if meta.get("recommend_entry")
                else "Based on your standing rules I do NOT think this needs "
                     "an entry, but it's your call.")
-        return (f"[{ask['id']}] New legal notice — "
-                f"{meta.get('doc_label') or meta.get('doc_type') or 'document'}"
-                f" ({meta.get('entity') or 'entity unclear'}).\n"
-                f"Parties: {meta.get('parties') or '?'}"
-                + (f" | {meta.get('court_or_forum')}"
-                   if meta.get("court_or_forum") else "")
-                + (f" | No. {meta.get('case_number')}"
-                   if meta.get("case_number") else "")
-                + f"\n{meta.get('summary') or ''}\n"
-                  f"{rec} ({meta.get('recommend_reason') or ''})\n"
-                + (("Your instructions so far: "
-                    + "; ".join(ask["instructions"]) + "\n")
+        return (head
+                + (f"\n\n{_quote(meta['summary'])}" if meta.get("summary")
+                   else "")
+                + f"\n\n**{rec}**"
+                + (f"\n{meta['recommend_reason']}"
+                   if meta.get("recommend_reason") else "")
+                + (("\n\nYour instructions so far: "
+                    + "; ".join(ask["instructions"]))
                    if ask.get("instructions") else "")
-                + (f"Reply YES to draft and add the entry to the "
-                   f"{ask['sheet_key']} sheet, NO to skip."
-                   if ask.get("sheet_key") else
-                   "Reply YES to draft and add the entry, NO to skip."))
+                + "\n\nReply **YES** to draft and add the entry"
+                + (f" to the {ask['sheet_key']} sheet" if ask.get("sheet_key")
+                   else "")
+                + ", **NO** to skip.")
     if kind == "closure":
-        return (f"[{ask['id']}] Move \"{ask.get('claim')}\" to Closed claims "
-                f"with this closure note?\n---\n{ask.get('note')}\n---\n"
-                f"Reply YES to move it, NO to leave it open.")
+        return (f"**[{aid}] Close: {ask.get('claim')}**\n"
+                "Move to Closed claims with this closure note"
+                + (" (your wording)" if ask.get("note_verbatim") else "")
+                + ":\n\n"
+                f"{_quote(ask.get('note'))}\n\n"
+                "Reply **YES** to move it, **NO** to leave it open.")
     if kind == "update":
-        lines = "\n".join(f"  {t}: {v}" for t, v in (ask.get("cells") or {}).items())
-        return (f"[{ask['id']}] Update \"{ask.get('claim')}\" on the claims "
-                f"sheet:\n{lines}\nReply YES to apply, NO to skip.")
+        before = ask.get("before") or {}
+        blocks = []
+        for col, value in (ask.get("cells") or {}).items():
+            text, added = _update_delta(before.get(col, ""), str(value or ""))
+            blocks.append(f"**{col}**"
+                          + (" (adds to the entry; earlier text unchanged)"
+                             if added else "")
+                          + f"\n{_quote(text)}")
+        return (f"**[{aid}] Update: {ask.get('claim')}**\n\n"
+                + "\n\n".join(blocks)
+                + "\n\nReply **YES** to apply, **NO** to skip.")
     if kind == "cleanup_fix":
-        return (f"[{ask['id']}] Cleanup — \"{ask.get('claim')}\", column "
-                f"{ask.get('column')!r}:\n  now: {ask.get('current') or '(blank)'}\n"
-                f"  proposed: {ask.get('proposed')}\n"
-                f"  why: {ask.get('reason') or ''}\n"
-                f"Reply YES to fix, NO to leave as is.")
+        col = ask.get("column")
+        current = str(ask.get("current") or "")
+        proposed = str(ask.get("proposed") or "")
+        if ask.get("check") == "length":
+            now, new = text_metrics(current), text_metrics(proposed)
+            return (f"**[{aid}] Shorten {col}**\n{ask.get('claim')}\n\n"
+                    f"**Proposed** ({new['words']} words):\n"
+                    f"{_quote(proposed)}\n\n"
+                    f"**Now** ({now['words']} words, {now['paragraphs']} "
+                    f"paragraph{'s' if now['paragraphs'] != 1 else ''}): "
+                    f"{_clip(current)}"
+                    + (f"\n\nRemoved: {ask['dropped']}"
+                       if ask.get("dropped") else "")
+                    + "\n\nReply **YES** to use the shorter text, **NO** to "
+                      "keep the current one.")
+        # Short structured values (dates, case types) read best inline; a
+        # long narrative gets the proposal quoted and the current clipped.
+        long_value = len(proposed.split()) > CLIP_WORDS
+        if long_value:
+            body = (f"**Proposed:**\n{_quote(proposed)}\n\n"
+                    f"**Now:** {_clip(current) or '(blank)'}")
+        else:
+            body = (f"Now: {current or '(blank)'}\n"
+                    f"Proposed: **{proposed}**")
+        return (f"**[{aid}] Cleanup: {col}**\n{ask.get('claim')}\n\n{body}"
+                + (f"\n\nWhy: {ask['reason']}" if ask.get("reason") else "")
+                + "\n\nReply **YES** to fix, **NO** to leave as is.")
     if kind == "identify":
-        return (f"[{ask['id']}] You forwarded a {ask.get('intent')} request "
+        return (f"**[{aid}] Which claim?**\n"
+                f"You forwarded a {ask.get('intent')} request "
                 f"(\"{(ask.get('msg') or {}).get('subject') or ''}\") but I "
                 f"couldn't match it to an open claim"
                 + (f" ({ask.get('reason')})" if ask.get("reason") else "")
-                + ". Which claim is it? (Reply with the claim name, or NO to "
-                  "drop it.)")
-    return f"[{ask['id']}] (unknown ask)"
+                + ".\n\nReply with the claim name, or **NO** to drop it.")
+    return f"[{aid}] (unknown ask)"
 
 
 def _route_pending_reply(client, config: dict, paths: dict, ask: dict,
@@ -2089,6 +2266,7 @@ def revise_ask(client, config: dict, paths: dict, ask: dict,
             max_tokens=800)
         if text:
             ask["note"] = text.strip()
+            ask["note_verbatim"] = False  # Claude's wording now, not James's
             return None
         return "redrafting the note failed"
     if kind == "update":
@@ -2114,7 +2292,8 @@ def revise_ask(client, config: dict, paths: dict, ask: dict,
               f"proposed value {ask.get('proposed')!r}.\n"
               f"James wants this change to the proposal: {instruction}\n\n"
               "Return ONLY a JSON object: {\"proposed\": \"<revised value>\"}",
-            max_tokens=300)
+            # A length rewrite is a whole paragraph; 300 would truncate it.
+            max_tokens=1500)
         if isinstance(result, dict) and (result.get("proposed") or "").strip():
             ask["proposed"] = str(result["proposed"]).strip()
             return None
@@ -2160,12 +2339,32 @@ def _match_entity(config: dict, text: str) -> str | None:
     return None
 
 
+def _reup_hours(config: dict) -> float:
+    """Hours an ask may sit unanswered before it's re-posted. 0 disables.
+    `litigation_reup_hours` (default 24) supersedes the older
+    `litigation_reup_days`, which now only matters when set to 0 (off) —
+    the deployed configs still carry the old 7, which let asks sit."""
+    hours = config.get("litigation_reup_hours")
+    if hours is not None:
+        return float(hours)
+    if config.get("litigation_reup_days") == 0:
+        return 0.0
+    return 24.0
+
+
+def _in_reup_window(config: dict, local_now: datetime) -> bool:
+    """Re-ups go out on weekdays during `litigation_reup_window` local hours
+    (default [9, 17]), so a nudge lands when James can act on it, not at
+    3 AM because the monitor happened to be awake."""
+    start, end = config.get("litigation_reup_window") or [9, 17]
+    return local_now.weekday() < 5 and int(start) <= local_now.hour < int(end)
+
+
 def _reup_due(config: dict, ask: dict, now: datetime | None = None) -> bool:
-    """True once a proposed ask has gone `litigation_reup_days` (default 7;
-    0 disables) without an answer since it was proposed or last re-upped."""
-    days = config.get("litigation_reup_days")
-    days = 7 if days is None else float(days)
-    if days <= 0:
+    """True once a proposed ask has gone `_reup_hours` without an answer
+    since it was proposed or last re-upped, and it's inside the window."""
+    hours = _reup_hours(config)
+    if hours <= 0:
         return False
     last = ask.get("reupped_at") or ask.get("proposed_at")
     if not last:
@@ -2176,7 +2375,10 @@ def _reup_due(config: dict, ask: dict, now: datetime | None = None) -> bool:
         return False
     if last_dt.tzinfo is None:
         last_dt = last_dt.replace(tzinfo=timezone.utc)
-    return (now or datetime.now(timezone.utc)) - last_dt >= timedelta(days=days)
+    now = now or datetime.now(timezone.utc)
+    if not _in_reup_window(config, now.astimezone()):
+        return False
+    return now - last_dt >= timedelta(hours=hours)
 
 
 def chat_cycle(config: dict, paths: dict, dry_run: bool) -> dict:
@@ -2263,7 +2465,8 @@ def chat_cycle(config: dict, paths: dict, dry_run: bool) -> dict:
     result: dict = {"inbound": len(inbound)}
 
     def _send(text: str, **fields):
-        sent = teams.send_chat_message(token, chat_id, text)
+        sent = teams.send_chat_message(token, chat_id, _teams_html(text),
+                                       html=True)
         log_comm(paths, "out", text, message_id=(sent or {}).get("id"), **fields)
         return sent
 
@@ -2481,18 +2684,26 @@ def chat_cycle(config: dict, paths: dict, dry_run: bool) -> dict:
 
 
 def follow_chat(config: dict, paths: dict, dry_run: bool, minutes: int,
-                interval: int = 15) -> None:
+                interval: int = 15, idle_minutes: int | None = None) -> None:
     """Interactive session mode (--chat --follow): keep the Teams cycle hot
     so a YES/NO gets an immediate response and the next proposal — built for
     burning through the cleanup queue. Exits after `minutes` (default 30),
     or sooner once the ask queue is drained and the chat has gone quiet for
-    a couple of minutes. Ctrl+C exits cleanly. Idle cycles make no Claude
-    calls (just a Teams fetch), so the session is cheap."""
+    a couple of minutes. With `idle_minutes` (the follow that runs after
+    every --poll) it also exits once nobody has written in the chat for
+    that long, even with asks still queued — James isn't there, and the
+    held lock would block other litigation commands. Ctrl+C exits cleanly.
+    Idle cycles make no Claude calls (just a Teams fetch), so the session is
+    cheap."""
     deadline = time.time() + minutes * 60
     quiet_exit_cycles = max(1, 120 // interval)  # ~2 min of quiet
     idle = 0
+    last_inbound = time.time()
     log.info(f"[litigation] following the Teams chat for up to {minutes} "
-             f"min (checking every {interval}s; Ctrl+C to stop)")
+             f"min (checking every {interval}s"
+             + (f", ending after {idle_minutes} min with no replies"
+                if idle_minutes else "")
+             + "; Ctrl+C to stop)")
     try:
         while time.time() < deadline:
             result = chat_cycle(config, paths, dry_run)
@@ -2506,9 +2717,17 @@ def follow_chat(config: dict, paths: dict, dry_run: bool, minutes: int,
             active = bool(result.get("inbound") or result.get("proposed")
                           or result.get("decided"))
             idle = 0 if active else idle + 1
+            if result.get("inbound"):
+                last_inbound = time.time()
             if not outstanding and idle >= quiet_exit_cycles:
                 log.info("[litigation] ask queue drained and chat quiet — "
                          "ending follow session")
+                return
+            if idle_minutes and \
+                    time.time() - last_inbound >= idle_minutes * 60:
+                log.info(f"[litigation] no replies for {idle_minutes} min — "
+                         f"ending follow session (the next --poll picks "
+                         f"up from here)")
                 return
             time.sleep(interval)
         log.info(f"[litigation] follow session reached the {minutes}-minute "
@@ -2661,21 +2880,11 @@ def rebuild_voices(config: dict, paths: dict) -> dict:
 # Cleanup phase (initial learning / compliance review)
 # =============================================================================
 
-def run_cleanup(config: dict, paths: dict, limit: int | None,
-                dry_run: bool) -> dict:
-    from anthropic import Anthropic  # lazy
-    client = Anthropic(api_key=config["anthropic_api_key"])
-    ss_token = (config.get("smartsheet_token") or "").strip()
-    if not ss_token:
-        log.error("[litigation] smartsheet_token missing")
-        return {"error": "no_smartsheet_token"}
-    open_entries = fetch_open_sheets(ss_token, config)
-    if not open_entries:
-        log.error("[litigation] no open sheets loaded — check "
-                  "litigation_open_sheets")
-        return {"error": "no_open_sheets"}
-    state = load_state(paths)
-
+def _compliance_review(client, config: dict, paths: dict,
+                       open_entries: list[dict], limit: int | None
+                       ) -> tuple[list[dict], list[dict], list[str], int]:
+    """The conventions/voice compliance review. Returns (fixes, missing,
+    conventions memo parts, rows reviewed); queues nothing."""
     # The narrative columns are also reviewed against their voice guides
     # (rewording only — the prompt forbids changing facts).
     summary_col = (config.get("litigation_summary_column")
@@ -2755,8 +2964,55 @@ def run_cleanup(config: dict, paths: dict, limit: int | None,
                                if isinstance(m, dict))
     if limit is not None:
         fixes = fixes[:limit]
+    return fixes, missing, conventions_parts, total_rows
 
-    if conventions_parts:
+
+def run_cleanup(config: dict, paths: dict, limit: int | None,
+                dry_run: bool, length_only: bool = False) -> dict:
+    """The compliance review plus the length audit (length_only skips the
+    compliance review). Live, both queue cleanup_fix asks for the chat;
+    a dry run queues nothing and only writes the report under
+    _litigation\\cleanup_reports\\."""
+    from anthropic import Anthropic  # lazy
+    client = Anthropic(api_key=config["anthropic_api_key"])
+    ss_token = (config.get("smartsheet_token") or "").strip()
+    if not ss_token:
+        log.error("[litigation] smartsheet_token missing")
+        return {"error": "no_smartsheet_token"}
+    # The length rules live in the voice files (read fresh on every call).
+    # Missing voices mean litigation_root points somewhere else — or the
+    # folder isn't pinned — and a rewrite without them would follow nothing.
+    if not (load_voice(paths, "summary") and load_voice(paths, "disclosure")):
+        log.error(f"[litigation] voice_summary.md / voice_disclosure.md not "
+                  f"readable under {paths['voices']} — check litigation_root "
+                  f"and that the folder is pinned 'Always keep on this "
+                  f"device'")
+        return {"error": "no_voices"}
+    open_entries = fetch_open_sheets(ss_token, config)
+    if not open_entries:
+        log.error("[litigation] no open sheets loaded — check "
+                  "litigation_open_sheets")
+        return {"error": "no_open_sheets"}
+    state = load_state(paths)
+
+    total_rows = sum(len(e["sheet"].get("rows", [])) for e in open_entries)
+    fixes: list[dict] = []
+    missing: list[dict] = []
+    conventions_parts: list[str] = []
+    if not length_only:
+        fixes, missing, conventions_parts, _ = _compliance_review(
+            client, config, paths, open_entries, limit)
+    length_items = run_length_audit(client, config, paths, state,
+                                    open_entries, limit, dry_run)
+    # A length rewrite supersedes a compliance reword of the same cell —
+    # approving both would have the second overwrite the first.
+    length_cells = {(str(i["row_id"]), i["column"].strip().lower())
+                    for i in length_items}
+    fixes = [f for f in fixes
+             if (str(f.get("row_id")), (f.get("column") or "").strip().lower())
+             not in length_cells]
+
+    if conventions_parts and not dry_run:
         paths["conventions"].write_text("\n\n".join(conventions_parts),
                                         encoding="utf-8")
 
@@ -2772,7 +3028,7 @@ def run_cleanup(config: dict, paths: dict, limit: int | None,
                   if a.get("kind") == "cleanup_fix"}
     queued = 0
     skipped_dup = 0
-    for f in fixes:
+    for f in ([] if dry_run else fixes):
         if _fix_key(f) in seen_fixes:
             skipped_dup += 1
             continue
@@ -2789,23 +3045,439 @@ def run_cleanup(config: dict, paths: dict, limit: int | None,
     if skipped_dup:
         log.info(f"[litigation] cleanup: {skipped_dup} fix(es) skipped — "
                  f"already proposed/declined previously")
-    save_state(paths, state)
+    if not dry_run:
+        save_state(paths, state)
 
     # Missing-information list.
-    if missing:
+    if missing and not dry_run:
         lines = [f"# Missing information — {datetime.now():%Y-%m-%d}", ""]
         lines += [f"- **{m.get('claim') or m.get('row_id')}** "
                   f"({m.get('sheet_key')}) — {m.get('what')}"
                   for m in missing]
         paths["missing"].write_text("\n".join(lines) + "\n", encoding="utf-8")
 
+    report = write_cleanup_report(paths, length_items, fixes, missing, dry_run)
+    by_status: dict = {}
+    for it in length_items:
+        by_status[it["status"]] = by_status.get(it["status"], 0) + 1
     log_event(paths, "cleanup_reviewed", rows=total_rows, fixes_queued=queued,
-              missing=len(missing), dry_run=dry_run)
+              missing=len(missing), dry_run=dry_run, length_only=length_only,
+              length_flagged=len(length_items), length=by_status,
+              report=report.name)
     log.info(f"[litigation] cleanup: {total_rows} rows reviewed across "
-             f"{len(open_entries)} sheet(s), {queued} fix(es) queued for chat "
-             f"approval, {len(missing)} missing-info item(s) -> "
-             f"{paths['missing'].name}")
-    return {"rows": total_rows, "fixes_queued": queued, "missing": len(missing)}
+             f"{len(open_entries)} sheet(s), {queued} compliance fix(es) "
+             f"queued, {len(missing)} missing-info item(s); length audit "
+             f"flagged {len(length_items)} cell(s) "
+             f"({', '.join(f'{v} {k}' for k, v in sorted(by_status.items())) or 'none'})"
+             f"{' — DRY RUN, nothing queued' if dry_run else ''}")
+    print(f"Cleanup report: {report}")
+    return {"rows": total_rows, "fixes_queued": queued,
+            "missing": len(missing), "length": by_status,
+            "length_flagged": len(length_items), "report": str(report)}
+
+
+# =============================================================================
+# Length audit (part of cleanup) — over-detailed narrative cells
+# =============================================================================
+# The 2026-08-30 conciseness rules (brain.md + the summary/disclosure voices)
+# came after both cleanup runs (8/2, 8/5), so no row had been checked for
+# length. A deterministic pre-filter (words / sentences / paragraphs against
+# the limits below) picks the cells; only those go to Claude for a condensed
+# rewrite, which is queued as an ordinary cleanup_fix ask.
+
+# Limits per narrative column, from the brain.md rules of 2026-08-30. Keys
+# are the config keys naming the column, so a retitled column follows the
+# config. "routine" tightens the limits for routine claims (ROUTINE_CASE_RE).
+# The rules give the disclosure no word count; 130 is five sentences at ~26
+# words each. Status/Action Items and Exposure/Analysis are left out on
+# purpose: no rule limits them, and Status/Action Items is a running log
+# (draft_update keeps the prior text). Config litigation_length_limits can
+# add them.
+LENGTH_LIMITS = {
+    "litigation_summary_column": {
+        "default_title": "Summary of Claim", "voice": "summary",
+        "words": 150, "sentences": 7, "paragraphs": 1,
+        "routine": {"words": 80, "sentences": 3},
+    },
+    "litigation_disclosure_column": {
+        "default_title": "Third Party Disclosure Summary", "voice": "disclosure",
+        "words": 130, "sentences": 5, "paragraphs": 1,
+    },
+}
+
+# Routine claims (habitability, slip-and-fall, simple injury tenders) get the
+# 1-3 sentence limit and a one-sentence statement of the allegations. Matched
+# against Type of Case; a class action is never routine.
+ROUTINE_CASE_RE = re.compile(
+    r"slip|trip|fall|bodily injury|personal injury|habitab|property damage",
+    re.IGNORECASE)
+_NOT_ROUTINE_RE = re.compile(r"class action", re.IGNORECASE)
+
+# Length asks allowed in the queue at once (live runs). The chat already
+# proposes one ask at a time; the cap keeps the queue short so new-notice
+# asks from the regular poll aren't stuck behind dozens of rewrites. Re-run
+# the audit to queue the next batch once these clear.
+LENGTH_AUDIT_BATCH = 10
+
+# Periods that don't end a sentence: honorifics, legal abbreviations, and
+# single-letter initials (U.S., D.C., J. Smith).
+_ABBREV_RE = re.compile(
+    r"\b(?:Mr|Mrs|Ms|Dr|Jr|Sr|St|No|Nos|v|vs|Inc|Co|Corp|Ltd|approx|"
+    r"et al|e\.g|i\.e|Ct|Cir|Ave|Blvd|Apt|Ste|"
+    r"Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.",
+    re.IGNORECASE)
+_INITIAL_RE = re.compile(r"\b([A-Z])\.")
+_SENTENCE_END_RE = re.compile(r"[.!?]+[\"')\]]*(?:\s+|$)")
+_MONEY_RE = re.compile(r"\$\s?\d[\d,]*(?:\.\d+)?")
+_DOCKET_RE = re.compile(r"\b\d{2,4}-[A-Z]{1,5}-\d{3,}\b")
+
+
+def text_metrics(text: str) -> dict:
+    """{"words", "sentences", "paragraphs"} for a cell. Paragraphs are
+    non-empty lines (Smartsheet cells separate paragraphs with newlines)."""
+    text = (text or "").strip()
+    if not text:
+        return {"words": 0, "sentences": 0, "paragraphs": 0}
+    paragraphs = [p for p in re.split(r"\n+", text) if p.strip()]
+    sentences = 0
+    for p in paragraphs:
+        masked = _ABBREV_RE.sub(lambda m: m.group(0)[:-1] + "\u2024", p)
+        masked = _INITIAL_RE.sub("\\1\u2024", masked)
+        sentences += max(1, len([s for s in _SENTENCE_END_RE.split(masked)
+                                 if s.strip()]))
+    return {"words": len(text.split()), "sentences": sentences,
+            "paragraphs": len(paragraphs)}
+
+
+def length_limits(config: dict) -> dict:
+    """{column title: limits} for the length audit. Config
+    litigation_length_limits ({column title: {words, sentences, paragraphs,
+    voice, routine}}) overrides or adds columns; null drops one."""
+    out = {}
+    for key, spec in LENGTH_LIMITS.items():
+        title = (config.get(key) or spec["default_title"]).strip()
+        out[title] = {k: v for k, v in spec.items() if k != "default_title"}
+    for title, spec in (config.get("litigation_length_limits") or {}).items():
+        if spec is None:
+            out.pop(title, None)
+        else:
+            out[title] = {**out.get(title, {}), **spec}
+    return out
+
+
+def is_routine(row: dict, config: dict) -> bool:
+    case_type = row.get(config.get("litigation_case_type_column")
+                        or "Type of Case") or ""
+    return bool(ROUTINE_CASE_RE.search(case_type)
+                and not _NOT_ROUTINE_RE.search(case_type))
+
+
+def _effective_limits(limits: dict, routine: bool) -> dict:
+    eff = {k: limits.get(k) for k in ("words", "sentences", "paragraphs")}
+    if routine and limits.get("routine"):
+        eff.update(limits["routine"])
+    return {k: v for k, v in eff.items() if v}
+
+
+def over_limits(metrics: dict, limits: dict) -> list[str]:
+    """Readable breaches, e.g. ["212 words > 150"]; empty = within limits."""
+    return [f"{metrics[k]} {k} > {limits[k]}"
+            for k in ("words", "sentences", "paragraphs")
+            if k in limits and metrics.get(k, 0) > limits[k]]
+
+
+def length_prefilter(config: dict, open_entries: list[dict]) -> list[dict]:
+    """Every narrative cell over its limits. No Claude calls."""
+    limits_by_col = length_limits(config)
+    flagged = []
+    for entry in open_entries:
+        sheet = entry["sheet"]
+        claim_col = claim_column_title(entry, sheet)
+        titles = {t.strip().lower(): t for t in sheet_column_titles(sheet)}
+        for r in sheet.get("rows", []):
+            row = row_to_dict(sheet, r)
+            routine = is_routine(row, config)
+            for col, limits in limits_by_col.items():
+                title = titles.get(col.strip().lower())
+                text = row.get(title, "") if title else ""
+                if not text.strip():
+                    continue
+                eff = _effective_limits(limits, routine)
+                metrics = text_metrics(text)
+                over = over_limits(metrics, eff)
+                if over:
+                    flagged.append({
+                        "sheet_key": entry["key"], "row_id": r["id"],
+                        "claim": row.get(claim_col) or "", "column": title,
+                        "voice": limits.get("voice"), "routine": routine,
+                        "metrics": metrics, "limits": eff, "over": over,
+                        "current": text, "row": row})
+    return flagged
+
+
+def _norm_money(s: str) -> str:
+    return re.sub(r"[\s$,]", "", s)
+
+
+def facts_dropped(current: str, proposed: str, row: dict,
+                  config: dict) -> list[str]:
+    """Material facts the rewrite lost: dollar amounts, docket numbers, and
+    the row's own Case No. when the current text carries it. (Dates aren't
+    checked — dropping chronology dates is the point; the "dropped" list
+    in the proposal shows James which ones went.)"""
+    lost = []
+    kept_money = {_norm_money(m) for m in _MONEY_RE.findall(proposed)}
+    for m in _MONEY_RE.findall(current):
+        if _norm_money(m) not in kept_money:
+            lost.append(m.strip())
+    for d in _DOCKET_RE.findall(current):
+        if d not in proposed:
+            lost.append(d)
+    case_no = (row.get(config.get("litigation_case_no_column") or "Case No.")
+               or "").strip()
+    if case_no and case_no in current and case_no not in proposed:
+        lost.append(case_no)
+    return list(dict.fromkeys(lost))
+
+
+_REWRITE_SHAPE = {
+    "summary": (
+        "Shape: (1) lead sentence — date + entity + how the claim arrived "
+        "(notice, summons, demand letter, agency charge); (2) the theory of "
+        "the case compressed to 1-3 sentences{routine}; (3) the causes of "
+        "action and damages demand; (4) BMC/Bozzuto's posture and "
+        "insurance/indemnity status."),
+    "disclosure": (
+        "Shape: (1) filing sentence — \"On [Month DD, YYYY], [party], "
+        "[descriptor], filed a [lawsuit/charge/claim] in [venue] alleging "
+        "[claims]\"; (2) the incident as a single phrase{routine}; (3) the "
+        "damages amount if specified; (4) coverage position; (5) defense "
+        "posture."),
+}
+_ROUTINE_NOTE = (" — this is a ROUTINE claim, so the allegations get ONE "
+                 "sentence (e.g. \"Resident alleges a series of habitability "
+                 "issues in her apartment.\")")
+
+
+def rewrite_long_cell(client, config: dict, paths: dict, item: dict) -> dict:
+    """Claude's condensed rewrite of one flagged cell, checked against the
+    limits and the material-fact list, with one retry that feeds the
+    failures back. Returns {"status": "ok" | "failed" | "no_change",
+    "proposed", "reason", "dropped", "problems"}."""
+    voice_name = item.get("voice") or ""
+    voice = load_voice(paths, voice_name) if voice_name else ""
+    shape = _REWRITE_SHAPE.get(voice_name, "").format(
+        routine=_ROUTINE_NOTE if item.get("routine") else "")
+    limits = item["limits"]
+    limit_text = ", ".join(f"at most {v} {k}" for k, v in limits.items())
+    context = {k: v for k, v in item["row"].items()
+               if v and k != item["column"]}
+    base = (
+        _preamble(config, paths)
+        + (f"Voice guide for the {item['column']!r} column:\n{voice}\n\n"
+           if voice else "")
+        + f"The {item['column']!r} cell for \"{item['claim']}\" breaks the "
+          f"sheet's length rules ({'; '.join(item['over'])}). Condense it.\n\n"
+        + (shape + "\n\n" if shape else "")
+        + "Rules:\n"
+          "- KEEP every material fact the current text carries that an audit "
+          "disclosure needs: parties, dates of loss/filing/notice, venue, case "
+          "number, each claim or cause of action, the damages demand, "
+          "insurance/indemnity/tender status, and procedural posture.\n"
+          "- Remove ONLY factual chronology: event-by-event or date-by-date "
+          "retelling, repair and communication histories, names of staff "
+          "involved, unit-level detail. The source documents are in the "
+          "Litigation Update Vault.\n"
+          "- Never add a fact that is not in the current text. The row's "
+          "other columns may be used only to complete the lead sentence "
+          "(date, entity, venue).\n"
+          f"- Length: {limit_text}. One paragraph, no line breaks.\n\n"
+        + "Other columns of the row (context only):\n"
+        + json.dumps(context, indent=1)[:4000] + "\n\n"
+        + f"Current {item['column']!r} text:\n<<<\n{item['current']}\n>>>\n\n"
+          "Return ONLY a JSON object: {\"proposed\": \"<condensed text>\", "
+          "\"reason\": \"<one line: what was compressed>\", \"dropped\": "
+          "\"<short comma-separated list of the chronology details removed>\"}"
+    )
+    feedback = ""
+    problems: list[str] = []
+    for _attempt in (1, 2):
+        result = _claude_json(client, base + feedback, max_tokens=1500)
+        if not isinstance(result, dict) or not str(
+                result.get("proposed") or "").strip():
+            problems = ["no usable rewrite returned"]
+            continue
+        proposed = re.sub(r"\s*\n+\s*", " ", str(result["proposed"])).strip()
+        if proposed == item["current"].strip():
+            return {"status": "no_change", "proposed": "", "reason": "",
+                    "dropped": "", "problems": []}
+        problems = over_limits(text_metrics(proposed), limits)
+        lost = facts_dropped(item["current"], proposed, item["row"], config)
+        if lost:
+            problems.append("dropped material facts: " + ", ".join(lost))
+        if not problems:
+            return {"status": "ok", "proposed": proposed,
+                    "reason": str(result.get("reason") or "").strip(),
+                    "dropped": str(result.get("dropped") or "").strip(),
+                    "problems": []}
+        feedback = ("\n\nYour previous rewrite was rejected: "
+                    + "; ".join(problems) + ". Previous rewrite:\n"
+                    + proposed + "\nFix those problems and return the JSON "
+                      "again.")
+    return {"status": "failed", "proposed": "", "reason": "", "dropped": "",
+            "problems": problems}
+
+
+def _length_ask_key(row_id, column, current) -> tuple:
+    """Length asks are keyed on the CURRENT text, not the proposal: Claude's
+    rewrite differs run to run, so a proposal key would re-propose a cell
+    James already declined. An edited cell is a new key and is re-checked."""
+    digest = hashlib.sha1((current or "").strip().encode("utf-8")).hexdigest()
+    return (str(row_id), (column or "").strip().lower(), digest)
+
+
+def run_length_audit(client, config: dict, paths: dict, state: dict,
+                     open_entries: list[dict], limit: int | None,
+                     dry_run: bool) -> list[dict]:
+    """Pre-filter, rewrite, and (live only) queue length fixes. Returns one
+    report item per flagged cell; "status" is queued | would_queue |
+    deferred | already_asked | rewrite_failed | no_change."""
+    flagged = length_prefilter(config, open_entries)
+    length_asks = [a for a in (state.get("asks") or [])
+                   if a.get("kind") == "cleanup_fix"
+                   and a.get("check") == "length"]
+    prior = {_length_ask_key(a.get("row_id"), a.get("column"), a.get("current"))
+             for a in length_asks}
+    live = sum(1 for a in length_asks
+               if a.get("status") in ("queued", "proposed"))
+    batch = int(config.get("litigation_length_audit_batch")
+                or LENGTH_AUDIT_BATCH)
+    # Live: rewrite only what this run may queue — the rest waits for a
+    # later run, so no Claude spend on rewrites that would go stale. Dry
+    # run: rewrite everything flagged, so the whole batch can be reviewed.
+    room = None if dry_run else max(0, batch - live)
+    if limit is not None:
+        room = limit if room is None else min(room, limit)
+
+    items: list[dict] = []
+    rewritten = 0
+    for f in flagged:
+        item = {k: v for k, v in f.items() if k != "row"}
+        key = _length_ask_key(f["row_id"], f["column"], f["current"])
+        if key in prior:
+            items.append({**item, "status": "already_asked"})
+            continue
+        if room is not None and rewritten >= room:
+            items.append({**item, "status": "deferred"})
+            continue
+        rewritten += 1
+        rw = rewrite_long_cell(client, config, paths, f)
+        if rw["status"] != "ok":
+            items.append({**item, "problems": rw["problems"], "status": (
+                "no_change" if rw["status"] == "no_change"
+                else "rewrite_failed")})
+            continue
+        reason = (f"Too long for the {f['column']} rules "
+                  f"({'; '.join(f['over'])}"
+                  + ("; routine claim" if f["routine"] else "")
+                  + f"). {rw['reason']}").strip()
+        item.update(proposed=rw["proposed"], reason=reason,
+                    dropped=rw["dropped"],
+                    new_metrics=text_metrics(rw["proposed"]))
+        if dry_run:
+            items.append({**item, "status": "would_queue"})
+            continue
+        queue_ask(paths, state, {"kind": "cleanup_fix", "check": "length",
+                                 "row_id": f["row_id"], "claim": f["claim"],
+                                 "sheet_key": f["sheet_key"],
+                                 "column": f["column"],
+                                 "current": f["current"],
+                                 "proposed": rw["proposed"],
+                                 "reason": reason,
+                                 "dropped": rw["dropped"]})
+        prior.add(key)
+        items.append({**item, "status": "queued"})
+    return items
+
+
+def write_cleanup_report(paths: dict, length_items: list[dict],
+                         fixes: list[dict], missing: list[dict],
+                         dry_run: bool) -> Path:
+    """Markdown + CSV record of a cleanup run under
+    _litigation\\cleanup_reports\\. Returns the markdown path."""
+    import csv  # lazy
+    out_dir = paths["cleanup_reports"]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    mode = "DRY RUN — nothing queued" if dry_run else "LIVE — asks queued"
+    counts: dict = {}
+    for it in length_items:
+        counts[it["status"]] = counts.get(it["status"], 0) + 1
+    lines = [f"# Litigation cleanup report — {stamp} ({mode})", "",
+             f"Length audit: {len(length_items)} cell(s) over the limits"
+             + (" — " + ", ".join(f"{v} {k}" for k, v in sorted(counts.items()))
+                if counts else ""), ""]
+    for it in length_items:
+        m = it["metrics"]
+        lines += [f"## {it.get('claim') or it['row_id']} — {it['column']} "
+                  f"({it['sheet_key']}) — {it['status']}", "",
+                  f"- Row id: {it['row_id']}"
+                  + (" · routine claim" if it.get("routine") else ""),
+                  f"- Now: {m['words']} words / {m['sentences']} sentences / "
+                  f"{m['paragraphs']} paragraph(s) — " + "; ".join(it["over"])]
+        if it.get("new_metrics"):
+            nm = it["new_metrics"]
+            lines.append(f"- Proposed: {nm['words']} words / "
+                         f"{nm['sentences']} sentences / "
+                         f"{nm['paragraphs']} paragraph(s)")
+        if it.get("dropped"):
+            lines.append(f"- Chronology removed: {it['dropped']}")
+        if it.get("problems"):
+            lines.append(f"- Rewrite rejected: {'; '.join(it['problems'])}")
+        lines += ["", "**Current**", "",
+                  "> " + it["current"].replace("\n", "\n> "), ""]
+        if it.get("proposed"):
+            lines += ["**Proposed**", "", "> " + it["proposed"], ""]
+        if it.get("reason"):
+            lines += [f"_Reason: {it['reason']}_", ""]
+    if fixes:
+        lines += [f"# Compliance fixes ({'not queued' if dry_run else 'queued unless already asked'})", ""]
+        lines += [f"- **{f.get('claim')}** ({f.get('sheet_key')}) "
+                  f"{f.get('column')!r}: {f.get('current') or '(blank)'} -> "
+                  f"{f.get('proposed')} — {f.get('reason') or ''}"
+                  for f in fixes]
+        lines.append("")
+    if missing:
+        lines += ["# Missing information", ""]
+        lines += [f"- **{m.get('claim') or m.get('row_id')}** "
+                  f"({m.get('sheet_key')}) — {m.get('what')}" for m in missing]
+        lines.append("")
+    md_path = out_dir / f"cleanup_{stamp}.md"
+    md_path.write_text("\n".join(lines), encoding="utf-8")
+
+    fields = ["status", "sheet_key", "row_id", "claim", "column", "routine",
+              "words", "sentences", "paragraphs", "over", "new_words",
+              "new_sentences", "current", "proposed", "reason", "dropped",
+              "problems"]
+    with open(out_dir / f"cleanup_{stamp}.csv", "w", encoding="utf-8-sig",
+              newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=fields)
+        w.writeheader()
+        for it in length_items:
+            nm = it.get("new_metrics") or {}
+            w.writerow({
+                "status": it["status"], "sheet_key": it["sheet_key"],
+                "row_id": it["row_id"], "claim": it.get("claim"),
+                "column": it["column"], "routine": it.get("routine"),
+                **{k: it["metrics"][k]
+                   for k in ("words", "sentences", "paragraphs")},
+                "over": "; ".join(it["over"]),
+                "new_words": nm.get("words"),
+                "new_sentences": nm.get("sentences"),
+                "current": it["current"], "proposed": it.get("proposed"),
+                "reason": it.get("reason"), "dropped": it.get("dropped"),
+                "problems": "; ".join(it.get("problems") or [])})
+    return md_path
 
 
 # =============================================================================
@@ -3058,6 +3730,13 @@ def run_poll(config: dict, paths: dict, backfill_days: int,
     return {"intake": counts, "chat": chat}
 
 
+def chat_was_active(chat: dict) -> bool:
+    """Did this chat cycle see a reply or post something James will be
+    notified about? That's when he's likely to answer within minutes."""
+    return bool(chat.get("inbound") or chat.get("proposed")
+                or chat.get("decided") or chat.get("reupped"))
+
+
 def print_status(config: dict, paths: dict) -> None:
     state = load_state(paths)
     asks = state.get("asks") or []
@@ -3157,7 +3836,7 @@ def _dispatch(config: dict, paths: dict, dry_run: bool) -> None:
     if "--cleanup" in sys.argv:
         limit_raw = _argv_value("--limit")
         run_cleanup(config, paths, int(limit_raw) if limit_raw else None,
-                    dry_run)
+                    dry_run, length_only="--length-only" in sys.argv)
         return
 
     if "--learn" in sys.argv:
@@ -3187,5 +3866,23 @@ def _dispatch(config: dict, paths: dict, dry_run: bool) -> None:
     explicit_backfill = _argv_value("--backfill-days")
     backfill_days = int(explicit_backfill
                         or config.get("litigation_backfill_days") or 7)
-    run_poll(config, paths, backfill_days, dry_run,
-             force_window=bool(explicit_backfill))
+    polled = run_poll(config, paths, backfill_days, dry_run,
+                      force_window=bool(explicit_backfill))
+
+    # Then stay on the chat while James is answering, so each YES brings
+    # the next proposal right away instead of at the next scheduled poll.
+    # Skipped on dry runs, with --no-follow, or when nothing is waiting.
+    # --follow-if-active (the monitor's every-10-minutes run) also skips it
+    # unless the chat just moved, so a quiet day doesn't hold the lock.
+    if dry_run or "--no-follow" in sys.argv or \
+            not config.get("litigation_follow_after_poll", True):
+        return
+    if "--follow-if-active" in sys.argv and \
+            not chat_was_active(polled.get("chat") or {}):
+        return
+    if any(a.get("status") in ("queued", "proposed")
+           for a in (load_state(paths).get("asks") or [])):
+        follow_chat(config, paths, dry_run,
+                    int(config.get("litigation_follow_minutes") or 45),
+                    idle_minutes=int(
+                        config.get("litigation_follow_idle_minutes") or 10))
