@@ -69,6 +69,10 @@ subfolder once it has been successfully processed.
   filed reply is no longer re-read. The `known` qid set already
   prevented double-filing answers.
 
+**Deployed 10/18 11:57** (`python build_exe.py`). The monitor's
+new-build relaunch picks it up. The first answered PACER request should
+show "Moved processed mail to Inbox\PACER" in rocky.log.
+
 ---
 
 ## Session 2026-10-18 (2) — Litigation Updater runs from the monitor
