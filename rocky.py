@@ -86,16 +86,6 @@ Rocky — Virtual Paralegal
       they are never drafted twice; stale (earlier-dated) outbox files are
       warned about, never drafted. No digest file = quiet day, exits quietly.
 
-  python rocky.py --remy-digest [--date YYYY-MM-DD] [--yesterday] [--dry-run] [--no-push] [--no-email] [--force]  (5:30 PM weekdays)
-      The Remy digest: read the jbragdon21/remy repo over the GitHub API,
-      find the code commits since the last digest, pull the plain-English
-      session notes those commits carried, and have Claude write the day's
-      digest for James and Shane. Commits digest/YYYY-MM-DD.md back to the
-      repo (keeps the archive browsable on GitHub) and emails it from rocky@.
-      No clone and no git binary — the REMY working tree is never touched.
-      No code commits since the last digest = quiet day, nothing written or
-      sent. A read-only GitHub token still emails; it just can't update the
-      archive. See remy_digest.py.
 
   python rocky.py --vault [--dry-run] [--source inbox|vault-mail|dropbox] [--backfill-days N] [--limit N]  (3:00 PM daily)
       The Vault: gather leases, ledgers, affidavits of service, and
@@ -5319,10 +5309,6 @@ def main():
         run_pma_activity_cli()
     elif "--maple-digest" in sys.argv:
         run_maple_digest_cli()
-    elif "--remy-digest" in sys.argv:
-        import remy_digest
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        remy_digest.run_cli(load_config(), DATA_DIR)
     elif "--multifamily-digest" in sys.argv:
         import multifamily_digest
         multifamily_digest.run_cli(load_config(), DATA_DIR)
@@ -5397,9 +5383,6 @@ def main():
         print("                                          8 AM-7 PM); feeds the Multifamily Digest")
         print("  --maple-pma-activity [--dry-run] [--backfill-days N]  Export PMA emails folder to JSONL for the Maple updater (legacy alias: --pma-activity)")
         print("  --maple-digest [--date YYYY-MM-DD] [--yesterday] [--dry-run]  Draft the Maple PMA digest into James's Drafts (James sends)")
-        print("  --remy-digest  [--date YYYY-MM-DD] [--yesterday] [--dry-run] [--no-push] [--no-email] [--force]")
-        print("                                          Write the day's plain-English Remy digest from the GitHub repo,")
-        print("                                          commit it to digest/, and email it to James and Shane")
         print("  --vault        [--dry-run] [--source inbox|vault-mail|dropbox] [--backfill-days N] [--limit N] [--max-age-days N]")
         print("                 --status | --reindex | --dropbox-auth <account>")
         print("                 --cleanup [--execute] [--force]  Merge fragmented property/tenant folders (dry-run writes _vault\\cleanup_plan.txt)")

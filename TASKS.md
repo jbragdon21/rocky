@@ -91,7 +91,6 @@ All done. Rocky laptop is live and running.
 | `--rommel-todo` | 7:35 AM | Rommel's daily to-do list from inbox (blocked until IT grants rocky@ Read on `rloria@`) |
 | `--ella-digest [--hours N]` | 5:00 PM | Ella's daily case digest |
 | `--pending-llt [--dry-run]` | On demand | Download LLT + contacts from SharePoint, draft status emails by property |
-| `--remy-digest [--date YYYY-MM-DD] [--dry-run]` | None (manual only) | Summarize the day's Remy app changes from GitHub, commit the digest — generated in-process by `--multifamily-digest` since 2026-08-30 |
 
 ---
 
@@ -123,6 +122,8 @@ All done. Rocky laptop is live and running.
 - [x] Subsumed into the Multifamily Digest (2026-08-30): `--multifamily-digest`
       generates the Remy digest in-process and embeds it — no separate
       scheduled task needed (Shane is in the multifamily draft recipients)
+- [x] `--remy-digest` command + dashboard button removed (2026-10-18) —
+      `remy_digest.py` stays as the library the Multifamily Digest calls
 - [x] Mint a fine-grained GitHub PAT: repo `jbragdon21/remy`, **Contents: Read
       and write**, long expiration → `remy_github_token` in config.json
       (done 2026-08-30)

@@ -323,12 +323,11 @@ def llt_section(config: dict, data_dir: Path, since: datetime) -> str:
 def generate_remy_digest(config: dict, data_dir: Path,
                          dry_run: bool) -> None:
     """Write today's Remy digest before assembly (fully subsumed
-    2026-08-30 — there is no separate --remy-digest scheduled task).
+    2026-08-30; the --remy-digest command was removed 2026-10-18).
 
     remy_digest() never raises, skips quiet days (no commits, no
     session notes -> nothing written), and is idempotent (a digest
-    already written today, e.g. by a manual --remy-digest run, is left
-    alone). The guard here means any failure just costs the Remy
+    already written today is left alone). The guard here means any failure just costs the Remy
     section — never the multifamily draft."""
     if dry_run:  # dry runs never call Claude or touch GitHub
         return
@@ -349,7 +348,7 @@ def remy_section(data_dir: Path, since: datetime) -> str:
     """The day's Remy development digest, if one was written.
 
     Reads the local copy under data_dir\\remy_digests\\ that
-    generate_remy_digest() (or a manual --remy-digest run) wrote.
+    generate_remy_digest() wrote.
     Strictly newer than the window-start DATE, so yesterday's digest never
     repeats in today's email."""
     import remy_digest

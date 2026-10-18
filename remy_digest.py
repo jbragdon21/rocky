@@ -1,5 +1,11 @@
 """
-Remy digest — read the Remy repo, write the day's plain-English digest, email it.
+Remy digest — read the Remy repo, write the day's plain-English digest.
+
+Since 2026-08-30 this is a library, not a command: --multifamily-digest
+calls remy_digest() in-process (email=False) and embeds the result as its
+REMY section. The standalone --remy-digest command, its dashboard button
+and run_cli() were removed 2026-10-18. The email step below is kept but
+nothing calls it with email=True today.
 
 This replaces the old two-piece arrangement (a Claude Code scheduled task on
 James's dev laptop generated + pushed the digest; Rocky only fetched and
@@ -18,7 +24,7 @@ also lists the day's commits over the REST API (no clone, no git binary,
 never touches a working tree) and commits the finished digest back to the
 repo so the archive stays browsable there.
 
-Flow (--remy-digest, 5:30 PM weekdays):
+Flow (inside --multifamily-digest, 5:30 PM daily):
     1. Find the low-water mark: the newest digest date recorded in local
        state (and, with a token, the newest digest/YYYY-MM-DD.md in the
        repo). No prior digest means "the last 7 days".
@@ -27,14 +33,15 @@ Flow (--remy-digest, 5:30 PM weekdays):
        then (dropping digest-only commits) and any repo session notes.
     3. Claude writes the digest for two lawyers who don't code.
     4. Save it locally and into the activity folder's Digests subfolder;
-       with a write-capable token, also commit it back to the repo. Then
-       email it from rocky@ to James and Shane.
+       with a write-capable token, also commit it back to the repo. The
+       Multifamily Digest picks up the local copy for its REMY section.
 
 Quiet days are quiet: no new notes and no new commits means no file, no
 commit, no email.
 
 Public API:
-    run_cli(config, data_dir) -> None
+    remy_digest(client, token, config, data_dir, date_str, ...) -> dict
+    digest_fragment_html(md) -> str
 
 Config:
     remy_activity_dir       The shared OneDrive activity folder. If unset,
@@ -56,7 +63,6 @@ import base64
 import json
 import logging
 import re
-import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -722,60 +728,3 @@ def remy_digest(
 
     return result
 
-
-def _argv_value(flag: str) -> str | None:
-    args = sys.argv[1:]
-    for i, arg in enumerate(args):
-        if arg == flag and i + 1 < len(args):
-            return args[i + 1]
-    return None
-
-
-def run_cli(config: dict, data_dir: Path) -> None:
-    """Entry point, called from rocky.py's dispatch for --remy-digest."""
-    log.info("=" * 60)
-    log.info("Rocky — Remy digest (read the activity log, write it, send it)")
-    log.info("=" * 60)
-
-    date_str = _argv_value("--date")
-    if not date_str and "--yesterday" in sys.argv:
-        date_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-    if not date_str:
-        date_str = datetime.now().strftime("%Y-%m-%d")
-    try:
-        datetime.strptime(date_str, "%Y-%m-%d")
-    except ValueError:
-        log.error(f"Invalid --date {date_str!r}; expected YYYY-MM-DD.")
-        sys.exit(1)
-
-    dry_run = "--dry-run" in sys.argv
-    push = "--no-push" not in sys.argv
-    email = "--no-email" not in sys.argv and not dry_run
-    force = "--force" in sys.argv
-
-    log.info(f"Date: {date_str} | Dry run: {dry_run} | Push: {push} | "
-             f"Email: {email} | Force: {force}")
-
-    from anthropic import Anthropic  # lazy — dry runs never call Claude
-    client = None if dry_run else Anthropic(api_key=config["anthropic_api_key"])
-
-    # Only the send step needs Graph.
-    token = None
-    if email:
-        from rocky import acquire_token, get_msal_app  # lazy — avoids a cycle
-        from permissions import audit_token_scopes
-        token = acquire_token(get_msal_app(config))
-        audit_token_scopes(token)
-
-    result = remy_digest(
-        client=client, token=token, config=config, data_dir=data_dir,
-        date_str=date_str, dry_run=dry_run, push=push, email=email, force=force,
-    )
-
-    if result.get("written"):
-        log.info(f"Remy digest {date_str}: {result['commits']} change(s) "
-                 f"summarized | committed: {result['committed']} | "
-                 f"emailed: {result['emailed']}")
-    else:
-        log.info(f"No Remy digest written. Reason: {result.get('reason')}")
-    log.info("=" * 60)
