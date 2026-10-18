@@ -42,6 +42,14 @@ Rocky — Virtual Paralegal
       moves, no folder changes. --digest runs the scan itself, so schedule
       only ONE of the two. See MF_CASE_BRAIN.md.
 
+  python rocky.py --mf-brain --report [--dry-run] [--no-email] [--force]
+      MF Daily Report: court calendar, missing hearing outcomes, sheet
+      edits since the last report, ripe-and-unfiled, new matters, and mail
+      on matters with no system of record. The 7:00 AM --digest run writes
+      it automatically; this re-renders it from the ledger as it stands.
+      Saved to the Daily Reports folder under mf_tracker_root and emailed
+      to mf_report_recipients. Weekdays only unless --force.
+
   python rocky.py --llt-watch [--force] [--dry-run] [--status]  (HOURLY, 8 AM - 7 PM)
       Watch PENDING LLT MATTERS on the Multifamily Housing Teams site and
       record every hand edit: new matters, deletions, court dates, status
@@ -5239,6 +5247,10 @@ def main():
     # spellings share one instance lock and can't run concurrently.
     if command == "pma-activity":
         command = "maple-pma-activity"
+    # The MF brain's aliases all write one ledger and state.json, so they
+    # share the --mf-brain lock rather than racing the 7:00 digest.
+    if command in ("mf-brain-scan", "mf-report"):
+        command = "mf-brain"
     # Inbox Cleaner commands are per-user (--inbox-matt, --inbox-paul, ...).
     # Lock on the process name regardless of subflag order, so e.g.
     # `--snapshot --inbox-matt` still serializes against other inbox-matt runs.
@@ -5318,7 +5330,8 @@ def main():
         import llt_watch
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         llt_watch.run_cli(load_config(), DATA_DIR)
-    elif "--mf-brain" in sys.argv or "--mf-brain-scan" in sys.argv:
+    elif ("--mf-brain" in sys.argv or "--mf-brain-scan" in sys.argv
+          or "--mf-report" in sys.argv):
         import mf_brain
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         mf_brain.run_cli(load_config(), DATA_DIR)
@@ -5376,6 +5389,9 @@ def main():
         print("                                          MF Case Brain daily email: thoughts, scorecard,")
         print("                                          would-have-dones, and questions with answer boxes")
         print("  --mf-brain --scan [--local] | --status  Update the case ledger without emailing")
+        print("  --mf-brain --report [--no-email] [--force]")
+        print("                                          Re-render the MF Daily Report (the digest run")
+        print("                                          writes it every weekday morning)")
         print("  --llt-watch    [--force] [--dry-run] [--sheet NAME] [--local] [--status]")
         print("                                          Record hand edits to PENDING LLT MATTERS (hourly,")
         print("                                          8 AM-7 PM); feeds the Multifamily Digest")

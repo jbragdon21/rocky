@@ -47,7 +47,7 @@ _ANSWER_STOP_RE = re.compile(r"Answer\s*\[\s*mfq-|\(End of questions\)")
 DEFAULT_MAX_QUESTIONS = 5
 
 _MUTED = "color:#666;"
-_F = "font-family:'Segoe UI',Arial,sans-serif;"
+_F = "font-family:Segoe UI,Arial,sans-serif;"
 
 
 # =============================================================================
@@ -534,8 +534,22 @@ def run_cli(config: dict, data_dir: Path) -> None:
     if dry_run:
         log.info(f"[mf-digest] DRY-RUN — would send {subject!r} with "
                  f"{len(questions)} question(s)")
-        print(html)
-        return
+        # Bytes, not print(): a redirected Windows console is cp1252 and
+        # can't encode the scorecard's check marks.
+        sys.stdout.buffer.write(html.encode("utf-8") + b"\n")
+    else:
+        _send(config, paths, token, subject, html, questions)
+
+    # The daily report rides on this run so it reads a ledger the scan
+    # just brought current. It never raises, so it can't sink the digest.
+    import mf_report
+    mf_report.run_report(config, paths, data_dir, token=token,
+                         dry_run=dry_run)
+
+
+def _send(config: dict, paths: dict, token: str, subject: str, html: str,
+          questions: list[dict]) -> None:
+    import mf_brain
 
     from outbound import send_mail_guarded
     to = config.get("mf_digest_recipients") or [

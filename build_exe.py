@@ -75,6 +75,7 @@ def build_rocky():
         "--add-data", f"{ROOT / 'llt_watch.py'};.",
         "--add-data", f"{ROOT / 'mf_brain.py'};.",
         "--add-data", f"{ROOT / 'mf_digest.py'};.",
+        "--add-data", f"{ROOT / 'mf_report.py'};.",
         "--add-data", f"{ROOT / 'pma_tracker.py'};.",
         "--add-data", f"{ROOT / 'inbox_cleaner.py'};.",
         "--add-data", f"{ROOT / 'teams.py'};.",

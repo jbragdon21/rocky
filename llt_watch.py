@@ -121,9 +121,26 @@ def tracker_root(config: dict) -> Path:
     """The Multifamily Tracker and Dashboard folder on the share — the
     one roof over LLT Watch, the case brain, the folder-operation logs
     and the task-list cache."""
-    return Path((_argv_value("--mf-tracker-root")
-                 or config.get("mf_tracker_root")
-                 or _DEFAULT_TRACKER_ROOT).strip())
+    explicit = (_argv_value("--mf-tracker-root")
+                or config.get("mf_tracker_root") or "").strip()
+    # A frozen rocky.exe runs from Program Files\Rocky on the share, and
+    # the tracker folder sits right beside it on every machine. Used only
+    # when the configured path is missing or doesn't exist here (the
+    # Rocky laptop's config was never given this key, or carries the dev
+    # laptop's path from config.example.json), so an explicit key that
+    # resolves still wins and nothing is silently re-derived.
+    beside = None
+    if getattr(sys, "frozen", False):
+        cand = Path(sys.executable).parent / Path(_DEFAULT_TRACKER_ROOT).name
+        beside = cand if cand.is_dir() else None
+    if explicit and (Path(explicit).is_dir() or beside is None):
+        return Path(explicit)
+    if beside is not None:
+        if explicit:
+            log.warning(f"mf_tracker_root {explicit!r} not found here — "
+                        f"using {beside}")
+        return beside
+    return Path(_DEFAULT_TRACKER_ROOT)
 
 
 def get_paths(config: dict, data_dir: Path) -> dict:

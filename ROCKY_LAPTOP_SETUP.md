@@ -131,6 +131,15 @@ If you get `AADSTS53003`, the Conditional Access exception (step in Pre-requisit
 
 If tasks already exist pointing at `C:\Rocky\rocky.exe`, delete them first, then recreate. Editing the start time won't fix the program path.
 
+**Multifamily tasks (added 2026-10-18).** "Set up recommended" also installs these two. It skips any task that already exists, so it's safe to click again on a laptop that's already set up:
+
+| Dashboard task | Trigger | What it does |
+|---|---|---|
+| `\Rocky\LLT Watch` | Hourly (works 8 AM–7 PM only) | Records hand edits to PENDING LLT MATTERS |
+| `\Rocky\MF Brain Digest` | Daily 7:00 AM | Brain scan, learning email to James, then the **MF Daily Report** (weekdays) |
+
+Neither one needs `mf_tracker_root` in `C:\Rocky\config.json`. The exe finds `Multifamily Tracker and Dashboard` beside itself on the share. Set the key only to point somewhere else. Optional keys: `mf_report_recipients` (default James) and `mf_report_weekends`.
+
 > **Verify the first one actually runs.** The OneDrive path contains spaces *and* an apostrophe (`James D. Bragdon's files`), where `C:\Rocky\rocky.exe` had neither — so this is the first time `schtasks` quoting matters here. Run one task manually from Task Scheduler and confirm it fires before trusting the rest.
 
 To create them by hand instead, the three daily jobs are:

@@ -177,7 +177,10 @@ ROCKY_COMMANDS = [
     # the bare scan is for manual/off-cycle use (it costs the same Claude
     # calls, and running both in a day just advances the mail cursor
     # early so the digest sees nothing).
-    {"flag": "mf-brain",      "label": "MF Brain Digest", "group": "Inbox", "dry_run": True,  "args": ["--digest"], "desc": "Read the spreadsheet, folders and inbox; email James the day's thoughts, scorecard and questions", "sched_time": "07:00", "recommended": True},
+    {"flag": "mf-brain",      "label": "MF Brain Digest", "group": "Inbox", "dry_run": True,  "args": ["--digest"], "desc": "Read the spreadsheet, folders and inbox; email James the day's thoughts, scorecard and questions, then the MF Daily Report", "sched_time": "07:00", "recommended": True},
+    # No schedule slot: the 7:00 digest run writes and sends the report.
+    # This is an off-cycle copy from the ledger as it stands.
+    {"flag": "mf-report",     "label": "MF Daily Report", "group": "Inbox", "dry_run": True,  "args": ["--force"], "desc": "Court calendar, missing outcomes, sheet edits, ripe-and-unfiled and new matters (manual — the digest sends it every weekday)"},
     {"flag": "mf-brain-scan", "label": "MF Brain Scan",   "group": "Inbox", "dry_run": True,  "desc": "Update the case ledger without sending the email (manual — the digest does this daily)"},
     {"flag": "maple-pma-activity", "label": "Maple PMA Activity", "group": "Maple", "dry_run": False, "desc": "Step 1 — collect the day's PMA emails for Maple", "sched_time": "17:00", "recommended": True},
     {"flag": "maple-updater", "label": "Maple Updater",   "group": "Maple", "dry_run": False, "desc": "Step 2 — Maple updates HubSpot and writes the client update", "sched_time": "17:10", "external": True},

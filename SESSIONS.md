@@ -24,6 +24,66 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-10-18 (4) — MF Daily Report; the MF tasks were never scheduled
+
+James asked for a daily report from the multifamily brain tasks that read
+the spreadsheets, and assumed tasks needed setting up. They did: **neither
+LLT Watch nor the MF Brain Digest has ever run on the Rocky laptop.** The
+share shows no `LLT Watch\snapshot.json` at all, and the brain ledger's
+last scan is 9/13 (the dev-laptop build session). The 9/13 entry's open
+item, "add the 7:00 AM task," was never done.
+
+**What changed**
+
+- New `mf_report.py`: court calendar (14 days), court dates passed with
+  no outcome on the sheet, LLT Watch edits since the last report,
+  ripe-and-unfiled (newly ripe, next 7 days, backlog by property), new
+  matters, and mail on matters with no system of record. Template-
+  rendered, zero Claude tokens. Saved to `<mf_tracker_root>\Daily
+  Reports\YYYY-MM-DD.html` and emailed from rocky@ to
+  `mf_report_recipients` (default James).
+- `mf_digest.run_cli` writes the report after its email, on the same
+  7:00 AM task. `--mf-brain --report` / `--mf-report` (dashboard "MF
+  Daily Report", `--force`) re-renders it off-cycle. The aliases now
+  share the `mf-brain` lock.
+- `llt_watch.tracker_root()`: when `mf_tracker_root` is unset or missing
+  on this machine, a frozen exe uses `Multifamily Tracker and Dashboard`
+  beside itself. The Rocky laptop's config never had the key, so its
+  first run would otherwise have written under `C:\Users\jbragdon\...`.
+- `mf_brain.scan_inbox`: a cursor older than `mf_brain_max_catchup_days`
+  (3) is clamped. Five weeks of backlog would otherwise mean up to 1,000
+  messages and a Claude call per touched folder on the first run.
+- Fixed: `_F` in `mf_digest` had `'Segoe UI'` in single quotes inside
+  single-quoted `style=` attributes, which cut off the outer div's style
+  (color, max-width) in the learning email too. The dry-run `print(html)`
+  crashed on a cp1252 console over the scorecard's ✗; it now writes
+  bytes.
+- Tests `tests/test_mf_report.py` (10). Suite 63 pass.
+
+**Verified**
+
+- Rendered against the 9/13 ledger: about 98 court dates in 14 days,
+  ~22 missing outcomes, 67 newly ripe, 297 backlog. The first cut read
+  only the first date per cell and flagged cells that already said
+  "Dismissed" or "Settlement Agreement executed". Both are fixed.
+- Live dry run of `--mf-brain --digest` from the dev laptop: sheet
+  '10.5.26', 1,152 matters (up from 1,026), 3,032 folders, cursor clamp
+  fired (458 messages since 10/15, 33 folders). Report skipped because it
+  was Sunday. `--mf-report --dry-run --force` also ran clean.
+
+**Open — needs James on the Rocky laptop**
+
+- Dashboard → schedule panel → **Set up recommended**. That creates
+  `\Rocky\LLT Watch` (hourly) and `\Rocky\MF Brain Digest` (7:00) and
+  skips existing tasks. Then run MF Brain Digest once by hand to confirm.
+- The first live digest run is the brain's first ledger write since
+  9/13. Expect a large `line_changes` count (126 new matters, five weeks
+  of status edits) and many predictions settling at once.
+- LLT Watch's first run is a baseline only (no events), so the report's
+  "Spreadsheet changes" section starts filling the day after.
+
+---
+
 ## Session 2026-10-18 (3) — Every rocky@ Inbox reader files processed mail
 
 James asked that every task watching rocky@'s Inbox move an email into a

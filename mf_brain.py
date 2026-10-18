@@ -731,6 +731,16 @@ def scan_inbox(config: dict, paths: dict, cases: dict, folder_map: dict,
     import pending_llt as pl
 
     since = state.get("inbox_cursor")
+    # A cursor weeks old (the brain sat unscheduled from 9/13 to 10/18)
+    # would read up to 1,000 messages and spend a Claude call on every
+    # folder they touch, all to describe mail that is no longer news.
+    # Clamp the catch-up; config mf_brain_max_catchup_days.
+    floor = datetime.now(timezone.utc) - timedelta(
+        days=int(config.get("mf_brain_max_catchup_days", 3)))
+    if since and since[:19] < floor.isoformat()[:19]:
+        log.info(f"[mf-brain] (c) cursor {since[:10]} is stale — reading "
+                 f"from {floor:%Y-%m-%d} instead")
+        since = floor.isoformat()
     if not since:
         since = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
         log.info(f"[mf-brain] (c) no cursor — first pass reads the last 2 days")
@@ -1069,6 +1079,10 @@ def run_cli(config: dict, data_dir: Path) -> None:
     if "--digest" in sys.argv:
         import mf_digest
         mf_digest.run_cli(config, data_dir)
+        return
+    if "--report" in sys.argv or "--mf-report" in sys.argv:
+        import mf_report
+        mf_report.run_cli(config, data_dir)
         return
 
     local = "--local" in sys.argv
