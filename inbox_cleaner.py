@@ -1464,6 +1464,10 @@ def questionnaire_cycle(config: dict, ucfg: dict, paths: dict,
     send_mail_guarded(token, rocky_email, [user_addr],
                       f"RE: {subject}", ack)
     log_comm(paths, "out", ack, cohort_id="questionnaire")
+    # Answers saved: file the reply out of rocky@'s Inbox.
+    from rocky import file_processed_mail  # lazy
+    file_processed_mail(config, rocky_email, reply.get("id"),
+                        "inbox_cleaner_processed_folder", "Inbox Cleaner")
     return {"answers": len(answers)}
 
 

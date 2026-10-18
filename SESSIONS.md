@@ -24,6 +24,53 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-10-18 (3) — Every rocky@ Inbox reader files processed mail
+
+James asked that every task watching rocky@'s Inbox move an email into a
+subfolder once it has been successfully processed.
+
+**Audit of rocky@ Inbox readers**
+
+| Reader | Folder | Status |
+|---|---|---|
+| Vault `--vault-mail` submissions | Inbox\The Vault | already (8/24) |
+| LetterStream `poll_approvals` | Inbox\Letterstream | already (10/3) |
+| Litigation Updater intake | Inbox\Litigation Updater | already (on YES/NO) |
+| PACER `--pacer-mail` | Inbox\PACER | **new** |
+| MF digest `collect_answers` | Inbox\MF Digest | **new** |
+| Inbox Cleaner questionnaire reply | Inbox\Inbox Cleaner | **new** |
+| Maple PMA tracker | reads Inbox\PMA emails | n/a (already a subfolder) |
+| Vault `--vault-inbox` | James's inbox | n/a (by policy, never touched) |
+
+**What changed**
+
+- `rocky.file_processed_mail(config, mailbox, message_id, config_key,
+  default_name, cache)`: a one-call wrapper over
+  `file_message_to_inbox_subfolder` with a per-process cached delegated
+  token. `""` in config disables. Vault, LetterStream, and Litigation keep
+  their own equivalents (not touched).
+- PACER: a request is filed only after its reply is **sent**. A failed
+  reply or an external sender stays in the Inbox. `counts["filed"]`.
+- MF digest: a reply from James with at least one parseable answer is
+  filed after the answers are appended. A reply with nothing parseable
+  stays. `collect_answers` gained `dry_run`, so a dry run files nothing.
+- Inbox Cleaner: the questionnaire reply is filed after answers are
+  saved and acked. An unparsed reply stays.
+- Config keys `pacer_processed_folder`, `mf_digest_processed_folder`,
+  `inbox_cleaner_processed_folder`. Tests `tests/test_mail_filing.py`
+  (5). Suite 53 pass.
+
+**Watch-outs**
+
+- No new permissions: moves use rocky@'s cached Mail.ReadWrite.Shared
+  sign-in, same as the Vault. If that sign-in lapses, mail just stays in
+  the Inbox (logged).
+- The MF digest finds replies by subject search in the Inbox only, so a
+  filed reply is no longer re-read. The `known` qid set already
+  prevented double-filing answers.
+
+---
+
 ## Session 2026-10-18 (2) — Litigation Updater runs from the monitor
 
 James wanted the updater to work without manual runs: catch new mail in

@@ -428,7 +428,8 @@ def parse_answers(body: str) -> dict[str, str]:
     return out
 
 
-def collect_answers(config: dict, paths: dict, token: str) -> list[dict]:
+def collect_answers(config: dict, paths: dict, token: str,
+                    dry_run: bool = False) -> list[dict]:
     """Look in rocky@'s inbox for replies to any digest and file the
     answers. Runs before the new digest is built, so an answer given
     yesterday stops the question being asked again today."""
@@ -452,6 +453,7 @@ def collect_answers(config: dict, paths: dict, token: str) -> list[dict]:
              for q in mf_brain.read_jsonl(paths["questions"])}
     ts = datetime.now(timezone.utc).isoformat()
     new: list[dict] = []
+    answered: list[str] = []
     for m in r.json().get("value", []):
         sender = ((m.get("from") or {}).get("emailAddress") or {}).get(
             "address", "").lower()
@@ -460,7 +462,10 @@ def collect_answers(config: dict, paths: dict, token: str) -> list[dict]:
             continue
         body = ((m.get("body") or {}).get("content") or "")
         body = re.sub(r"<[^>]+>", "\n", body)
-        for qid, answer in parse_answers(body).items():
+        parsed = parse_answers(body)
+        if parsed:
+            answered.append(m.get("id"))
+        for qid, answer in parsed.items():
             if qid in known:
                 continue
             new.append({"qid": qid, "ts": ts, "answer": answer,
@@ -473,6 +478,14 @@ def collect_answers(config: dict, paths: dict, token: str) -> list[dict]:
         mf_brain.append_jsonl(paths["answers"], new)
         _fold_into_learning(paths, new)
         log.info(f"[mf-digest] filed {len(new)} new answer(s)")
+    # Every answer in these replies is now recorded, so the email itself is
+    # done: file it out of rocky@'s Inbox. A reply with no parseable answer
+    # stays put for a person to read.
+    if not dry_run:
+        from rocky import file_processed_mail  # lazy
+        for mid in answered:
+            file_processed_mail(config, rocky_email, mid,
+                                "mf_digest_processed_folder", "MF Digest")
     return new
 
 
@@ -509,7 +522,7 @@ def run_cli(config: dict, data_dir: Path) -> None:
     audit_token_scopes(token)
 
     # Answers first: a question settled yesterday should not be re-asked.
-    collect_answers(config, paths, token)
+    collect_answers(config, paths, token, dry_run=dry_run)
 
     summary = mf_brain.run_scan(config, paths, token=token, dry_run=dry_run)
     cases = mf_brain.load_cases(paths)

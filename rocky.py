@@ -724,6 +724,31 @@ def file_message_to_inbox_subfolder(
     return False
 
 
+_MAIL_MOVE_TOKEN: dict = {}   # one delegated token per process
+
+
+def file_processed_mail(config: dict, mailbox: str, message_id: str,
+                        config_key: str, default_name: str,
+                        cache: dict | None = None) -> bool:
+    """One call for any process that has finished with a rocky@ email:
+    move it into Inbox\\<config[config_key] or default_name> so the Inbox
+    holds only what's still undecided. "" in config disables. Best-effort
+    (False = left in place, already logged). Move LAST: it changes the id."""
+    name = config.get(config_key) if config_key in config else default_name
+    if not (name or "").strip() or not message_id:
+        return False
+    if "token" not in _MAIL_MOVE_TOKEN:
+        _MAIL_MOVE_TOKEN["token"] = acquire_mail_move_token(config)
+    token = _MAIL_MOVE_TOKEN["token"]
+    if not token:
+        return False
+    if file_message_to_inbox_subfolder(token, mailbox, message_id, name,
+                                       cache):
+        log.info(f"Moved processed mail to Inbox\\{name} ({mailbox})")
+        return True
+    return False
+
+
 def delete_message(token: str, mailbox: str, message_id: str) -> bool:
     """Delete a message (Graph soft delete: it lands in Deleted Items,
     still recoverable). Best-effort: False on failure; 404 = already gone."""

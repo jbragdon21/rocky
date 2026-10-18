@@ -292,6 +292,11 @@ only, from rocky@. Level 0 holds: nothing here can send from James's
 account, and there is no send path that bypasses the guard. External
 senders get no reply at all, and the refusal is logged.
 
+Once the reply is sent, the request moves to rocky@'s **Inbox\PACER**
+folder (`pacer_processed_folder`; `""` disables; created if missing). A
+request whose reply failed, or an external sender's, stays in the Inbox
+where a person will see it. (Added 2026-10-18.)
+
 The mail sweep keeps its own cursor (`C:\Rocky\pacer\mail_state.json`)
 and its own instance lock, so it runs every monitor cycle without queuing
 behind a long sync.

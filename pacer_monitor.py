@@ -1536,6 +1536,13 @@ def run_mail(config: dict, paths: dict, dry_run: bool = False) -> dict:
                 attachments=reply.get("attachments") or None)
             if result.get("sent"):
                 counts["replied"] += 1
+                # Answered: file it so rocky@'s Inbox holds only what's
+                # undecided. A failed reply stays put where a person sees it.
+                from rocky import file_processed_mail  # lazy
+                if file_processed_mail(config, mailbox, message.get("id"),
+                                       "pacer_processed_folder", "PACER",
+                                       state.setdefault("mail_folders", {})):
+                    counts["filed"] = counts.get("filed", 0) + 1
         elif not outbound.is_allowed_recipient(sender):
             log.warning(f"[pacer] not replying to external sender {sender}")
 
