@@ -89,6 +89,15 @@ Gallagher-Bozzuto Litigation Report".
   bundle). Still to do on the Rocky laptop: restart the dashboard, then
   Kirsten Digest → 📅 (pre-fills Weekly SUN 18:00), or Set up
   recommended. First live run: Sunday 10/25 6 PM, after the column is in.
+- **Column added 10/18** ("Kirsten Digest?", 10 Yes: HRI, Ogunnupe,
+  Realpage MD AG, DC AG Novel Vouchers, DC AG Fees, District Dogs, DC OHR
+  Vouchers, Bulgin, Hettinger, Hunt). Every row maps to a folder (Hunt is
+  RRID-0043 in the index, 0036 on disk: matched by name). Real dry run
+  tightened the prompt: no calculated dates (it said a mediation
+  statement was due 12/17, which should be 3/17), no imperative to-dos,
+  every stated upcoming date in next steps, temperature 0, and the case's
+  Gallagher senders (from activity.jsonl) passed as never-name. Rebuilt
+  and redeployed.
 
 ---
 

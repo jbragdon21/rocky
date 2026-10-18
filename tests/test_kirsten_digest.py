@@ -147,3 +147,16 @@ def test_week_bullets_drop_pre_week_items():
              {"date": "2026-10-15", "text": ""}]
     assert kd.week_bullets(items, "2026-10-11") == [
         "Opposition finalized.", "Undated item stays.", "Plain string stays."]
+
+
+def test_firm_names_from_gallagher_senders():
+    events = [
+        {"event": "email_ingested", "from_name": "Tyler Fultz",
+         "from_address": "tfultz@gallagherllp.com"},
+        {"event": "email_ingested", "from_name": "Joy Arinze",
+         "from_address": "jarinze@bozzuto.com"},
+        {"event": "daily_cases_email_summary",
+         "emails": [{"from_name": "Sam Cowin",
+                     "from_address": "SCowin@GallagherLLP.com"}]},
+    ]
+    assert kd.firm_names(events) == ["Sam Cowin", "Tyler Fultz"]

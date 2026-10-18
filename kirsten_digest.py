@@ -99,11 +99,13 @@ Return ONLY a JSON object with these keys:
 - If nothing substantive happened, return an empty list. Do not pad a quiet week.
 
 "next_steps" — NEXT STEPS
-- 1 to 4 bullets in strict date order, soonest first (undated items last): what happens next and who does it. Write each as what we will do ("We will...", "Gallagher is preparing...") or what is expected of others, never as a bare internal to-do ("Return X's call", "Confirm whether..."). Lead with any upcoming date (e.g. "Nov. 4 — opposition due; Gallagher is preparing it."). Call out plainly anything Gallagher needs from Bozzuto (documents, a decision, settlement authority, a witness).
+- 1 to 4 bullets in strict date order, soonest first (undated items last): what happens next and who does it. Write each as what we will do ("We will...", "Gallagher is preparing...") or what is expected of others, never as an imperative to-do. Wrong: "Establish whether the response was filed", "Obtain the call records", "Resolve the conflict", "Return X's call". Right: "We are confirming the filing status with OHR", "We have asked Allegro for the call records". Lead with any upcoming date (e.g. "Nov. 4 — opposition due; Gallagher is preparing it."). Call out plainly anything Gallagher needs from Bozzuto (documents, a decision, settlement authority, a witness).
 - Never list a date that is before TODAY as upcoming. A past hearing or deadline is done.
+- Never calculate a date. Use only dates stated in the sources. If a deadline is defined relative to another event ("21 days before mediation") and no source states the date, write it that way without a date.
+- Every hearing, conference, or deadline on or after TODAY that the sources state belongs here, even in a quiet week.
 - If nothing is pending, return ["No action needed at this time; we will report any developments."]
 
-AUDIENCE — the client. Write for an experienced in-house reader: plain, direct, professional. Refer to the firm as "we" or "Gallagher" and to the client as "Bozzuto". The reader is Kirsten herself: never name her in the third person. Write her own actions as "you" ("you coordinated with leadership on...") or as Bozzuto's.
+AUDIENCE — the client. Write for an experienced in-house reader: plain, direct, professional. Refer to the firm as "we" or "Gallagher" and to the client as "Bozzuto". Gallagher's work is "we" or "Gallagher": never credit it to individual Gallagher attorneys or staff by name. The reader is Kirsten herself: never name her in the third person. Write her own actions as "you" ("you coordinated with leadership on...") or as Bozzuto's.
 - Never mention Rocky, AI, activity logs, case folders, file indexes, memoranda being updated, documents being saved, renamed, filed into folders, or any other internal file housekeeping.
 - Leave out internal-only matters entirely, in every field: Gallagher's billing, invoices, e-billing platforms (a co-party or carrier changing how it receives our invoices is internal), fees, staffing and workload, internal to-dos about the file, and candid notes about the client's own personnel.
 - Do not invent facts, dates, or outcomes. Use only what the sources say.
@@ -262,6 +264,20 @@ def activity_lines(events: list[dict]) -> list[str]:
     return list(reversed(out))
 
 
+def firm_names(events: list[dict]) -> list[str]:
+    """Names of Gallagher people seen sending mail on the case, so the
+    prompt can keep firm staff out of a client report by name."""
+    names = set()
+    for ev in events:
+        senders = [ev] + list(ev.get("emails") or [])
+        for em in senders:
+            addr = str(em.get("from_address") or "").lower()
+            name = str(em.get("from_name") or "").strip()
+            if addr.endswith("@gallagherllp.com") and name and "@" not in name:
+                names.add(name)
+    return sorted(names)
+
+
 def _parse_json(text: str) -> dict | None:
     text = (text or "").strip()
     m = re.search(r"\{.*\}", text, re.DOTALL)
@@ -296,7 +312,8 @@ def week_bullets(items, week_start: str) -> list[str]:
 
 def summarize_case(client, model: str, case: dict, lines: list[str],
                    memo: str, background: str, window: str,
-                   week_start: str = "") -> dict:
+                   week_start: str = "", firm: list[str] | None = None
+                   ) -> dict:
     """One Claude call. Returns {status, week, next_steps} or {error}."""
     today = datetime.now().strftime("%Y-%m-%d (%A)")
     prompt = f"""TODAY: {today}
@@ -307,6 +324,8 @@ CASE
 Name: {case.get('File Name')}
 Client entity: {case.get('Client')}
 Description: {case.get('Description') or '(none)'}
+
+GALLAGHER PEOPLE ON THIS CASE (refer to their work as "we"; never name them): {', '.join(firm or []) or '(none recorded)'}
 
 ACTIVITY THIS WEEK ({len(lines)} items):
 {chr(10).join(lines) if lines else '(no recorded activity this week)'}
@@ -320,7 +339,7 @@ CASE STATUS MEMORANDUM (background, may be out of date):
 Write the JSON object for this case."""
     try:
         resp = client.messages.create(
-            model=model, max_tokens=1200, system=SYSTEM_PROMPT,
+            model=model, max_tokens=1200, temperature=0, system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}])
         data = _parse_json(resp.content[0].text)
     except Exception as e:
@@ -507,7 +526,9 @@ def build(config: dict, days: int, rrids: list[str] | None = None
         background = rocky._read_case_digest_instructions(folder)
         section = summarize_case(client, model, case, lines, memo,
                                  background, window,
-                                 local_start.strftime("%Y-%m-%d (%A)"))
+                                 local_start.strftime("%Y-%m-%d (%A)"),
+                                 firm_names(rocky._read_jsonl(
+                                     folder / "activity.jsonl")))
         if section.get("error"):
             log.warning(f"[kirsten] {rrid} {title}: {section['error']}")
         log.info(f"[kirsten] {rrid} {folder.name}: {len(lines)} activity "
