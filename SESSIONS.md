@@ -68,8 +68,9 @@ The re-up also waited 7 days.
 
 **Open / watch-outs**
 
-- **Not deployed or verified live.** After build + deploy, the relaunch
-  logic picks up the new monitor. Expect "monitor: ... + litigation
+- **Deployed 10/18 11:47** (`python build_exe.py`; rocky.exe +
+  dashboard.exe to OneDrive Program Files\Rocky). Not yet verified live:
+  the relaunch logic should pick up the new monitor within a cycle. Expect "monitor: ... + litigation
   (background)" in the banner and litigation intake/chat lines in
   rocky.log every 10 min.
 - **Disable the scheduled `--litigation --poll` task** on the Rocky
