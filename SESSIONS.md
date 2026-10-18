@@ -24,6 +24,43 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-10-18 (5) — Dashboard: To-Do Lists group, fewer buttons
+
+James trimmed the dashboard's Run list.
+
+**What changed** (`dashboard.py` ROCKY_COMMANDS only)
+
+- Steve To-Do, Rommel To-Do and Ella Digest moved from "Inbox" into a
+  new **To-Do Lists** group, shown right after Cases. Nothing keys on the
+  group name; schedules and recommended times are unchanged.
+- Removed the **MF Brain Scan** button. `--mf-brain-scan` stays a CLI
+  flag.
+- Removed **The Vault**, **Vault Rocky Inbox** and **Vault James Inbox**.
+  The monitor already runs `--vault-mail` / `--vault-inbox` every 10
+  minutes, and `--vault` takes its own `vault` lock while writing the
+  split tasks' state files, so clicking it could race a monitor sweep.
+  Vault Dropbox keeps its button (heaviest source, hourly). All flags
+  still work from the command line.
+
+**Decisions made**
+
+- To-do lists and Ella's digest are their own category, not "Inbox".
+- Don't put `--vault` or the monitor-covered Vault sources back on the
+  dashboard.
+
+**Watch-outs**
+
+- Any existing Task Scheduler entry for a removed button keeps running
+  and shows under "Other" in the Scheduled list. Hourly vault-mail /
+  vault-inbox entries on the Rocky laptop are redundant under the
+  monitor and can be deleted there.
+- dashboard.exe was built from a clean checkout of this commit, because
+  the working tree held another session's uncommitted Kirsten Digest
+  work (dashboard button, WEEKLY scheduling). That button is not in this
+  build.
+
+---
+
 ## Session 2026-10-18 (4) — MF Daily Report; the MF tasks were never scheduled
 
 James asked for a daily report from the multifamily brain tasks that read

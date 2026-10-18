@@ -161,9 +161,9 @@ ROCKY_COMMANDS = [
     # Until IT grants rocky@ Read on that person's mailbox the run fails
     # soft — Graph 403, logged, no mail sent — so scheduling ahead of the
     # delegation costs nothing but a daily line in rocky.log.
-    {"flag": "steve-todo",    "label": "Steve To-Do",     "group": "Inbox", "dry_run": False, "desc": "Build Steve's morning to-do list from his email",       "sched_time": "07:30", "recommended": True},
-    {"flag": "rommel-todo",   "label": "Rommel To-Do",    "group": "Inbox", "dry_run": False, "desc": "Build Rommel's morning to-do list from their inbox",      "sched_time": "07:35", "recommended": True},
-    {"flag": "ella-digest",   "label": "Ella Digest",     "group": "Inbox", "dry_run": False, "desc": "Write Ella's daily summary of her case emails",         "sched_time": "17:00", "recommended": True},
+    {"flag": "steve-todo",    "label": "Steve To-Do",     "group": "To-Do Lists", "dry_run": False, "desc": "Build Steve's morning to-do list from his email",       "sched_time": "07:30", "recommended": True},
+    {"flag": "rommel-todo",   "label": "Rommel To-Do",    "group": "To-Do Lists", "dry_run": False, "desc": "Build Rommel's morning to-do list from their inbox",      "sched_time": "07:35", "recommended": True},
+    {"flag": "ella-digest",   "label": "Ella Digest",     "group": "To-Do Lists", "dry_run": False, "desc": "Write Ella's daily summary of her case emails",         "sched_time": "17:00", "recommended": True},
     {"flag": "pending-llt",   "label": "Pending LLT",     "group": "Inbox", "dry_run": True,  "desc": "Draft status-update emails for landlord-tenant matters"},
     # HOURLY around the clock on purpose, and no sched_time (create_task
     # passes /st only for ONCE/DAILY/WEEKLY): --llt-watch enforces its own
@@ -172,16 +172,14 @@ ROCKY_COMMANDS = [
     # deliberately keeps its schtasks surface small. The off-hours runs
     # exit immediately, before any network call.
     {"flag": "llt-watch",     "label": "LLT Watch",       "group": "Inbox", "dry_run": True,  "desc": "Record hand edits to the PENDING LLT MATTERS spreadsheet (runs 8 AM-7 PM; off-hours runs exit at once)", "sched_freq": "HOURLY", "sched_interval": 1, "recommended": True},
-    # --mf-brain --digest runs the scan itself and then emails, so only
-    # ONE of these belongs on a schedule. The digest is the daily job;
-    # the bare scan is for manual/off-cycle use (it costs the same Claude
-    # calls, and running both in a day just advances the mail cursor
-    # early so the digest sees nothing).
+    # --mf-brain --digest runs the scan itself and then emails. The bare
+    # scan (--mf-brain-scan) is CLI-only, deliberately not a button: it
+    # costs the same Claude calls, and running it beside the digest just
+    # advances the mail cursor early so the digest sees nothing.
     {"flag": "mf-brain",      "label": "MF Brain Digest", "group": "Inbox", "dry_run": True,  "args": ["--digest"], "desc": "Read the spreadsheet, folders and inbox; email James the day's thoughts, scorecard and questions, then the MF Daily Report", "sched_time": "07:00", "recommended": True},
     # No schedule slot: the 7:00 digest run writes and sends the report.
     # This is an off-cycle copy from the ledger as it stands.
     {"flag": "mf-report",     "label": "MF Daily Report", "group": "Inbox", "dry_run": True,  "args": ["--force"], "desc": "Court calendar, missing outcomes, sheet edits, ripe-and-unfiled and new matters (manual — the digest sends it every weekday)"},
-    {"flag": "mf-brain-scan", "label": "MF Brain Scan",   "group": "Inbox", "dry_run": True,  "desc": "Update the case ledger without sending the email (manual — the digest does this daily)"},
     {"flag": "maple-pma-activity", "label": "Maple PMA Activity", "group": "Maple", "dry_run": False, "desc": "Step 1 — collect the day's PMA emails for Maple", "sched_time": "17:00", "recommended": True},
     {"flag": "maple-updater", "label": "Maple Updater",   "group": "Maple", "dry_run": False, "desc": "Step 2 — Maple updates HubSpot and writes the client update", "sched_time": "17:10", "external": True},
     {"flag": "maple-digest",  "label": "Maple Digest",    "group": "Maple", "dry_run": True,  "desc": "Step 3 — put the client update in James's Drafts to send", "sched_time": "17:40", "recommended": True},
@@ -194,10 +192,11 @@ ROCKY_COMMANDS = [
     # install a daily task that double-runs beside a deployed monitor.
     # Overlap is safe (instance lock) — just redundant.
     {"flag": "letterstream",  "label": "LetterStream",    "group": "Mail",  "dry_run": True,  "desc": "Certified mail sweep — requests, releases, tracking, affidavits & reminders", "sched_time": "08:00"},
+    # Only the Dropbox source gets a button. --vault-mail and --vault-inbox
+    # run every 10 minutes in the --monitor loop, and the all-sources
+    # --vault takes its own lock while writing the split tasks' state
+    # files, so a click could race a monitor sweep. Both stay CLI flags.
     {"flag": "vault-dropbox", "label": "Vault Dropbox",   "group": "Vault", "dry_run": True,  "desc": "Pull new documents from the client Dropbox sources",        "sched_freq": "HOURLY", "sched_interval": 1},
-    {"flag": "vault-mail",    "label": "Vault Rocky Inbox", "group": "Vault", "dry_run": True, "desc": "File documents emailed to rocky@ with 'Vault' in the subject", "sched_freq": "HOURLY", "sched_interval": 1},
-    {"flag": "vault-inbox",   "label": "Vault James Inbox", "group": "Vault", "dry_run": True, "desc": "Sweep James's inbox for leases, ledgers & affidavits",      "sched_freq": "HOURLY", "sched_interval": 1},
-    {"flag": "vault",         "label": "The Vault",       "group": "Vault", "dry_run": True,  "desc": "All Vault sources in one run — manual use; don't schedule beside the split tasks"},
     {"flag": "multifamily-digest", "label": "Multifamily Digest", "group": "Vault", "dry_run": True,  "desc": "Draft the daily digest into James's Drafts to send: certified mail, affidavits, Vault additions, Remy development, and pending items", "sched_time": "17:45", "recommended": True},
     {"flag": "pacer",         "label": "PACER Sync",      "group": "PACER", "dry_run": True,  "desc": "Refresh every watched federal case and file new filings", "sched_time": "07:00", "recommended": True},
     # --pacer-sweep / --pacer-digest are aliases pacer_monitor.run_cli
