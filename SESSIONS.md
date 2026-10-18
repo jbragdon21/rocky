@@ -24,6 +24,66 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-10-18 (2) — Litigation Updater runs from the monitor
+
+James wanted the updater to work without manual runs: catch new mail in
+rocky@, propose the update, chat, and re-up a dormant ask. The pipeline
+already did all of that, but only when something ran it. The monitor
+didn't include it, so it depended on a 10:00 task or a dashboard click.
+The re-up also waited 7 days.
+
+**What changed**
+
+- `rocky.py` `_monitor_litigation`: every monitor cycle starts
+  `--litigation --poll --follow-if-active` with Popen in the
+  **background**. If the previous run is still going, the cycle skips it,
+  and a non-zero exit is logged on the next cycle. It doesn't go in
+  `monitor_commands`, because a follow session (up to 45 min) would hit
+  the 15-min child timeout and stall LetterStream. The child gets
+  `PYINSTALLER_RESET_ENVIRONMENT=1`, since a follow session can outlive
+  the monitor across a new-build relaunch. Config `monitor_litigation`
+  (default true) is separate from `monitor_commands`, so it takes effect
+  without editing the Rocky laptop's config.json.
+- `litigation_updater._dispatch`: `--follow-if-active` follows only when
+  `chat_was_active()`, meaning a reply came in or a proposal, decision,
+  or re-up went out. Otherwise one pending ask would keep a follow
+  session, and the shared litigation lock, open around the clock, and
+  the 18:30 digest would exit "already running".
+- Re-up: `litigation_reup_hours` (default 24) supersedes
+  `litigation_reup_days`. The old key is honored only as 0 (off), since
+  deployed configs carry 7. Gated to weekdays within
+  `litigation_reup_window` [9, 17] local.
+- Intake retry cap (`_intake_failed`): a Claude failure still holds the
+  cursor, but after `litigation_intake_max_attempts` (6) tries the mail
+  is recorded in `state["intake_skipped"]`, the cursor moves on, and a
+  "Heads up" goes into the chat (`state["chat_alerts"]`, sent at the top
+  of `chat_cycle`). At a 10-min cadence, one unreadable mail would
+  otherwise block intake and re-bill Claude six times an hour. A success
+  clears the count. Smartsheet-unreachable still holds without a cap
+  (that's config, not the mail).
+- "No litigation intent — ignored" is logged once per mail
+  (`state["ignored_logged"]`). The newest mail is re-read every run
+  (cursor precision), which would have logged it every 10 minutes.
+- Tests: `tests/test_litigation_automation.py` (9). Suite 48 pass.
+
+**Open / watch-outs**
+
+- **Not deployed or verified live.** After build + deploy, the relaunch
+  logic picks up the new monitor. Expect "monitor: ... + litigation
+  (background)" in the banner and litigation intake/chat lines in
+  rocky.log every 10 min.
+- **Disable the scheduled `--litigation --poll` task** on the Rocky
+  laptop. It's harmless but redundant, and its unconditional follow
+  holds the lock for 10+ min.
+- Rocky laptop config still has `litigation_reup_days: 7`. That's fine,
+  it's now ignored.
+- Every cycle unpacks a fresh onefile copy for the litigation child (a
+  few seconds of disk work). Acceptable; revisit if the temp dir churns.
+- The 10/4 changes (follow after poll, HTML chat, length audit) were
+  also marked "Not yet deployed", so this deploy ships them too.
+
+---
+
 ## Session 2026-10-18 — Monitor relaunches itself on a new build
 
 James runs `rocky.exe --monitor` on the Rocky laptop straight from OneDrive

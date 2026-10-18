@@ -52,9 +52,11 @@
   ],
   "remy_digest_mailbox": "rocky@gallagherllp.com",
 
-  "_monitor_comment": "The Monitor (--monitor, 24/7 at boot). Every monitor_interval_minutes it runs monitor_commands as subprocesses (own locks/cursors/failure isolation), so certified-mail requests, YES replies, and Vault submissions get handled within minutes. Honors ROCKY STOP. Disable the 8:00 AM letterstream and hourly vault-mail/vault-inbox schedule entries once this runs (overlap is lock-safe, just redundant). Heavier jobs (vault-dropbox, litigation --poll, digests) stay on their own schedules; add a flag here to fold one in without a rebuild.",
+  "_monitor_comment": "The Monitor (--monitor, 24/7 at boot). Every monitor_interval_minutes it runs monitor_commands as subprocesses (own locks/cursors/failure isolation), so certified-mail requests, YES replies, and Vault submissions get handled within minutes. Honors ROCKY STOP. Disable the 8:00 AM letterstream and hourly vault-mail/vault-inbox schedule entries once this runs (overlap is lock-safe, just redundant). Heavier jobs (vault-dropbox, digests) stay on their own schedules; litigation --poll rides along in the background (monitor_litigation); add a flag here to fold one in without a rebuild.",
   "monitor_interval_minutes": 10,
   "monitor_commands": ["--letterstream", "--vault-mail", "--vault-inbox"],
+  "_monitor_litigation_comment": "Every monitor cycle also starts --litigation --poll --follow-if-active in the BACKGROUND (skipped while the last one is still running): new notices are proposed and replies answered within one interval, and the chat is followed live only while James is answering. false turns it off; then schedule --litigation --poll instead.",
+  "monitor_litigation": true,
 
   "_kill_switch_comment": "Email addresses authorized to send ROCKY STOP / ROCKY START commands.",
   "kill_switch_authorized": [
@@ -239,7 +241,11 @@
   "litigation_backfill_days": 7,
   "_litigation_scan_comment": "Scanned notices: a PDF with no text layer (a stamped complaint, a faxed demand) has its first litigation_scan_pdf_pages pages attached to the classify/draft calls so Claude reads the pages themselves — the same path the Vault uses, wired in 2026-09-16 after a scanned King County complaint came back as 'text not extractable'. Default 10 (the Vault's 4 is enough to recognize a document; a claims entry needs the allegations). Lower it to trim tokens, raise it if captions and counts routinely run long.",
   "litigation_scan_pdf_pages": 10,
-  "litigation_reup_days": 7,
+  "_litigation_reup_comment": "An ask left unanswered for litigation_reup_hours (default 24; 0 = off) is re-posted, weekdays only, within litigation_reup_window local hours [start, end). Supersedes litigation_reup_days, which now only matters as 0 (off).",
+  "litigation_reup_hours": 24,
+  "litigation_reup_window": [9, 17],
+  "_litigation_intake_comment": "A notice Claude fails on holds the mail cursor and retries next run; after litigation_intake_max_attempts tries (about an hour at the monitor pace) Rocky moves past it and says so in the chat.",
+  "litigation_intake_max_attempts": 6,
   "_litigation_follow_comment": "After every --poll with an ask waiting, Rocky stays on the Litigation Updates chat (checking every 15s) so each YES brings the next proposal immediately. Ends after litigation_follow_idle_minutes with no replies or litigation_follow_minutes total; keep the total under the poll interval. litigation_follow_after_poll: false (or --no-follow) turns it off.",
   "litigation_follow_after_poll": true,
   "litigation_follow_minutes": 45,

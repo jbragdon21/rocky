@@ -20,7 +20,7 @@ Module: `litigation_updater.py`, dispatched as `rocky.py --litigation ...`.
 
 | Command | When | What it does |
 |---|---|---|
-| `--litigation --poll [--dry-run] [--backfill-days N] [--no-follow]` | scheduled (10:00 suggested; hourly is better — see below) | Inbox intake pass + Teams chat cycle, then — if any ask is waiting — a follow session: the chat is checked every 15s so each YES/NO gets the next proposal at once. Ends after 10 min with no replies (`litigation_follow_idle_minutes`) or 45 min total (`litigation_follow_minutes`). While it runs it holds the litigation lock, so other `--litigation` commands started then exit as "already running". A reply that comes after the session ends waits for the next poll, which is why hourly beats once a day |
+| `--litigation --poll [--dry-run] [--backfill-days N] [--no-follow] [--follow-if-active]` | **every monitor cycle** (see "Running unattended"); by hand as needed | Inbox intake pass + Teams chat cycle, then — if any ask is waiting — a follow session: the chat is checked every 15s so each YES/NO gets the next proposal at once. Ends after 10 min with no replies (`litigation_follow_idle_minutes`) or 45 min total (`litigation_follow_minutes`). While it runs it holds the litigation lock, so other `--litigation` commands started then exit as "already running". A reply that comes after the session ends waits for the next poll. `--follow-if-active` (what the monitor passes) follows only when the chat just moved: a reply came in, or a proposal or re-up went out |
 | `--litigation --chat` | as needed | Teams chat cycle only (replies, proposals, doc/report requests) |
 | `--litigation --chat --follow [--minutes N]` | cleanup sessions | Live session: polls the chat every 15s so each YES/NO gets an immediate ack + the next proposal; exits after N minutes (default 30) or once the queue drains and the chat goes quiet |
 | `--litigation --digest [--date YYYY-MM-DD]` | 18:30 daily | Drafts the day's claims activity into James's **Drafts** (quiet days draft nothing) |
@@ -30,6 +30,31 @@ Module: `litigation_updater.py`, dispatched as `rocky.py --litigation ...`.
 | `--litigation --voice-rebuild` | initially + occasionally | Rebuilds the four drafting voices from the sheets, past audit reports, and the `voices\seeds\` exemplar documents |
 | `--litigation --strip-formatting [--apply]` | one-time | Clears all bolding/highlighting/column-default formats from all three sheets (values and formulas kept). Dry-run without `--apply` |
 | `--litigation --status` | anytime | Config readiness, cursors, pending asks, vault counts |
+
+### Running unattended (since 2026-10-18)
+
+The 24/7 monitor (`rocky.exe --monitor`) starts
+`--litigation --poll --follow-if-active` in the **background** every
+cycle (`monitor_interval_minutes`, 10). Nothing needs to be run by hand:
+
+- **New mail** is checked every 10 minutes. A notice or forward becomes a
+  queued ask, and it's proposed in the chat as soon as nothing else is
+  waiting on you.
+- **Your replies** are picked up within 10 minutes. A reply, or a fresh
+  proposal or re-up, starts a follow session, so for the next 10 minutes
+  (up to 45) each YES/NO is answered within about 15 seconds.
+- **Re-ups:** an ask unanswered for a day is re-posted (see below).
+- If the previous litigation run is still going (a follow session), the
+  cycle skips it rather than stacking a second one. Background, because a
+  follow session outlasts the monitor's 15-minute child timeout and would
+  hold up LetterStream behind it.
+- `monitor_litigation: false` turns this off. The old 10:00/hourly
+  `--litigation --poll` scheduled task is now redundant (overlap is
+  lock-safe; it just exits "already running"), so disable it.
+- Watch-out: the litigation commands share one lock, so a `--digest`,
+  `--learn`, or dashboard litigation button started *while you're
+  mid-conversation in the chat* exits "already running". On a quiet day
+  the lock is held only for the few seconds a poll takes.
 
 Dashboard buttons: **Litigation Updater** (`--litigation --poll`),
 **Litigation Digest** (`--litigation-digest` alias), **Litigation Learn**
@@ -76,11 +101,23 @@ lost — the same mail is retried next run.
 
 **One live ask at a time.** A proposal sits in the chat until it gets a
 YES or NO; everything detected after it waits in the queue. An ask left
-unanswered for `litigation_reup_days` (default **7**; `0` turns it off)
+unanswered for `litigation_reup_hours` (default **24**; `0` turns it off)
 is re-posted with "Still waiting on this one (first asked …) — N more
-items queued behind it", and again every week after that. Same `[L####]`
-tag, so a YES to either copy decides it. `--litigation --status` prints
-the pending ask, its date, and how many times it's been re-upped.
+items queued behind it", and again every day after that. Re-ups go out
+only on weekdays within `litigation_reup_window` (default 9:00–17:00
+local), so one due overnight or on a weekend waits for the next workday
+morning. Same `[L####]` tag, so a YES to either copy decides it.
+`--litigation --status` prints the pending ask, its date, and how many
+times it's been re-upped. (Until 2026-10-18 this was
+`litigation_reup_days`, default 7. That key is now ignored unless it's 0,
+because the deployed configs still carry the 7.)
+
+**A mail Claude can't process** (classification, claim matching, or
+drafting fails) holds the cursor and is retried next run, so an API blip
+loses nothing. After `litigation_intake_max_attempts` tries (default 6,
+about an hour at the monitor's pace) Rocky moves past it, so it can't
+block every notice behind it, and posts a "Heads up" in the chat naming
+the email. The mail stays in rocky@'s Inbox; forward it again to retry.
 
 **One ask per email.** A mail that already has a live or executed ask is
 skipped before the attachment download and the Claude call; only a
@@ -280,9 +317,8 @@ internal-only outbound; the digest is a *draft* in James's mailbox
    fixes arrive in the Teams chat one at a time; approve/decline each.
    Declines and corrections are learning material.
 5. Weekly `--litigation --learn` — chat feedback becomes brain rules.
-6. Schedule for production: poll 10:00 (add a second afternoon run via
-   Task Scheduler if desired), digest 18:30, learn weekly (e.g. Friday
-   17:00).
+6. Schedule for production: the monitor handles the poll (see "Running
+   unattended"); digest 18:30, learn weekly (e.g. Friday 17:00).
 
 ## Troubleshooting
 

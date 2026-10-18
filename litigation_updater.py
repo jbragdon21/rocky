@@ -1538,6 +1538,46 @@ def collapse_duplicate_asks(paths: dict, state: dict) -> list[dict]:
     return retired
 
 
+def _mail_id(msg: dict) -> str:
+    return msg.get("internetMessageId") or msg.get("id") or ""
+
+
+def _intake_failed(config: dict, paths: dict, state: dict, msg: dict,
+                   step: str) -> bool:
+    """A Claude step failed on this mail. True = hold the cursor and retry
+    next run (an API blip shouldn't lose a notice). After
+    `litigation_intake_max_attempts` tries (default 6, about an hour at the
+    monitor's pace) give up: False, the mail is remembered as skipped so a
+    re-read can't restart the count, and James is told in the chat. One
+    mail Claude can't read must not stall every notice behind it."""
+    key = _mail_id(msg)
+    fails = state.setdefault("intake_failures", {})
+    n = fails[key] = int(fails.get(key) or 0) + 1
+    limit = int(config.get("litigation_intake_max_attempts") or 6)
+    subject = (msg.get("subject") or "(no subject)")[:120]
+    if n < limit:
+        log.warning(f"[litigation] {step} failed on {subject!r} (try {n} of "
+                    f"{limit}) — cursor held; this mail retries next run")
+        return True
+    fails.pop(key, None)
+    skipped = state.setdefault("intake_skipped", [])
+    skipped.append(key)
+    del skipped[:-200]
+    sender = _sender_address(msg) or "unknown sender"
+    received = (msg.get("receivedDateTime") or "")[:10]
+    log.error(f"[litigation] {step} failed {n} times on {subject!r} — "
+              f"skipping it and telling James")
+    log_event(paths, "intake_gave_up", step=step, subject=subject,
+              sender=sender, attempts=n)
+    state.setdefault("chat_alerts", []).append(
+        f"Heads up: I couldn't process an email after {n} tries ({step} "
+        f"failed), so I've moved past it.\n\n**{subject}**\nFrom {sender}"
+        + (f", received {received}" if received else "")
+        + "\n\nIt's still in my inbox. Handle it by hand, or forward it to "
+          "me again to retry.")
+    return False
+
+
 def _msg_ref(msg: dict, mailbox: str) -> dict:
     return {"mailbox": mailbox, "message_id": msg.get("id"),
             "subject": msg.get("subject"),
@@ -1597,11 +1637,20 @@ def intake_pass(client, graph_token: str, ss_token: str | None, config: dict,
             # Say WHY mail was passed over, so "I forwarded that claim,
             # where is it?" is answerable from rocky.log (capped to stay
             # sane on a wide backfill). Same reason the Vault logs it.
-            if ignored_logged < 10:
+            # Logged once per mail: the newest one is re-read every run
+            # until newer mail lands (see _ask_for_mail).
+            seen = state.setdefault("ignored_logged", [])
+            if ignored_logged < 10 and _mail_id(msg) not in seen:
                 log.info(f"[litigation] no litigation intent — ignored: "
                          f"{(msg.get('subject') or '')[:80]!r} "
                          f"(from {_sender_address(msg) or '?'})")
                 ignored_logged += 1
+                seen.append(_mail_id(msg))
+                del seen[:-50]
+            state["mail_cursor"] = msg.get("receivedDateTime") or state.get("mail_cursor")
+            continue
+
+        if _mail_id(msg) in (state.get("intake_skipped") or []):
             state["mail_cursor"] = msg.get("receivedDateTime") or state.get("mail_cursor")
             continue
 
@@ -1625,9 +1674,10 @@ def intake_pass(client, graph_token: str, ss_token: str | None, config: dict,
         if intent in ("notice", "add"):
             meta = classify_notice(client, config, paths, docs, ctx)
             if meta is None:
-                log.warning("[litigation] classification failed — cursor held; "
-                            "this mail retries next run")
-                break
+                if _intake_failed(config, paths, state, msg, "classification"):
+                    break
+                state["mail_cursor"] = msg.get("receivedDateTime") or state.get("mail_cursor")
+                continue
             home = spec_for_entity(config, meta.get("entity"))
             # Already on the sheet, or already waiting from another email?
             # A failure here never blocks the notice — it's proposed as-is.
@@ -1665,8 +1715,10 @@ def intake_pass(client, graph_token: str, ss_token: str | None, config: dict,
                 break
             corr = correlate_claim(client, config, paths, sheets, ctx, hint)
             if corr is None:
-                log.warning("[litigation] correlation failed — cursor held")
-                break
+                if _intake_failed(config, paths, state, msg, "matching it to a claim"):
+                    break
+                state["mail_cursor"] = msg.get("receivedDateTime") or state.get("mail_cursor")
+                continue
             entry, row = _locate_row(sheets, corr.get("row_id"))
             if row is None or float(corr.get("confidence") or 0) < CORRELATE_FLOOR:
                 queue_ask(paths, state, {
@@ -1686,9 +1738,10 @@ def intake_pass(client, graph_token: str, ss_token: str | None, config: dict,
                     note = verbatim or draft_closure_note(
                         client, config, paths, row_dict, ctx, docs)
                     if note is None:
-                        log.warning("[litigation] closure-note draft failed — "
-                                    "cursor held")
-                        break
+                        if _intake_failed(config, paths, state, msg, "drafting the closure note"):
+                            break
+                        state["mail_cursor"] = msg.get("receivedDateTime") or state.get("mail_cursor")
+                        continue
                     queue_ask(paths, state, {
                         "kind": "closure", "msg": _msg_ref(msg, mailbox),
                         "row_id": row["id"], "claim": claim, "note": note,
@@ -1700,9 +1753,10 @@ def intake_pass(client, graph_token: str, ss_token: str | None, config: dict,
                                          row_dict, ctx, docs,
                                          update_cols=entry["update_columns"])
                     if cells is None:
-                        log.warning("[litigation] update draft failed — "
-                                    "cursor held")
-                        break
+                        if _intake_failed(config, paths, state, msg, "drafting the update"):
+                            break
+                        state["mail_cursor"] = msg.get("receivedDateTime") or state.get("mail_cursor")
+                        continue
                     queue_ask(paths, state, {
                         "kind": "update", "msg": _msg_ref(msg, mailbox),
                         "row_id": row["id"], "claim": claim, "cells": cells,
@@ -1713,6 +1767,7 @@ def intake_pass(client, graph_token: str, ss_token: str | None, config: dict,
                     })
                 counts["queued"] += 1
 
+        (state.get("intake_failures") or {}).pop(_mail_id(msg), None)
         state["mail_cursor"] = msg.get("receivedDateTime") or state.get("mail_cursor")
 
     if not messages:
@@ -2522,6 +2577,14 @@ def chat_cycle(config: dict, paths: dict, dry_run: bool) -> dict:
                  f"you here — no need to answer it" if live else "")
               + ". Nothing was written to the sheet.")
         result["duplicates_cleared"] = len(retired)
+
+    # --- Notes from intake (e.g. a mail it had to give up on). -------------
+    alerts = state.get("chat_alerts") or []
+    while alerts and _send(alerts[0]):
+        alerts.pop(0)
+        save_state(paths, state)
+    if not alerts:
+        state.pop("chat_alerts", None)
 
     # --- Handle the owner's messages, oldest first. -------------------------
     # Only the owner decides asks (fail-safe when owner_id is unresolved).
@@ -3878,7 +3941,7 @@ def _dispatch(config: dict, paths: dict, dry_run: bool) -> None:
             not config.get("litigation_follow_after_poll", True):
         return
     if "--follow-if-active" in sys.argv and \
-            not chat_was_active(polled.get("chat") or {}):
+            not chat_was_active((polled or {}).get("chat") or {}):
         return
     if any(a.get("status") in ("queued", "proposed")
            for a in (load_state(paths).get("asks") or [])):
