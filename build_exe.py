@@ -84,6 +84,7 @@ def build_rocky():
         "--add-data", f"{ROOT / 'mailing_affidavits.py'};.",
         "--add-data", f"{ROOT / 'letterstream.py'};.",
         "--add-data", f"{ROOT / 'multifamily_digest.py'};.",
+        "--add-data", f"{ROOT / 'kirsten_digest.py'};.",
         "--add-data", f"{ROOT / 'pacer_monitor.py'};.",
         "--add-data", f"{ROOT / 'courtlistener.py'};.",
         "--add-data", f"{ROOT / 'pacer_api.py'};.",

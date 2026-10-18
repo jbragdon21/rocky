@@ -24,6 +24,71 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-10-18 (6) — Kirsten Digest (Weekly Gallagher-Bozzuto Litigation Report)
+
+James asked for a weekly Sunday 6 PM report to the client, in the Maple
+digest's layout: week in review and next steps per case, from the case
+activity logs. Internally the "Kirsten Digest", externally the "Weekly
+Gallagher-Bozzuto Litigation Report".
+
+**What changed**
+
+- New `kirsten_digest.py`, `--kirsten-digest [--days N] [--dry-run]
+  [--force] [RRID-XXXX ...]`. Cases come from the Rocky Case Index: any
+  header containing "kirsten", value yes/y/x/true. Closed-sheet rows are
+  skipped. One Claude call per case (activity.jsonl for the window, plus
+  the status memo and CLAUDE.md overview as background) returns status,
+  week, and next_steps. Rendered with the Maple card layout, colors in
+  `THEME` (placeholder Gallagher navy; James is sending real theming).
+- Drafted into jbragdon's Drafts, To kwoelper@bozzuto.com (Kirsten
+  Woelper), cc scowin@ and jdugan@. Config keys `kirsten_digest_to`,
+  `_cc`, `_mailbox`, `_model`. Archive copy in
+  `<cases_root>\_Kirsten Digests\YYYY-MM-DD.html`.
+  `state\kirsten_digest.json` blocks a second draft the same day without
+  `--force`.
+- Dashboard: a "Kirsten Digest" entry (Litigation group), recommended,
+  WEEKLY SUN 18:00. `create_task` gained `days` (schtasks `/d`). A WEEKLY
+  task without a day falls back to the command's `sched_days`, because a
+  bare `/sc WEEKLY` means the weekday it was created on.
+- `find_folder` breaks ties by file name. The share has three
+  `(RRID-0040)` folders and two `(RRID-0036)` folders, and Board is
+  RRID-0041 in the index but 0040 on disk.
+- Tests `tests/test_kirsten_digest.py` (12). Suite 75 pass.
+
+**Decisions**
+
+- The audience is the client. The prompt keeps out Rocky, activity logs,
+  file housekeeping, and Gallagher billing/e-billing, and writes
+  Kirsten's own actions as "you". Housekeeping event types never reach
+  the prompt.
+- Week bullets carry their event date, and code drops any dated before
+  the week started. Activity recorded this week often describes older
+  events, e.g. the 10/8 Bulgin MTD reached the file on 10/12. The prompt
+  alone didn't stop Sonnet 4.5 from reporting it.
+- Every flagged case gets a card each week. A quiet case reads "No
+  significant developments this week." A failed case gets a red
+  fill-in-before-sending line.
+
+**Verified**
+
+- Dry run on six real cases (Eden, Ghumman, District Dogs, Bulgin,
+  Hettinger, Wall) with the column patched in memory. Content is good.
+  One status line called the Bulgin MTD "fully briefed" when the
+  opposition isn't due until 11/19, so James must read every draft
+  before sending.
+
+**Open**
+
+- **The case index has no Kirsten Digest? column yet** (last saved
+  10/15; Excel had it open, so the dev laptop can't read it,
+  PermissionError). Until it exists the run logs a warning and drafts
+  nothing.
+- Theming from James, then edit `THEME`.
+- Not built or deployed. After `python build_exe.py`, use the dashboard
+  on the Rocky laptop: Kirsten Digest → 📅, or Set up recommended.
+
+---
+
 ## Session 2026-10-18 (5) — Dashboard: To-Do Lists group, fewer buttons
 
 James trimmed the dashboard's Run list.

@@ -133,6 +133,7 @@ def load_config() -> dict:
 #                  "--litigation --poll")
 #   sched_time     "HH:MM" default start time (None = no sensible default)
 #   sched_freq     DAILY | MINUTE | ... (default DAILY when a time is set)
+#   sched_days     WEEKLY only: schtasks /d days, e.g. "SUN" or "MON,THU"
 #   sched_interval minutes between runs, for MINUTE frequency
 #   recommended    include in the one-click "recommended daily schedule"
 #                  (True only for commands with a *documented* run time)
@@ -185,6 +186,9 @@ ROCKY_COMMANDS = [
     {"flag": "maple-digest",  "label": "Maple Digest",    "group": "Maple", "dry_run": True,  "desc": "Step 3 — put the client update in James's Drafts to send", "sched_time": "17:40", "recommended": True},
     {"flag": "litigation",    "label": "Litigation Updater", "group": "Litigation", "dry_run": True, "args": ["--poll"], "desc": "Check for Bozzuto legal notices & claim requests, propose over Teams", "sched_time": "10:00"},
     {"flag": "litigation-digest", "label": "Litigation Digest", "group": "Litigation", "dry_run": True, "desc": "Draft the day's claims activity into James's Drafts", "sched_time": "18:30"},
+    # Weekly, Sunday 6 PM: the Kirsten Digest, sent to the client as the
+    # "Weekly Gallagher-Bozzuto Litigation Report" (James's Drafts).
+    {"flag": "kirsten-digest", "label": "Kirsten Digest", "group": "Litigation", "dry_run": True, "desc": "Weekly Gallagher-Bozzuto Litigation Report — week in review and next steps for the cases marked for Kirsten, into James's Drafts", "sched_time": "18:00", "sched_freq": "WEEKLY", "sched_days": "SUN", "recommended": True},
     {"flag": "litigation-learn", "label": "Litigation Learn", "group": "Litigation", "dry_run": False, "desc": "Fold the week's Teams feedback into the litigation brain"},
     # LetterStream's documented slot is 8:00 AM, but it's deliberately NOT
     # "recommended": the --monitor loop already runs it every 10 minutes
@@ -794,6 +798,7 @@ def toggle_task(task_name: str, enable: bool) -> bool:
 _TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 _NAME_RE = re.compile(r"^[A-Za-z0-9 _-]{1,80}$")
 _VALID_FREQ = {"DAILY", "WEEKLY", "HOURLY", "MINUTE", "ONCE"}
+_DAYS_RE = re.compile(r"^(MON|TUE|WED|THU|FRI|SAT|SUN)(,(MON|TUE|WED|THU|FRI|SAT|SUN))*$")
 
 
 def _run_schtasks(args: list[str]) -> tuple[bool, str]:
@@ -826,6 +831,7 @@ def create_task(
     interval: int | None = None,
     dry_run: bool = False,
     name: str | None = None,
+    days: str | None = None,
 ) -> tuple[bool, str, str]:
     """
     Create a Windows scheduled task that runs a Rocky command.
@@ -844,6 +850,12 @@ def create_task(
     needs_time = frequency in {"ONCE", "DAILY", "WEEKLY"}
     if needs_time and not _TIME_RE.match(time_str or ""):
         return False, "", "Time must be HH:MM (24-hour)."
+    # WEEKLY without /d means "today's weekday", so fall back to the
+    # command's documented day rather than whenever the form was submitted.
+    if frequency == "WEEKLY":
+        days = (days or _COMMANDS_BY_FLAG[flag].get("sched_days") or "").upper()
+        if days and not _DAYS_RE.match(days):
+            return False, "", "Days must be like SUN or MON,THU."
 
     label = _COMMANDS_BY_FLAG[flag]["label"]
     display = (name or label).strip()
@@ -859,6 +871,8 @@ def create_task(
     args = ["/create", "/tn", full_name, "/tr", tr, "/sc", frequency, "/it", "/f"]
     if needs_time:
         args += ["/st", time_str]
+    if frequency == "WEEKLY" and days:
+        args += ["/d", days]
     if frequency in {"HOURLY", "MINUTE"} and interval:
         args += ["/mo", str(int(interval))]
     # No "/rl HIGHEST" on purpose: it forces the create to require an elevated
@@ -909,6 +923,7 @@ def setup_recommended() -> dict:
             time_str=cmd.get("sched_time", ""),
             frequency=cmd.get("sched_freq", "DAILY"),
             interval=cmd.get("sched_interval"),
+            days=cmd.get("sched_days"),
         )
         (created if ok else failed).append(
             cmd["label"] if ok else f"{cmd['label']} ({msg})"
@@ -1037,6 +1052,7 @@ def api_schedule_create():
         interval=data.get("interval"),
         dry_run=bool(data.get("dry_run", False)),
         name=data.get("name"),
+        days=data.get("days"),
     )
     code = 200 if ok else 400
     return jsonify({"success": ok, "name": full_name, "message": msg}), code

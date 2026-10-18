@@ -1999,7 +1999,9 @@ main {
         const lines = recs.map(c => {
             const when = c.sched_freq === "MINUTE"
                 ? `every ${c.sched_interval} min`
-                : `daily ${c.sched_time}`;
+                : c.sched_freq === "WEEKLY"
+                    ? `weekly ${c.sched_days || ""} ${c.sched_time}`
+                    : `daily ${c.sched_time}`;
             return `  • ${c.label} — ${when}`;
         }).join("\n");
         if (!confirm(`Create the recommended schedule?\n\n${lines}\n\nExisting tasks are left untouched.`))
