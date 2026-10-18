@@ -24,6 +24,41 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-10-18 (8) — Activity log: Litigation Scanner, quiet mail, a leader on every line
+
+James: the live log (Plain mode) showed the monitor's litigation poll as
+an intake line and a chat line every 10 minutes, certified mail as a
+string of zero counts, and some lines (Steve's to-do list) with no purple
+process name.
+
+**What changed**
+
+- `templates/dashboard.html` — `litigationPlain()`: each poll's
+  `intake: {...}` + `chat: {...}` pair renders as ONE **Litigation
+  Scanner** line (the intake line shows until its chat line arrives, then
+  the combined line replaces it). `mailPlain()`: the certified-mail
+  `run complete` tally shows only its non-zero parts. Quiet checks of
+  both fold into a rolling "nothing new" line, the way the Vault's do
+  (the Vault heartbeat now shares one `quietLine()` helper). In-flight
+  mailings alone count as quiet; the rolling line notes how many are
+  still on the way.
+- `rocky.py` — `_JobTagFilter` on the root handlers stamps every
+  untagged line with the running command (`[steve-todo] To-do list sent
+  ...`); main() sets it beside the instance lock. Lines that already
+  open with a `[tag]` keep it. The dashboard maps the job tags to
+  friendly names (`processName()`, incl. any `<name>-todo` and
+  `inbox-<user>`), and anything still untagged (old lines, pre-command
+  messages) leads with "Rocky".
+
+**Watch-outs**
+
+- Technical mode now shows the job tag on formerly untagged lines.
+- Built from a clean copy of this commit: the working tree held another
+  session's uncommitted Kirsten podcast work in rocky.py and
+  build_exe.py, which is not in these exes.
+
+---
+
 ## Session 2026-10-18 (6) — Kirsten Digest (Weekly Gallagher-Bozzuto Litigation Report)
 
 James asked for a weekly Sunday 6 PM report to the client, in the Maple

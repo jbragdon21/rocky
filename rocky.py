@@ -297,6 +297,27 @@ logging.basicConfig(
     ],
 )
 log = logging.getLogger("rocky")
+
+
+class _JobTagFilter(logging.Filter):
+    """Prefix untagged lines with the running job ("[steve-todo] ...").
+
+    Every job writes the same rocky.log and the format names no writer, so
+    without this the dashboard can't say whose a line like "To-do list sent
+    to ..." is. Lines that already open with a [tag] keep it. main() sets
+    `tag` once it knows the command."""
+    tag = ""
+
+    def filter(self, record):
+        if self.tag and isinstance(record.msg, str) \
+                and not record.msg.startswith("["):
+            record.msg = f"[{self.tag}] {record.msg}"
+        return True
+
+
+_job_tag = _JobTagFilter()
+for _h in logging.getLogger().handlers:
+    _h.addFilter(_job_tag)
 # pypdf logs recoverable parse glitches in malformed PDFs ("FloatObject ...
 # invalid; use 0.0 instead") at WARNING; extraction still succeeds, so keep
 # them off the dashboard's Heads-up feed.
@@ -5291,6 +5312,7 @@ def main():
                    or "--mail" in sys.argv else "pacer")
     if command:
         lock_fh = acquire_instance_lock(command)  # noqa: F841 — must stay alive
+        _job_tag.tag = command
 
     if inbox_flag:
         import inbox_cleaner

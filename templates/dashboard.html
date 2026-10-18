@@ -1077,7 +1077,37 @@ main {
         "affidavits": "Certified mail",
         "monitor": "Monitor",
         "vault": "The Vault",
+        "kirsten": "Kirsten Digest",
+        "litigation": "Litigation Updater",
+        // Job tags: rocky.py stamps untagged lines with the command that
+        // wrote them (_JobTagFilter), so every line names its job.
+        "daily-cases": "Daily cases",
+        "daily-run": "Daily run",
+        "daily-digest": "Daily digest",
+        "ella-digest": "Ella's case digest",
+        "pending-llt": "Landlord-tenant drafts",
+        "maple-pma-activity": "Maple — email collection",
+        "kirsten-digest": "Kirsten Digest",
+        "multifamily-digest": "Multifamily digest",
+        "llt-watch": "LLT Watch",
+        "mf-brain": "MF Brain",
+        "vault-digest": "The Vault",
+        "vault-dropbox": "The Vault",
+        "vault-mail": "The Vault",
+        "vault-inbox": "The Vault",
+        "letterstream": "Certified mail",
+        "pacer": "PACER",
+        "pacer-mail": "PACER requests",
     };
+
+    function processName(tag) {
+        if (PROCESS_NAMES[tag]) return PROCESS_NAMES[tag];
+        let m;
+        if ((m = tag.match(/^(\w+)-todo$/)))
+            return `${m[1][0].toUpperCase()}${m[1].slice(1)}'s to-do list`;
+        if ((m = tag.match(/^inbox-(\w+)$/))) return `Inbox Cleaner (${m[1]})`;
+        return null;
+    }
 
     // Lines that are pure noise in Plain mode.
     const PLAIN_HIDE = [
@@ -1153,10 +1183,7 @@ main {
             "Couldn't check on mailing $1 — will try again next run."],
         [/^LetterStream API not configured — skipping the pull.*$/i,
             "The LetterStream connection isn't set up — only emailed proofs are being processed."],
-        [/^DRY-RUN run complete — inbox (\d+), in-flight (\d+), letterstream (\d+), reminders sent: (\d+)$/i,
-            "✓ Certified-mail test sweep done (nothing changed) — $1 email(s), $2 mailing(s), $3 proof(s), $4 reminder(s)."],
-        [/^run complete — inbox (\d+), in-flight (\d+), letterstream (\d+), reminders sent: (\d+)$/i,
-            "✓ Certified-mail sweep done — $1 email(s) handled, $2 mailing(s) checked, $3 proof(s) pulled, $4 reminder(s) sent."],
+        // (The sweep's "run complete" tally is handled by mailPlain().)
 
         // --- Digest / email jobs ---
         [/Wrote digest archive:?\s*(.+)$/i,            "Saved a copy of the summary ($1)."],
@@ -1211,7 +1238,32 @@ main {
         "inbox": "James Inbox", "vault-mail": "Rocky Inbox", "dropbox": "Dropbox",
     };
 
-    let vaultQuiet = null;   // { entry, checks, since, day } — the rolling no-news line
+    // Rolling "nothing new" lines, one per sweep (vault, mail, litigation):
+    // a quiet run retires the previous quiet line and counts up. A result,
+    // a problem, or midnight starts a fresh one.
+    const quiet = {};   // key -> { entry, checks, since, day, sums }
+
+    function quietLine(key, entry, add = {}) {
+        const day = entry.raw.slice(0, 10);
+        const q = quiet[key];
+        if (q && q.day === day) {
+            q.entry._plain = { hide: true, html: "" };
+            if (q.entry._el) q.entry._el.style.display = "none";
+            q.entry = entry;
+            q.checks += 1;
+            for (const k in add) q.sums[k] = (q.sums[k] || 0) + add[k];
+        } else {
+            quiet[key] = { entry, checks: 1, since: prettyTime(entry.raw), day, sums: { ...add } };
+        }
+        return quiet[key];
+    }
+
+    // " 14 times since 8:00 AM" (empty for the first check of a run of them)
+    function timesSince(q) {
+        return q.checks === 1 ? "" : ` ${q.checks} times since ${q.since}`;
+    }
+
+    function plural(n, word) { return `${n} ${word}${n === 1 ? "" : "s"}`; }
 
     function parseCounts(s) {
         const out = {};
@@ -1236,23 +1288,8 @@ main {
     }
 
     function vaultHeartbeat(entry) {
-        const day = entry.raw.slice(0, 10);
-        if (vaultQuiet && vaultQuiet.day === day) {
-            // Retire the previous rolling line; this one replaces it.
-            const prev = vaultQuiet.entry;
-            prev._plain = { hide: true, html: "" };
-            if (prev._el) prev._el.style.display = "none";
-            vaultQuiet = { ...vaultQuiet, entry, checks: vaultQuiet.checks + 1 };
-        } else {
-            vaultQuiet = { entry, checks: 1, since: prettyTime(entry.raw), day };
-        }
-        const n = vaultQuiet.checks;
-        return {
-            msg: n === 1
-                ? "Checked for new documents — nothing new."
-                : `Checked for new documents ${n} times since ${vaultQuiet.since} — nothing new.`,
-            cls: "quiet",
-        };
+        const q = quietLine("vault", entry);
+        return { msg: `Checked for new documents${timesSince(q)} — nothing new.`, cls: "quiet" };
     }
 
     // Returns { hide: true }, { msg, cls? }, or null (fall through to the
@@ -1260,11 +1297,11 @@ main {
     function vaultPlain(msg, level, entry) {
         let m;
         if ((m = msg.match(/^(DRY-RUN )?filed: '(.+)' -> (.+)$/))) {
-            vaultQuiet = null;
+            delete quiet.vault;
             return { msg: (m[1] ? "Test run — would file " : "Filed ") + describeFiled(m[3]) };
         }
         if ((m = msg.match(/^(DRY-RUN )?needs_review: '(.+)' -> .+$/))) {
-            vaultQuiet = null;
+            delete quiet.vault;
             return {
                 msg: `${m[1] ? "Test run — would set aside" : "Set aside"} “${m[2]}” for review — couldn't tell where it belongs.`,
                 cls: "attn",
@@ -1273,18 +1310,116 @@ main {
         if ((m = msg.match(/^(inbox|vault-mail|dropbox): \{(.*)\}$/))) {
             const c = parseCounts(m[2]);
             if (!c.filed && !c.needs_review) return vaultHeartbeat(entry);
-            vaultQuiet = null;
+            delete quiet.vault;
             return { msg: `✓ ${VAULT_SOURCES[m[1]]} sweep: ${tallyText(c)}.` };
         }
         if ((m = msg.match(/^ingest-folder (DRY-RUN )?complete: \{(.*)\}$/))) {
-            vaultQuiet = null;
+            delete quiet.vault;
             const c = parseCounts(m[2]);
             return { msg: `✓ Folder import ${m[1] ? "test run " : ""}done — ${c.files || 0} file(s) looked at: ${tallyText(c)}.` };
         }
-        if (level !== "info") { vaultQuiet = null; return null; }
+        if (level !== "info") { delete quiet.vault; return null; }
         // Manual jobs that end in a one-line result keep it.
         if (/^(cleanup complete|reclassify-review .*complete|digest\b)/.test(msg)) return null;
         return { hide: true };
+    }
+
+    // --- Certified mail: the sweep's tally, activity only ---
+    //
+    // "run complete — inbox 0, in-flight 2, letterstream 0, reminders
+    // sent: 0" every 10 minutes from the monitor. Only the non-zero parts
+    // show; a run that handled no email, pulled no proof and sent no
+    // reminder folds into the rolling line. Checking on mailings already
+    // in the mail is not news, so in-flight alone counts as quiet.
+    function mailPlain(msg, level, entry) {
+        const m = msg.match(/^(DRY-RUN )?run complete — inbox (\d+), in-flight (\d+), letterstream (\d+), reminders sent: (\d+)$/i);
+        if (!m) {
+            if (level !== "info") delete quiet.mail;
+            return null;
+        }
+        const [inbox, flights, pulls, reminders] = m.slice(2).map(Number);
+        const test = m[1] ? "Test sweep (nothing changed) — " : "";
+        if (!inbox && !pulls && !reminders) {
+            const q = quietLine("mail", entry);
+            const out = flights ? `; ${plural(flights, "mailing")} still on the way` : "";
+            return { msg: `${test}Checked certified mail${timesSince(q)} — nothing new${out}.`, cls: "quiet" };
+        }
+        delete quiet.mail;
+        const parts = [];
+        if (inbox)     parts.push(`${plural(inbox, "email")} handled`);
+        if (pulls)     parts.push(`${plural(pulls, "proof")} of mailing pulled`);
+        if (reminders) parts.push(`${plural(reminders, "reminder")} sent`);
+        return { msg: `✓ ${test}${parts.join(", ")}.` };
+    }
+
+    // --- Litigation Scanner: one line per check ---
+    //
+    // Each poll logs "intake: {...}" (rocky@ mail read for legal notices and
+    // claim requests) then "chat: {...}" (the Teams chat with James). Plain
+    // mode shows the pair as one "Litigation Scanner" line: the intake line
+    // shows until its chat line arrives, then the combined line replaces
+    // it. Checks with nothing to act on fold into the rolling line.
+    const SCANNER = "Litigation Scanner";
+    let litIntake = null;   // { entry, c } — the intake line awaiting its chat line
+
+    // Python dict repr -> { key: int | string | [strings] }
+    function parseDict(s) {
+        const out = {};
+        for (const m of s.matchAll(/'(\w+)':\s*(-?\d+|\[[^\]]*\]|'[^']*')/g)) {
+            const v = m[2];
+            out[m[1]] = /^-?\d+$/.test(v) ? parseInt(v, 10)
+                      : v.startsWith("[") ? [...v.matchAll(/'([^']*)'/g)].map(x => x[1])
+                      : v.slice(1, -1);
+        }
+        return out;
+    }
+
+    function intakeText(c) {
+        const read = `Read ${plural(c.scanned || 0, "new email")}`;
+        return c.queued ? `${read} — ${plural(c.queued, "update")} queued for your OK` : read;
+    }
+
+    function chatParts(c) {
+        const parts = [];
+        if (c.error)              parts.push(`Teams chat skipped (${c.error.replace(/_/g, " ")})`);
+        if (c.inbound)            parts.push(`${plural(c.inbound, "new Teams message")}`);
+        if (c.decided)            parts.push(`decided ${[].concat(c.decided).join(", ")}`);
+        if (c.proposed)           parts.push(`asked about ${c.proposed} in Teams`);
+        if (c.reupped)            parts.push(`reminded you about ${c.reupped}`);
+        if (c.duplicates_cleared) parts.push(`cleared ${plural(c.duplicates_cleared, "duplicate ask")}`);
+        return parts;
+    }
+
+    // Returns { msg, cls?, proc? }, { hide: true }, or null (general rules).
+    function litigationPlain(msg, level, entry) {
+        let m;
+        if ((m = msg.match(/^intake: \{(.*)\}$/))) {
+            litIntake = { entry, c: parseDict(m[1]) };
+            return { msg: intakeText(litIntake.c) + ".", proc: SCANNER };
+        }
+        if ((m = msg.match(/^chat: \{(.*)\}$/))) {
+            const chat = parseDict(m[1]);
+            const intake = litIntake ? litIntake.c : null;
+            if (litIntake) {
+                // The combined line below replaces the interim intake line.
+                litIntake.entry._plain = { hide: true, html: "" };
+                if (litIntake.entry._el) litIntake.entry._el.style.display = "none";
+                litIntake = null;
+            }
+            const parts = chatParts(chat);
+            if (!parts.length && !(intake && intake.queued)) {
+                const q = quietLine("litigation", entry, { read: (intake && intake.scanned) || 0 });
+                const read = q.sums.read ? ` (${plural(q.sums.read, "email")} read)` : "";
+                return { msg: `Checked for legal notices and Teams replies${timesSince(q)} — nothing to act on${read}.`,
+                         cls: "quiet", proc: SCANNER };
+            }
+            delete quiet.litigation;
+            const lead = intake && (intake.scanned || intake.queued) ? [intakeText(intake)] : [];
+            const text = [...lead, ...parts].join("; ");
+            return { msg: `✓ ${text[0].toUpperCase()}${text.slice(1)}.`, cls: chat.error ? "attn" : "", proc: SCANNER };
+        }
+        if (level !== "info") delete quiet.litigation;
+        return null;
     }
 
     function prettyTime(raw) {
@@ -1314,7 +1449,10 @@ main {
         let proc = "";
         let tag = "";
         const pm = msg.match(/^\[([\w-]+)\]\s*(.*)$/);
-        if (pm) { tag = pm[1].toLowerCase(); proc = PROCESS_NAMES[tag] || pm[1]; msg = pm[2]; }
+        if (pm) { tag = pm[1].toLowerCase(); proc = processName(tag) || pm[1]; msg = pm[2]; }
+        // Every line gets a leader. Lines written before rocky.py stamped
+        // job tags (and anything outside a job) have none of their own.
+        if (!proc) proc = "Rocky";
 
         // Noise filters never swallow a problem ("Dropbox token error" is not
         // token-usage chatter).
@@ -1323,11 +1461,15 @@ main {
             return { hide: true, html: "" };
 
         let cls = "";
-        const vault = tag === "vault" ? vaultPlain(msg, level, entry) : null;
-        if (vault) {
-            if (vault.hide) return { hide: true, html: "" };
-            msg = vault.msg;
-            cls = vault.cls || "";
+        const sweep = tag === "vault"      ? vaultPlain(msg, level, entry)
+                    : tag === "affidavits" ? mailPlain(msg, level, entry)
+                    : tag === "litigation" ? litigationPlain(msg, level, entry)
+                    : null;
+        if (sweep) {
+            if (sweep.hide) return { hide: true, html: "" };
+            msg = sweep.msg;
+            cls = sweep.cls || "";
+            if (sweep.proc) proc = sweep.proc;
         } else {
             for (const [re, repl] of PLAIN_RULES) {
                 if (re.test(msg)) { msg = msg.replace(re, repl); break; }
@@ -1474,7 +1616,8 @@ main {
 
     window.clearLog = function() {
         logLines = [];
-        vaultQuiet = null;
+        for (const k in quiet) delete quiet[k];
+        litIntake = null;
         viewer.innerHTML = "";
         updateLineCount();
     };
