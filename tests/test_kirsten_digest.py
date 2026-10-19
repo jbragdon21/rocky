@@ -177,3 +177,24 @@ def test_next_steps_all_past_fall_back_to_nothing_pending():
     items = [{"date": "2026-06-15", "text": "June 15 — response due."}]
     assert kd.next_step_bullets(items, "2026-10-18") == [kd.NOTHING_PENDING]
     assert kd.next_step_bullets([], "2026-10-18") == [kd.NOTHING_PENDING]
+
+
+def test_cases_root_falls_back_to_shared_folder_spelling(tmp_path, monkeypatch):
+    import rocky
+    monkeypatch.setattr(rocky, "_DEFAULT_CASES_ROOT", str(tmp_path / "dev-default"))
+    shared = tmp_path / "OneDrive - gejlaw.com" / "James D. Bragdon's files - Rocky Cases"
+    shared.mkdir(parents=True)
+    missing = str(tmp_path / "OneDrive - gejlaw.com" / "Rocky Cases")
+    assert rocky.resolve_cases_root({"cases_root": missing}, home=tmp_path) == shared
+    assert rocky.resolve_cases_root({}, home=tmp_path) == shared
+
+
+def test_cases_root_config_wins_when_it_exists(tmp_path):
+    import rocky
+    real = tmp_path / "Somewhere" / "Rocky Cases"
+    real.mkdir(parents=True)
+    (tmp_path / "OneDrive - gejlaw.com" / "Rocky Cases").mkdir(parents=True)
+    assert rocky.resolve_cases_root({"cases_root": str(real)}, home=tmp_path) == real
+    gone = tmp_path / "nowhere"
+    assert rocky.resolve_cases_root({"cases_root": str(gone)},
+                                    home=tmp_path / "empty") == gone

@@ -59,6 +59,47 @@ process name.
 
 ---
 
+## Session 2026-10-19 — Rocky laptop couldn't find the case index
+
+First Kirsten Digest run on the Rocky laptop (2:46 PM): "Case index not
+found at ...OneDrive - gejlaw.com\Rocky Cases\Rocky Case Index.xlsx",
+then "no report: case index unreadable". On the Rocky laptop the share is
+`C:\Users\rocky\OneDrive - gejlaw.com\James D. Bragdon's files - Rocky
+Cases`. The laptop's `cases_root` is missing or unprefixed, so Rocky
+looked for the plain `Rocky Cases` (the dev-laptop default if the key is
+missing).
+
+**What changed**
+
+- `rocky.resolve_cases_root()`: config (or default) wins if it exists;
+  otherwise probe `~\OneDrive - gejlaw.com\Rocky Cases` and `...\James D.
+  Bragdon's files - Rocky Cases`, log (info) which one was used, else
+  return the configured path so the old "not found" warning still fires.
+  Same pattern as `pacer_monitor.resolve_root`. `_init_cases_paths` uses
+  it, so every command keyed off `ROCKY_CASES_ROOT` / `CASE_INDEX_PATH`
+  gets it. config.example.json's cases_root comment names the Rocky laptop
+  path. 2 tests; suite 90 pass.
+- Index copy checked: column is `Kirsten Digest? ` (trailing space; the
+  "kirsten" substring match handles it), 10 Yes rows, same as 10/18.
+
+**Watch-outs**
+
+- The dashboard's `shortenPaths` cuts a path at its first space, so
+  `C:\Users\<who>\OneDrive - gejlaw.com\...` displays as `OneDrive -
+  gejlaw.com\...` and hides which profile was used. Read rocky.log for the
+  full path.
+- vault / litigation_updater / mailing_affidavits / pacer_monitor still
+  derive their roots from `cases_root.parent` when their own `*_root`
+  keys are missing. They don't use the probe.
+
+**Open**
+
+- Set `cases_root` in `C:\Rocky\config.json` on the Rocky laptop anyway
+  (the probe is a backstop). Rebuild + deploy, then rerun the Kirsten
+  Digest dry run.
+
+---
+
 ## Session 2026-10-18 (7) — Kirsten Digest podcast (two-host audio week update)
 
 James asked for a second feature on the Kirsten Digest: the week rewritten

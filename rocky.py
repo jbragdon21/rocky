@@ -232,11 +232,30 @@ ROCKY_CASES_ROOT: Path = Path(_DEFAULT_CASES_ROOT)
 RRID_PATTERN = re.compile(r"\bRRID-\d{4}\b", re.IGNORECASE)
 
 
+def resolve_cases_root(config: dict, home: Path | None = None) -> Path:
+    """The Rocky Cases folder. Config (or the dev-laptop default) wins when
+    it exists. Otherwise look under this machine's own OneDrive: on the
+    Rocky laptop the folder James shares arrives as "James D. Bragdon's
+    files - Rocky Cases" under C:\\Users\\rocky, which neither the default
+    nor a hand-typed cases_root matched (10/19 Kirsten Digest: "Case index
+    not found"). Same probe as pacer_monitor.resolve_root."""
+    root = Path(config.get("cases_root") or _DEFAULT_CASES_ROOT)
+    if root.is_dir():
+        return root
+    base = (home or Path.home()) / "OneDrive - gejlaw.com"
+    for name in ("Rocky Cases", "James D. Bragdon's files - Rocky Cases"):
+        if (base / name).is_dir():
+            logging.getLogger("rocky").info(
+                f"cases_root {root} not found; using {base / name}. Set "
+                f"cases_root in config.json to silence this.")
+            return base / name
+    return root
+
+
 def _init_cases_paths(config: dict) -> None:
     """Set CASE_INDEX_PATH, ROCKY_CASES_ROOT, and DAILY_DIGESTS_DIR from config."""
     global CASE_INDEX_PATH, ROCKY_CASES_ROOT, DAILY_DIGESTS_DIR
-    root = config.get("cases_root", _DEFAULT_CASES_ROOT)
-    ROCKY_CASES_ROOT = Path(root)
+    ROCKY_CASES_ROOT = resolve_cases_root(config)
     CASE_INDEX_PATH = ROCKY_CASES_ROOT / "Rocky Case Index.xlsx"
     DAILY_DIGESTS_DIR = ROCKY_CASES_ROOT / "Daily Digests"
 
