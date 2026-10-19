@@ -92,11 +92,23 @@ missing).
   derive their roots from `cases_root.parent` when their own `*_root`
   keys are missing. They don't use the probe.
 
+**Real cause (found later the same day)**
+
+- The laptop's config already had the right `cases_root`; the log said
+  `C:\Users\jbragdon\...`. rocky.exe runs rocky.py as `__main__`, and
+  `kirsten_digest`'s `import rocky` loads a SECOND copy whose
+  `CASE_INDEX_PATH` / `ROCKY_CASES_ROOT` still hold the module-level
+  dev-laptop default: `load_config()` set them in `__main__` only. On
+  the dev laptop the default is the real path, which masked it. Fix:
+  `collect()` calls `rocky._init_cases_paths(config)` on its copy.
+  Reproduced with runpy before and after; regression test added; suite
+  91 pass. kirsten_digest is the only module reading those globals via
+  `import rocky`. Any new module that does must do the same.
+
 **Open**
 
-- Set `cases_root` in `C:\Rocky\config.json` on the Rocky laptop anyway
-  (the probe is a backstop). Rebuild + deploy, then rerun the Kirsten
-  Digest dry run.
+- Rebuild + deploy, restart the dashboard, rerun the Kirsten Digest dry
+  run.
 
 ---
 

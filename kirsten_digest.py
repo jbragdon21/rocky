@@ -537,6 +537,12 @@ def collect(config: dict, days: int, rrids: list[str] | None = None
     import rocky
     from anthropic import Anthropic
 
+    # rocky.exe runs rocky.py as __main__, so "import rocky" here is a
+    # second copy whose paths still hold the dev-laptop default: the
+    # load_config() that set cases_root ran in __main__, not in it. Apply
+    # the config to this copy too (10/19: the Rocky laptop looked under
+    # C:\Users\jbragdon).
+    rocky._init_cases_paths(config)
     cases = rocky.load_case_index()
     if not cases:
         return None, "case index unreadable (see warning above)", ""

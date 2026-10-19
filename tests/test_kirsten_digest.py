@@ -198,3 +198,18 @@ def test_cases_root_config_wins_when_it_exists(tmp_path):
     gone = tmp_path / "nowhere"
     assert rocky.resolve_cases_root({"cases_root": str(gone)},
                                     home=tmp_path / "empty") == gone
+
+
+def test_collect_applies_config_cases_root(tmp_path, monkeypatch):
+    """rocky.exe imports a second copy of rocky; collect() must set its
+    paths from config rather than trust the dev-laptop default."""
+    import rocky
+    root = tmp_path / "James D. Bragdon's files - Rocky Cases"
+    root.mkdir()
+    monkeypatch.setattr(rocky, "CASE_INDEX_PATH", Path(rocky._DEFAULT_CASES_ROOT) / "x.xlsx")
+    monkeypatch.setattr(rocky, "ROCKY_CASES_ROOT", Path(rocky._DEFAULT_CASES_ROOT))
+    monkeypatch.setattr(rocky, "DAILY_DIGESTS_DIR", Path(rocky._DEFAULT_CASES_ROOT), raising=False)
+    monkeypatch.setattr(rocky, "load_case_index", lambda: [])
+    assert kd.collect({"cases_root": str(root)}, 7)[0] is None
+    assert rocky.ROCKY_CASES_ROOT == root
+    assert rocky.CASE_INDEX_PATH == root / "Rocky Case Index.xlsx"
