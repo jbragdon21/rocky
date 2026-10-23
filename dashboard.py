@@ -189,6 +189,9 @@ ROCKY_COMMANDS = [
     # Weekly, Sunday 6 PM: the Kirsten Digest, sent to the client as the
     # "Weekly Gallagher-Bozzuto Litigation Report" (James's Drafts).
     {"flag": "kirsten-digest", "label": "Kirsten Digest", "group": "Litigation", "dry_run": True, "desc": "Weekly Gallagher-Bozzuto Litigation Report — week in review and next steps for the cases marked for Kirsten, into James's Drafts", "sched_time": "18:00", "sched_freq": "WEEKLY", "sched_days": "SUN", "recommended": True},
+    # Daily, 6 AM: after the 1 AM research edition lands in the Sam's
+    # Podcast folder. Publishes to a private Transistor feed.
+    {"flag": "sams-podcast", "label": "Sam's Podcast", "group": "Litigation", "dry_run": True, "desc": "Daily two-host episode — the morning's sports research and yesterday's activity on the cases marked for Sam, published to Sam's private feed", "sched_time": "06:00", "recommended": True},
     {"flag": "litigation-learn", "label": "Litigation Learn", "group": "Litigation", "dry_run": False, "desc": "Fold the week's Teams feedback into the litigation brain"},
     # LetterStream's documented slot is 8:00 AM, but it's deliberately NOT
     # "recommended": the --monitor loop already runs it every 10 minutes

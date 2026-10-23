@@ -96,6 +96,17 @@ Rocky — Virtual Paralegal
       (--no-podcast skips it; a dry run writes the script, --audio voices
       it). See kirsten_digest.py and kirsten_podcast.py.
 
+  python rocky.py --sams-podcast [--dry-run] [--audio] [--force] [--no-publish] [RRID-XXXX ...]  (6:00 AM daily)
+  python rocky.py --sams-podcast --shows | --subscribe EMAIL
+      Sam's Podcast: a daily two-host show (about 10 min) from the day's
+      sports research edition in the "Sam's Podcast" OneDrive folder plus
+      yesterday's activity on every case marked yes in the case index's
+      "Sam's Podcast" column. Cards per topic and case become the show
+      notes; ElevenLabs voices the script; the episode is published to a
+      private Transistor.fm show Sam subscribes to. Internal audience.
+      --shows lists Transistor shows; --subscribe adds Sam's private feed.
+      See sams_podcast.py.
+
 
   python rocky.py --vault [--dry-run] [--source inbox|vault-mail|dropbox] [--backfill-days N] [--limit N]  (3:00 PM daily)
       The Vault: gather leases, ledgers, affidavits of service, and
@@ -5364,6 +5375,10 @@ def main():
         import kirsten_digest
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         kirsten_digest.run_cli(load_config(), DATA_DIR)
+    elif "--sams-podcast" in sys.argv:
+        import sams_podcast
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        sams_podcast.run_cli(load_config(), DATA_DIR)
     elif "--multifamily-digest" in sys.argv:
         import multifamily_digest
         multifamily_digest.run_cli(load_config(), DATA_DIR)
@@ -5442,6 +5457,9 @@ def main():
         print("                                          Weekly Gallagher-Bozzuto Litigation Report (Sunday 6 PM): drafts")
         print("                                          week in review + next steps for every case marked yes in the")
         print("                                          case index's Kirsten Digest? column, To Kirsten, into James's Drafts")
+        print("  --sams-podcast [--dry-run] [--audio] [--force] [--no-publish] [RRID-XXXX ...] | --shows | --subscribe EMAIL")
+        print("                                          Sam's Podcast (6 AM daily): sports research + yesterday's case")
+        print("                                          activity as a two-host episode on a private Transistor feed")
         print("  --vault        [--dry-run] [--source inbox|vault-mail|dropbox] [--backfill-days N] [--limit N] [--max-age-days N]")
         print("                 --status | --reindex | --dropbox-auth <account>")
         print("                 --cleanup [--execute] [--force]  Merge fragmented property/tenant folders (dry-run writes _vault\\cleanup_plan.txt)")

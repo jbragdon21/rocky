@@ -150,7 +150,8 @@ def parse_turns(text: str) -> list[dict]:
     return turns
 
 
-def fit(turns: list[dict], max_words: int = MAX_WORDS) -> list[dict]:
+def fit(turns: list[dict], max_words: int = MAX_WORDS,
+        tag: str = "kirsten podcast") -> list[dict]:
     """Hard length guard after the model's own retry: keep turns in order
     while they fit, always keeping the sign-off."""
     if word_count(turns) <= max_words or len(turns) < 2:
@@ -164,7 +165,7 @@ def fit(turns: list[dict], max_words: int = MAX_WORDS) -> list[dict]:
             break
         kept.append(t)
         used += n
-    log.warning(f"[kirsten podcast] script ran {word_count(turns)} words; "
+    log.warning(f"[{tag}] script ran {word_count(turns)} words; "
                 f"cut to {used + len(last['text'].split())}")
     return kept + [last]
 
@@ -248,7 +249,8 @@ def chunk(inputs: list[dict], cap: int = _CHUNK_CHARS) -> list[list[dict]]:
 
 
 def synthesize(api_key: str, turns: list[dict], voices: list[str],
-               out_path: Path) -> float:
+               out_path: Path, max_seconds: int = MAX_SECONDS,
+               tag: str = "kirsten podcast") -> float:
     """Voice the script into out_path. Returns the length in seconds."""
     inputs = [{"text": t["text"], "voice_id": voices[t["speaker"] - 1]}
               for t in turns]
@@ -268,11 +270,11 @@ def synthesize(api_key: str, turns: list[dict], voices: list[str],
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_bytes(audio)
     seconds = len(audio) * 8 / _BITRATE
-    log.info(f"[kirsten podcast] {out_path.name}: {len(batches)} part(s), "
+    log.info(f"[{tag}] {out_path.name}: {len(batches)} part(s), "
              f"{len(audio) / 1_048_576:.1f} MB, about {seconds / 60:.1f} min")
-    if seconds > MAX_SECONDS + 20:
-        log.warning(f"[kirsten podcast] audio runs {seconds:.0f}s, over the "
-                    f"{MAX_SECONDS}s target")
+    if seconds > max_seconds + 20:
+        log.warning(f"[{tag}] audio runs {seconds:.0f}s, over the "
+                    f"{max_seconds}s target")
     return seconds
 
 

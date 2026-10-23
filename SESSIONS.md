@@ -24,6 +24,116 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-10-23 — Sam's Podcast (daily sports + docket episode, private feed)
+
+James asked for a new process: pull the day's research from the Sam's
+Podcast OneDrive folder and yesterday's activity on cases flagged in a new
+"Sam's Podcast" index column, write cards, voice a two-person podcast with
+ElevenLabs, and publish it to a feed Sam downloads from.
+
+**What changed**
+
+- New `sams_podcast.py`, `rocky.py --sams-podcast [--dry-run] [--audio]
+  [--force] [--no-publish] [RRID-XXXX ...]`, plus `--shows` and
+  `--subscribe EMAIL`. Dashboard entry "Sam's Podcast" (Litigation, 6:00 AM
+  daily, recommended). build_exe.py bundles it. config.example.json has
+  the keys. BUILD_REFERENCE.md has the paragraph.
+- `kirsten_digest.select_cases` takes `col=`. `kirsten_podcast.fit` and
+  `synthesize` take `tag=` and `max_seconds=` (the defaults keep the
+  Kirsten behavior).
+- Tests `tests/test_sams_podcast.py` (19). Suite 132 pass.
+
+**Decisions (James)**
+
+- Feed: Transistor.fm private show (real upload/publish API, per-listener
+  private feeds that can be revoked). Buzzsprout has no private feeds.
+- Sam is a Gallagher colleague, so the case segment is internal (names
+  people and internal next steps). The listener is assumed to be **Sam
+  Cowin** (scowin@): `sams_podcast_listener` changes it.
+- About 10 minutes. Voices: "Al" `SHiZvifpX6NOyojATxRy` and "Sophia"
+  `LtPsVjX1k0Kl4StEMZPK` (both picked by James; not ElevenLabs defaults,
+  which expire 12/31/2026 per their docs. That does hit the Kirsten
+  podcast's George and Sarah).
+- Intro music: `Sam's Soundtrack.wav` (48 kHz stereo, 57.6 s; an MP3 of
+  the same name sits beside it) at the root of the research folder (James,
+  10/23). The MP3 carries a Xing length header, and either file
+  frame-glued to ElevenLabs' 44.1 kHz audio would play wrong. `add_intro` decodes both (`miniaudio`) and re-encodes one
+  44.1 kHz mono 64 kbps stream (`lameenc`). James chose the whole track
+  (57.6 s, no fade: it ends on its own); `sams_podcast_intro_seconds` N
+  cuts it at N s with a 4 s fade. Hosts come in 2 s before the music ends. A WAV or FLAC of the same name is preferred if
+  present (no double lossy encode). New deps in requirements.txt and
+  hidden imports in build_exe.py.
+
+**Later the same session: editable style, fact check, Opus 5.5**
+
+- James asked to keep the script instructions in a .md so they can change
+  without a new exe. `PODCAST_STYLE.md` in the research folder (seeded on
+  the first run, read every run; `<!-- -->` notes are stripped;
+  `{host1}` `{host2}` `{listener}` `{target}` filled by plain replacement)
+  holds shape, tone, pacing, delivery. `SCRIPT_CORE` in code keeps what the
+  code relies on and wins over the file: JSON contract, facts only (nothing
+  from the model's own knowledge), past dates, the "you" rule, the
+  1,600-word cap. The seeded file is on the share now.
+- New fact-check call after the script (`check_script`, effort high):
+  every turn against the cards, unsupported ones rewritten or dropped,
+  each fix logged. A failed check keeps the script.
+- `calendar()`: 14 days of weekdays in the script and check prompts.
+- Model `claude-opus-5-5` by default (`sams_podcast_model`), every call
+  through `_ask`: effort instead of temperature, text blocks only (replies
+  can open with a thinking block), refusal = error, `fallbacks: "default"`
+  (beta `server-side-fallback-2026-07-01`). Older model names get the old
+  temperature call. Rocky's `CLAUDE_MODEL` (Sonnet 4.5) is unchanged for
+  everything else.
+- Why: on Sonnet 4.5 the scripts invented a Bears bye week, credited
+  Illinois' Oregon game to the Bears in the preview, and called Mon Nov 2
+  a Sunday; the first fact check on 4.5 "corrected" Wed Oct 28 to Tuesday
+  and missed the Bears/Oregon line. Three Opus 5.5 runs: every weekday
+  right, no crossed teams, no invented facts; the check made two fair
+  fixes (a "hosts Baylor" the memo doesn't support). About 64 s and
+  900-1,050 words per sports-only run.
+- Tests: suite 140 pass.
+
+**Verified**
+
+- Real dry runs on the 10/23 research edition (4 topics): the cards and
+  script are good. The first runs dropped dates from upcoming games, read
+  numbers digit by digit ("one oh five"), said "back Monday", and
+  previewed a docket with no case cards. The prompts now fix all four.
+- Case segment run against real folders with the index column patched in
+  memory (live index locked by Excel). 10/22 had only no-op daily_runs, so
+  every case was quiet, which is correct. As-of 10/22 (yesterday = 10/21)
+  gave three active cards. **Bug found:** the cards credited James's work
+  to "you" because `activity_lines` drops `actor`. Fixed with
+  `attributed_lines` (`[by James Bragdon]`); rerun attributes correctly.
+- **Not called yet:** ElevenLabs (no key in the dev config) and Transistor
+  (no account). Both are covered by mocked tests only.
+
+**Open**
+
+- ~~Add the column.~~ **Done 10/23:** `Sam Podcast?` (matched by
+  "sam" + "podcast"), 5 Yes: Ogunnupe, Realpage MD AG, DC AG - Fees,
+  Bulgin, Hunt. All five map to folders; the Kirsten column still reads
+  (10 cases). Live dry runs: 10/22 was quiet on all five (only no-op
+  daily_runs), and the docket segment named them. Two fixes from those
+  runs: the calendar now covers the past 10 days too (Opus called Sun
+  Oct 18 "last Saturday"), and quiet cases go to the prompt one per
+  line, since comma-joined names ("Bulgin, Alexander, DC AG - Fees")
+  became "Alexander Bulgin's DC AG fees matter".
+- Transistor: create the private show, put `transistor_api_key` and
+  `sams_podcast_show_id` in `C:\Rocky\config.json` on the Rocky laptop,
+  then `rocky.exe --sams-podcast --subscribe <Sam's email>`.
+- `rocky.exe --sams-podcast --dry-run --audio` on the Rocky laptop to hear
+  Al's voice. Then rebuild, deploy, and schedule from the dashboard.
+- Listen to the mix: a soundtrack + test tone preview was checked
+  from the WAV (44.1 kHz, 48.1 s, mix in 0.5 s); nobody has heard it with
+  voices yet.
+  The first rebuild must confirm miniaudio/lameenc made it into rocky.exe.
+- Research timing: the automation is set for 1 AM, but the 10/23 edition
+  was written at 8:29 AM by hand. A late edition misses the 6 AM run and
+  is picked up by the next day's run as "yesterday's".
+
+---
+
 ## Session 2026-10-18 (8) — Activity log: Litigation Scanner, quiet mail, a leader on every line
 
 James: the live log (Plain mode) showed the monitor's litigation poll as

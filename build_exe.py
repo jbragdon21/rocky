@@ -86,6 +86,7 @@ def build_rocky():
         "--add-data", f"{ROOT / 'multifamily_digest.py'};.",
         "--add-data", f"{ROOT / 'kirsten_digest.py'};.",
         "--add-data", f"{ROOT / 'kirsten_podcast.py'};.",
+        "--add-data", f"{ROOT / 'sams_podcast.py'};.",
         "--add-data", f"{ROOT / 'pacer_monitor.py'};.",
         "--add-data", f"{ROOT / 'courtlistener.py'};.",
         "--add-data", f"{ROOT / 'pacer_api.py'};.",
@@ -93,6 +94,11 @@ def build_rocky():
         "--add-data", f"{ROOT / 'Icon'};Icon",
         # Jinja2 is used by pending_llt; ensure PyInstaller bundles it.
         "--hidden-import", "jinja2",
+        # Sam's Podcast mixes its intro music (sams_podcast.py is add-data,
+        # so PyInstaller never sees its imports).
+        "--hidden-import", "miniaudio",
+        "--hidden-import", "_miniaudio",
+        "--hidden-import", "lameenc",
         # sqlite3 is only imported by pacer_monitor.py, which ships as
         # --add-data rather than analyzed source — without this the frozen
         # exe has no _sqlite3 and --pacer --reindex dies at runtime.

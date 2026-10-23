@@ -149,11 +149,12 @@ def kirsten_column(cases: list[dict]) -> str | None:
     return None
 
 
-def select_cases(cases: list[dict], rrids: list[str] | None = None
-                 ) -> list[dict]:
+def select_cases(cases: list[dict], rrids: list[str] | None = None,
+                 col: str | None = None) -> list[dict]:
     """Flagged, open cases, de-duplicated by RRID (last row wins, matching
-    how the rest of Rocky keys the index)."""
-    col = kirsten_column(cases)
+    how the rest of Rocky keys the index). col is the flag column (default
+    the Kirsten Digest? column; Sam's Podcast passes its own)."""
+    col = col or kirsten_column(cases)
     if not col:
         return []
     by_rrid: dict[str, dict] = {}
