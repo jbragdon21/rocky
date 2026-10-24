@@ -92,6 +92,10 @@ def build_rocky():
         "--add-data", f"{ROOT / 'pacer_api.py'};.",
         "--add-data", f"{ROOT / '_templates' / 'affidavit_template.docx'};_templates",
         "--add-data", f"{ROOT / 'Icon'};Icon",
+        # Time Entries is a package, imported (lazily) as code rather than
+        # shipped as add-data, so PyInstaller analyzes its imports (csv,
+        # ast, argparse, sqlite3). Collect every submodule explicitly.
+        "--collect-submodules", "time_entries",
         # Jinja2 is used by pending_llt; ensure PyInstaller bundles it.
         "--hidden-import", "jinja2",
         # Sam's Podcast mixes its intro music (sams_podcast.py is add-data,

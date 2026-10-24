@@ -20,7 +20,7 @@ only program that pulls James's sent mail. Rocky only reads it.
 
 | # | Decision | Recommendation |
 |---|---|---|
-| 1 | Where the data lives | The database goes on the Rocky laptop at `C:\Rocky\time_entries\`. The files James edits by hand go on OneDrive: the Property Reference Table, the style guide, and the lessons file. See "Where things live." |
+| 1 | Where the data lives | The database goes on the Rocky laptop at `C:\Rocky\time_entries_data\`. The files James edits by hand go on OneDrive: the Property Reference Table, the style guide, and the lessons file. See "Where things live." |
 | 2 | How much of the learning step applies itself | Changes that come from James's own submitted text apply automatically: new training narratives, the resident-name index, accuracy stats. Rocky emails any change to rules, aliases or collisions as a numbered proposal, and it takes effect when James replies YES. Rocky never edits its own Python. |
 | 3 | Model for drafting and verification | Opus 5.5 for every call: drafting, verification and learning. A 13-of-46 error rate on High rows is what the verifier exists to catch, so this is a bad place to save money. Set by `time_entries_model` in config. |
 | 4 | What the spreadsheet is and who sends it | **Decided 2026-10-24:** anyone at the firm can send it, not only James. Rocky picks it up when the attachment has the Aspen export's format, or when the subject or the note on top says something like "here are James' current time entries." Recommendations go to James with the sender cc'd. Lessons go to James alone, and only his YES applies them. See "Trigger." |
@@ -294,7 +294,7 @@ pass see what the verifier caught.
 
 | What | Where | Why |
 |---|---|---|
-| `te.db`: snapshots, entries, narratives, recommendations, outcomes, lessons, anomalies, runs | `C:\Rocky\time_entries\` on the Rocky laptop | It holds client narratives and quoted mail. Under `DATA_SECURITY.md`, corpora stay off OneDrive. The folder has also corrupted SQLite on a synced mount before (the `corpus.db-journal` incident on 9/5). Minotaur's mail is only on that laptop anyway. |
+| `te.db`: snapshots, entries, narratives, recommendations, outcomes, lessons, anomalies, runs | `C:\Rocky\time_entries_data\` on the Rocky laptop (not `time_entries`, which is the source package's name in the repo) | It holds client narratives and quoted mail. Under `DATA_SECURITY.md`, corpora stay off OneDrive. The folder has also corrupted SQLite on a synced mount before (the `corpus.db-journal` incident on 9/5). Minotaur's mail is only on that laptop anyway. |
 | Property Reference Table, `matter_overlay.json`, style guide, `LESSONS.md`, `time_entries_settings.json`, open questions | OneDrive `Program Files\Rocky\Time Entries\` (pinned with the rest of the program folder) | James edits these from either laptop. Rocky reads them on every run and writes only the overlay and `LESSONS.md`, and only after a YES. |
 | Recommendation workbooks | Emailed, with a copy in OneDrive `Time Entries\drafts\` | This matches where the drafts live today. |
 | Sent mail | `C:\Minotaur\email_brain\brain.db`, read-only | Single source of truth |
@@ -360,6 +360,36 @@ candidates for that entry at least 90% of the time. Tests cover:
 - the time change on 11/1
 - word-boundary matching
 - collision filters
+
+**Phase 1 status (2026-10-24).** The port is built in `time_entries/` and runs as
+`rocky.py --time-entries --migrate | --correlate | --backtest`. Tests are in
+`tests/test_time_entries.py`.
+
+- **The port matches the original.** On the September Part 2, October Part 1 and October Part 2
+  timecards, scored against `corpus.db`, it returns the same candidates, scores, stages and tokens
+  as `correlate3.py` for all 257 entries.
+- **The migration works.** On the dev laptop it copied 2,642 entries, 3,178 narratives and 229
+  anomalies from `corpus.db`.
+- **Stand-in backtest on the dev laptop.** There's no brain.db on this laptop, so `corpus.db` stood
+  in for the mail. The name index was rebuilt from narratives dated before each period, so a run
+  can't learn names from the entries it is scoring.
+
+  | Hand run | High rows | Cited email found in mail | Ranked in the top 6 |
+  |---|---|---|---|
+  | October Part 2 (`_work` drafts source) | 49 | 49 | 44 (89.8%) |
+  | October Part 1 | 16 | 16 | 15 (93.8%) |
+  | September Part 2 | 117 | 116 | 104 (88.9%) |
+  | **All three** | **182** | **181** | **163 (89.6%)** |
+
+  That sits just under the 90% mark. There are two kinds of miss. Some matters produce no tokens at
+  all: "Residences on the Avenue" is all generic words, and the instructor class matter has none.
+  In the others, the cited email scored but ranked below six others on a busy day.
+- **The real backtest hasn't run yet.** It needs Minotaur's mail on the Rocky laptop. Tuning waits
+  for those numbers, because brain.db carries recipient addresses where the `.msg` exports carried
+  display names. That changes contact-surname scoring, so tuning on `corpus.db` would have to be
+  redone.
+- **A stale workbook.** `drafts\2026-10 Part 2 - draft narratives.xlsx` holds 10 rows, while its
+  `_work` source holds the run's 76, so the backtest reads the `_work` file for that period.
 
 **Phase 2: drafting and verification, CLI only.** Backtest against periods where James's final
 narratives exist in a later export. The September 1–5 blanks are filled in the September Part 2

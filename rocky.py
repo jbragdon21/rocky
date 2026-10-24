@@ -6112,6 +6112,10 @@ def main():
     if pacer_flag:
         command = ("pacer-mail" if pacer_flag == "--pacer-mail"
                    or "--mail" in sys.argv else "pacer")
+    # Time Entries: --migrate/--correlate/--backtest may precede the
+    # --time-entries flag, and every one of them writes te.db.
+    if "--time-entries" in sys.argv:
+        command = "time-entries"
     if command:
         lock_fh = acquire_instance_lock(command)  # noqa: F841 — must stay alive
         _job_tag.tag = command
@@ -6180,6 +6184,10 @@ def main():
     elif "--letterstream" in sys.argv or "--affidavits" in sys.argv:
         import mailing_affidavits
         mailing_affidavits.run_cli(load_config(), DATA_DIR)
+    elif "--time-entries" in sys.argv:
+        from time_entries import cli as time_entries_cli
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        sys.exit(time_entries_cli.run_cli(load_config(), DATA_DIR))
     elif "--pacer-mail" in sys.argv:
         import pacer_monitor
         DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -6267,6 +6275,9 @@ def main():
         print("                                          discover new cases through the PACER Case Locator, and keep the")
         print("                                          indexed database on OneDrive (see PACER_MONITOR.md)")
         print("  --pacer-mail                            PACER requests emailed to rocky@ (runs in the --monitor loop)")
+        print("  --time-entries --migrate [--force] | --correlate --csv <timecard> | --backtest --csv <timecard> --hand <file>")
+        print("                 [--mail minotaur|corpus]  Time entries, phase 1: correlate timecards with Minotaur's sent")
+        print("                                          mail (see TIME_ENTRIES_DESIGN.md)")
         print("  --inbox-<user> --snapshot|--analyze|--questionnaire|--chat|--rules-update|--digest|--execute|--status")
         print("                                          Inbox Cleaner per-user process (e.g. --inbox-matt);")
         print("                                          users are defined in config inbox_users")

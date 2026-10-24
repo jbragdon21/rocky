@@ -79,3 +79,7 @@ Thumbs.db
 inspect_*.py
 smoke_test_*.py
 scratch_*.py
+
+# Time Entries (time_entries/ package): te.db, candidate and backtest JSON.
+# Client narratives and email-derived data — never commit.
+time_entries_data/

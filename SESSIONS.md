@@ -24,6 +24,74 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-10-24 (3) — Time Entries: design, then phase 1 (port + backtest)
+
+James wants Rocky to take over the OneDrive "Time Entries" process (Aspen
+timecard export → correlate blanks with sent mail → draft narratives in his
+style → verify → workbook). Design reviewed and decided this session;
+phase 1 built on branch `time-entries`.
+
+**Decisions made** (all in `TIME_ENTRIES_DESIGN.md`)
+
+- Phase 3 of the old email-brain roadmap ("timesheet correlation") moves
+  from Minotaur to Rocky. Minotaur stays the only thing that pulls mail;
+  Rocky reads `C:\Minotaur\email_brain\brain.db` read-only, schema v1.
+- te.db local at `C:\Rocky\time_entries_data\` (not `time_entries`: that
+  name is the source package in dev mode). Human-edited files stay in the
+  OneDrive Time Entries folder, which James is moving INTO
+  `Program Files\Rocky\Time Entries` (resolved like llt_watch's tracker
+  root: --time-entries-root, config `time_entries_root`, beside rocky.exe).
+  James deletes the folder's `emails\` (.msg exports); `corpus.db` keeps
+  the text until cutover.
+- Exports may come from anyone @gallagherllp.com, recognized by the Aspen
+  header row or by "time entries" in the subject/forwarding note; only
+  timekeeper 0197 rows are used. Recommendations to James cc sender;
+  `[TL-####]` lessons to James alone, applied only on his YES.
+- Opus 5.5 for drafting, verification and learning (phase 2+). Learning
+  never edits Python: data/prompt/settings layers only.
+
+**What changed**
+
+- `time_entries/` package: paths, timecards (three CSV shapes + xlsx),
+  reference (workbook + `matter_overlay.json` + bounded
+  `time_entries_settings.json`), mail (BrainMail read-only + CorpusMail
+  stand-in; DST-correct `to_eastern` with no tzdata, which Windows Python
+  lacks), names, correlate (correlate3 port), db (te.db, corpus.db
+  migration, supersession keyed by file row so duplicate blanks survive),
+  backtest, cli. `rocky.py --time-entries --migrate|--correlate|--backtest`
+  with its own instance lock. `build_exe.py`: `--collect-submodules
+  time_entries`. `.gitignore`: `time_entries_data/`.
+- Tests: `tests/test_time_entries.py` (21); suite 185 pass.
+
+**Verified**
+
+- Port = correlate3.py exactly on 257 entries (Sept P2, Oct P1, Oct P2)
+  against corpus.db: same candidates, scores, stages, tokens.
+- Stand-in backtest (corpus.db as mail): High rows' cited email in top 6
+  for 163/182 = 89.6% (Oct P2 89.8%, Oct P1 93.8%, Sept P2 88.9%).
+
+**Open items**
+
+- Real backtest on the Rocky laptop against brain.db (needs a rocky.exe
+  build + deploy, and the Time Entries folder in Program Files\Rocky).
+  Tune only after that: brain.db has recipient addresses, not the display
+  names the .msg exports had, so contact-surname scoring will shift.
+- Phase 0 checks still open: Minotaur nightly `brain ingest` unscheduled;
+  sent meeting responses (`Accepted:%`) present in brain.db?
+- The folder's own scripts use a flat UTC−4 and will misdate evening mail
+  from 11/1/2026 if James runs the hand process on November mail.
+
+**Watch-outs**
+
+- `drafts\2026-10 Part 2 - draft narratives.xlsx` has 10 rows; its
+  `_work\2026-10_part2_drafts.py` source has the run's 76. The backtest
+  parses `_work` files with ast (never executes them).
+- corpus.db's entries table collapsed identical blanks (UNIQUE on
+  date/matter/hours/narrative/file); te.db rows from new exports keep
+  every row.
+
+---
+
 ## Session 2026-10-24 (2) — Sam's Podcast: don't repeat what Sam already heard
 
 James asked about an extra Claude call to strip content repeated from the
