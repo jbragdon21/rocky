@@ -618,7 +618,7 @@ def test_default_style_settings_block_parses_clean():
         "sams_podcast_intro_fade", "sams_podcast_intro_overlap",
         "sams_podcast_target_words", "sams_podcast_max_words",
         "sams_podcast_audio_tags", "sams_podcast_model",
-        "sams_podcast_intro_file"}
+        "sams_podcast_intro_file", "sams_podcast_repeat_days"}
     assert "---" not in style["script"] and "voice1" not in style["script"]
 
 
@@ -712,3 +712,80 @@ def test_synthesize_hands_back_each_part(monkeypatch, tmp_path):
     kp.synthesize("K", turns, ["a", "b"], tmp_path / "o.mp3", parts=parts)
     assert parts == [b"PART1", b"PART2"]
     assert (tmp_path / "o.mp3").read_bytes() == b"PART1PART2"
+
+
+def test_audio_complete_needs_most_of_the_script():
+    assert sp.audio_complete(1218, 470) is True      # ~8 min for 1,218 words
+    assert sp.audio_complete(1218, 150) is False     # the 10/24 cut-off
+    assert sp.audio_complete(None, 400) is False
+    assert sp.audio_complete(900, None) is False
+
+
+def test_earlier_scripts_only_full_length_episodes(tmp_path):
+    from datetime import datetime
+    (tmp_path / "2026-10-23 script.txt").write_text(
+        "AL: [excited] Bears won!\n\nSOPHIA: [laughs] Big night.\n",
+        encoding="utf-8")
+    (tmp_path / "2026-10-24 script.txt").write_text("AL: Cut-off day.\n",
+                                                    encoding="utf-8")
+    episodes = {"2026-10-23": {"audio_complete": True},
+                "2026-10-24": {"audio_complete": False},
+                "2026-10-25": {"audio_complete": True}}      # today: never
+    now = datetime(2026, 10, 25, 6, 0)
+    got = sp.earlier_scripts(episodes, tmp_path, now, 2)
+    assert got == [("Friday, October 23, 2026",
+                    "AL: Bears won!\n\nSOPHIA: Big night.\n")]
+    assert sp.earlier_scripts(episodes, tmp_path, now, 0) == []
+    episodes["2026-10-24"]["audio_complete"] = True
+    (tmp_path / "2026-10-24 script.txt").unlink()           # missing file
+    assert [d for d, _ in sp.earlier_scripts(episodes, tmp_path, now, 2)] == \
+        ["Friday, October 23, 2026"]
+
+
+def test_write_script_shows_earlier_episodes_as_context():
+    seen = {}
+
+    class Msg:
+        def create(self, **kw):
+            seen.setdefault("user", kw["messages"][0]["content"])
+            seen.setdefault("system", kw["system"])
+
+            class R:
+                content = [type("T", (), {"text": json.dumps({"turns": [
+                    {"speaker": 1, "text": "Hi Sam."}]})})]
+            return R()
+
+    client = type("C", (), {"messages": Msg()})()
+    client.beta = client
+    sp.write_script(client, "m", "TOPIC: Bears", "2026-10-25 (Sunday)",
+                    ["Al", "Sophia"], "Sam Cowin", "## Repeats\n- Skip.",
+                    covered=[("Friday, October 23, 2026", "AL: Bears won.")])
+    assert "ALREADY COVERED (earlier episodes Sam heard; context only, not a " \
+        "source):\n\n--- Friday, October 23, 2026 ---\nAL: Bears won." \
+        in seen["user"]
+    assert seen["user"].index("CARDS:") < seen["user"].index("ALREADY COVERED")
+    assert "context, not a source" in seen["system"]
+    seen.clear()
+    sp.write_script(client, "m", "TOPIC: Bears", "2026-10-25 (Sunday)",
+                    ["Al", "Sophia"], "Sam Cowin", "x")
+    assert "ALREADY COVERED" not in seen["user"]
+
+
+def test_repeat_lookback_setting():
+    assert sp.parse_settings({"repeat_lookback_days": "3"}) == \
+        {"sams_podcast_repeat_days": 3}
+    assert sp.parse_settings({"repeat_lookback_days": "30"}) == {}
+    assert sp.repeat_days({}) == 2
+    assert sp.repeat_days({"sams_podcast_repeat_days": 0}) == 0
+    assert "## Repeats" in sp.load_style({}, None)["script"]
+
+
+def test_fact_check_sees_earlier_episodes_for_callbacks():
+    client = _OneReply(json.dumps({"fixes": []}))
+    turns = [{"speaker": 1, "text": "Coleman again!"}]
+    sp.check_script(client, "m", "TOPIC: Illinois", turns, "today",
+                    covered=[("Friday, October 23, 2026", "AL: Coleman shone.")])
+    user = client.calls[0]["messages"][0]["content"]
+    assert "ALREADY COVERED" in user and "AL: Coleman shone." in user
+    assert user.index("ALREADY COVERED") < user.index("SCRIPT:")
+    assert "callback to an earlier episode" in client.calls[0]["system"]

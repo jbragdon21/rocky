@@ -24,6 +24,46 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-10-24 (2) — Sam's Podcast: don't repeat what Sam already heard
+
+James asked about an extra Claude call to strip content repeated from the
+two days before. Agreed instead: give the script call the earlier scripts
+as already covered, so nothing has to be cut out of a finished script and
+the fact check stays the last step.
+
+**What changed**
+
+- `earlier_scripts` reads the last `repeat_lookback_days` (default 2) days'
+  scripts from `_Episodes`, only for days whose state record has
+  `audio_complete`. A real run now records `words`, `hosts_seconds` and
+  `audio_complete` (`finish_audio(stats=)`; complete = hosts' audio at
+  least 75% of words / 150 wpm). 10/23 and 10/24 have no marker (and were
+  cut off), so they never count. Tags stripped, 9,000 characters each.
+- Script call: ALREADY COVERED after the cards. Core rule: context, not a
+  source; a brief callback is fine, every new fact must be on today's
+  cards. The fact check gets ALREADY COVERED too, so it keeps valid
+  callbacks (the first test run had it delete "Coleman again!").
+- `PODCAST_STYLE.md`: `repeat_lookback_days: 2` in the settings block (0 =
+  off, max 7) and a "## Repeats" section (no re-reporting; one-line
+  reminders for upcoming dates, always for the next three days; old
+  background in a few words). Inserted into the live file at anchors, so
+  James's edits (the zombie intro) were kept.
+- Tests: suite 164 pass.
+
+**Verified**
+
+- Dry runs with 10/23 temporarily marked as heard (a throwaway
+  state/sams_podcast.json on the dev laptop, deleted after): "already
+  covered: Friday, October 23" logged, Nationals segment said "no major new
+  announcement since yesterday", new news (Kmet, Clayton's start) kept.
+  10/24's research was mostly fresh, so this morning's script had little
+  to cut; the gain will show on repeat-heavy days and on case deadlines
+  that carry over (the Oct. 30 AG response).
+- The first episode that can be used as covered is the next full-length
+  one (10/25 at the earliest), so the effect starts 10/26.
+
+---
+
 ## Session 2026-10-24 — Sam's Podcast: tuning moves into the .md, peppier delivery
 
 James changed host 1's voice again, asked for a "pretty peppy" pace, and

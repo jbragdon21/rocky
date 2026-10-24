@@ -212,6 +212,7 @@ RULES
 - Cases are internal and the listener is {listener}, a colleague: name parties, courts and Gallagher people where the cards do, and keep the cards' "you" as "you" (that is {listener}'s own work); never turn anyone else's work into "you". The hosts do not predict how a case will go.
 - If a section has no cards, do not mention it anywhere, including the preview.
 - Never mention Rocky, AI, activity logs, cards, or research memos: the hosts just know the news.
+- ALREADY COVERED (when given) is what Sam heard in earlier episodes. It is context, not a source: a brief callback to what an earlier episode said is fine ("as we said yesterday"), but every new fact must be on today's cards. Handle repeats as the style guide's Repeats section says.
 - At most {max_words} words in total across all turns; anything longer is cut off.
 - Spoken words only: no case, inquiry, or docket numbers, no citations, no URLs, no markdown, no stage directions, no emojis.
 - {tag_rule}
@@ -236,6 +237,7 @@ target_words: 1400
 max_words: 1600
 audio_tags: excited, cheerfully, laughs, chuckles
 model: claude-opus-5-5
+repeat_lookback_days: 2
 ---
 
 # Sam's Podcast — style guide
@@ -266,6 +268,9 @@ over config.json.
   audio_tags              Eleven v3 delivery cues the script may use, comma
                           separated (e.g. excited, laughs, whispers), or none
   model                   the Claude model that writes cards and script
+  repeat_lookback_days    how many earlier days' episodes the script sees as
+                          already covered (only episodes whose audio came
+                          out full length); 0 = off
 
 THE SECTIONS. "## Topic cards" and "## Case cards" style the show notes
 (one card per sports memo and per active case). Every other section styles
@@ -301,6 +306,16 @@ Peppy and upbeat: a quick morning show, not a newscast.
 - Quick hand-offs: the other host jumps in with a reaction or the next fact ("Huge night." "And it gets better."). Most turns are one or two sentences.
 - Energy in the words: strong verbs, a little enthusiasm for good news, a bit of banter between segments. Keep it warm, never goofy, and calm for anything serious on the docket.
 - Delivery cues: open the show with [excited], and use a cue about once every four or five turns where it fits. Never on a case turn.
+
+## Repeats
+
+ALREADY COVERED holds the last few episodes Sam actually heard.
+
+- Don't re-report a development already covered. If it still matters, give it one short callback ("As we said yesterday, ...") and move on.
+- Something new in an old story leads with the new part.
+- Upcoming games and deadlines still ahead may come up again in one line, without re-explaining them. Always mention anything in the next three days.
+- Background already given (rankings, records, season context, a case's posture) gets a few words at most.
+- A case whose only news was already covered gets one line.
 
 ## Delivery
 
@@ -501,7 +516,8 @@ def _pcm_parts(parts: list[bytes], rate: int = _RATE):
 
 def finish_audio(config: dict, intro: Path | None, mp3: Path,
                  parts: list[bytes] | None = None,
-                 words: int | None = None) -> float | None:
+                 words: int | None = None,
+                 stats: dict | None = None) -> float | None:
     """The episode's final audio: the hosts (from the ElevenLabs parts, each
     decoded separately), the intro music in front if there is one, all
     re-encoded as one 44.1 kHz stream, so podcast apps read the true length.
@@ -538,6 +554,8 @@ def finish_audio(config: dict, intro: Path | None, mp3: Path,
         return None
     total = len(out) / _RATE
     hosts = len(speech) / _RATE
+    if stats is not None:
+        stats.update(total=round(total, 1), hosts=round(hosts, 1))
     log.info(f"[{_TAG}] episode audio {total / 60:.1f} min (hosts "
              f"{hosts / 60:.1f} min from {len(parts or [])} part(s))")
     if words and hosts < words / 150 * 60 * 0.6:
@@ -654,6 +672,8 @@ _SETTINGS = {
                   lambda v: int(_num(v, 250, 3500))),
     "audio_tags": ("sams_podcast_audio_tags", _tags),
     "model": ("sams_podcast_model", _model),
+    "repeat_lookback_days": ("sams_podcast_repeat_days",
+                             lambda v: int(_num(v, 0, 7))),
     "intro_file": ("sams_podcast_intro_file", _intro_file),
 }
 
@@ -1159,8 +1179,10 @@ def script_prompt(style: str, hosts: list[str], listener: str,
 def write_script(client, model: str, material: str, day_label: str,
                  hosts: list[str], listener: str = "Sam",
                  style: str | None = None, target: int = TARGET_WORDS,
-                 max_words: int = MAX_WORDS, tags=None) -> list[dict]:
-    """One Claude call, plus one shorten retry if it runs long."""
+                 max_words: int = MAX_WORDS, tags=None,
+                 covered: list[tuple[str, str]] | None = None) -> list[dict]:
+    """One Claude call, plus one shorten retry if it runs long. covered is
+    [(day label, script text)] of earlier episodes Sam heard."""
     import kirsten_podcast as kp
     if not material:
         return []
@@ -1175,7 +1197,8 @@ def write_script(client, model: str, material: str, day_label: str,
                      "not mention sports at all.)")
     messages = [{"role": "user", "content":
                  f"TODAY: {day_label}\n{calendar(day_label)}\n\n"
-                 f"CARDS:\n\n{material}\n\nWrite the JSON script."}]
+                 f"CARDS:\n\n{material}\n\n"
+                 + covered_text(covered) + "Write the JSON script."}]
     turns: list[dict] = []
     for _ in range(2):
         raw = _ask(client, model, system, messages, max_tokens=16000,
@@ -1193,16 +1216,17 @@ def write_script(client, model: str, material: str, day_label: str,
                       f"{target} words: less detail per item, same "
                       f"shape. Return the JSON only."}]
     turns = kp.fit(turns, max_words, tag=_TAG)
-    return check_script(client, model, material, turns, day_label, tags)
+    return check_script(client, model, material, turns, day_label, tags,
+                        covered)
 
 
 CHECK_PROMPT = """You fact-check the script of a daily two-host audio show against the cards it was written from. The cards are the only source of truth.
 
-You receive TODAY, a CALENDAR, the CARDS, and the SCRIPT as numbered turns.
+You receive TODAY, a CALENDAR, the CARDS, sometimes ALREADY COVERED (earlier episodes the listener heard), and the SCRIPT as numbered turns.
 
 Check every turn, one claim at a time, including the opening preview and the close, which summarize several cards at once and are where facts get crossed. For each team, case, or person a turn names, confirm the claim is on THAT card.
 
-Find every turn that states something the cards do not support: a fact, date, score, opponent, schedule, bye week, record, or name not in the cards; a fact moved to the wrong team, case, or person (for example one team's game credited to another); a past date presented as upcoming; or something pending or unconfirmed presented as done. A weekday is wrong only if the CALENDAR says so: never change one from your own reckoning. Opinions and discussion of a card's angles are fine. Delivery cues in brackets ([excited], [laughs], ...) are not claims: leave them. Wording and style are not your concern.
+Find every turn that states something the cards do not support: a fact, date, score, opponent, schedule, bye week, record, or name not in the cards; a fact moved to the wrong team, case, or person (for example one team's game credited to another); a past date presented as upcoming; or something pending or unconfirmed presented as done. A weekday is wrong only if the CALENDAR says so: never change one from your own reckoning. A brief callback to an earlier episode ("again", "as we said yesterday") is fine when ALREADY COVERED says it; anything else must be on today's cards. Opinions and discussion of a card's angles are fine. Delivery cues in brackets ([excited], [laughs], ...) are not claims: leave them. Wording and style are not your concern.
 
 Return ONLY a JSON object:
 {"fixes": [{"turn": <number>, "problem": "<short reason>", "text": "<the whole turn rewritten to say only what the cards support, same speaker voice, or empty to drop the turn>"}]}
@@ -1211,7 +1235,8 @@ Return {"fixes": []} if every turn is supported. Output the JSON object and noth
 
 
 def check_script(client, model: str, material: str, turns: list[dict],
-                 day_label: str, tags=None) -> list[dict]:
+                 day_label: str, tags=None,
+                 covered: list[tuple[str, str]] | None = None) -> list[dict]:
     """One more Claude call: every turn checked against the cards, and any
     unsupported or misattributed claim rewritten (10/23 dry runs: an invented
     bye week, and Illinois' Oregon game credited to the Bears). A failed
@@ -1225,7 +1250,8 @@ def check_script(client, model: str, material: str, turns: list[dict],
             messages=[{"role": "user", "content":
                        f"TODAY: {day_label}\n{calendar(day_label)}\n\n"
                        f"CARDS:\n\n{material}\n\n"
-                       f"SCRIPT:\n{numbered}\n\nReturn the JSON."}])
+                       + covered_text(covered)
+                       + f"SCRIPT:\n{numbered}\n\nReturn the JSON."}])
         data = _parse_json(raw)
     except Exception as e:
         log.warning(f"[{_TAG}] fact check FAILED ({e}); script kept as written")
@@ -1399,6 +1425,59 @@ def _write_state(data_dir: Path, state: dict) -> None:
         log.warning(f"[{_TAG}] could not record state: {e}")
 
 
+_COVERED_CAP = 9000      # characters of one earlier script
+
+
+def repeat_days(config: dict) -> int:
+    value = config.get("sams_podcast_repeat_days")
+    return 2 if value is None else int(value)
+
+
+def audio_complete(words: int | None, hosts_seconds: float | None) -> bool:
+    """Did the hosts' audio come out about as long as the script? (10/23 and
+    10/24 were cut off: their scripts are complete but Sam never heard the
+    end, so they must not count as covered.)"""
+    if not words or not hosts_seconds:
+        return False
+    return hosts_seconds >= words / 150 * 60 * 0.75
+
+
+def earlier_scripts(episodes: dict, archive: Path, now: datetime, days: int,
+                    tags=None) -> list[tuple[str, str]]:
+    """[(day label, script)] for the last `days` days before today whose
+    episode was made with full-length audio, oldest first. Anything else (no
+    record, cut-off audio, a missing script file) is skipped and logged."""
+    out = []
+    for back in range(days, 0, -1):
+        day = now - timedelta(days=back)
+        key = day.strftime("%Y-%m-%d")
+        record = episodes.get(key)
+        if not record:
+            continue
+        if not record.get("audio_complete"):
+            log.info(f"[{_TAG}] {key}: not counted as covered (audio was not "
+                     f"full length, or not recorded)")
+            continue
+        try:
+            text = (archive / f"{key} script.txt").read_text(encoding="utf-8")
+        except OSError as e:
+            log.warning(f"[{_TAG}] {key}: script not readable ({e}); not "
+                        f"counted as covered")
+            continue
+        out.append((day_label(day), strip_tags(text, tags)[:_COVERED_CAP]))
+    if out:
+        log.info(f"[{_TAG}] already covered: {', '.join(d for d, _ in out)}")
+    return out
+
+
+def covered_text(covered: list[tuple[str, str]] | None) -> str:
+    if not covered:
+        return ""
+    blocks = [f"--- {day} ---\n{text.strip()}" for day, text in covered]
+    return ("ALREADY COVERED (earlier episodes Sam heard; context only, not a "
+            "source):\n\n" + "\n\n".join(blocks) + "\n\n")
+
+
 def day_label(now: datetime) -> str:
     return f"{now.strftime('%A, %B')} {now.day}, {now.year}"
 
@@ -1516,9 +1595,12 @@ def run_cli(config: dict, data_dir: Path) -> None:
     title = f"{SHOW_NAME} — {day_label(now)}"
     notes = render_notes(topics, cases)
     voices, hosts = _settings(config)
+    archive = (root or data_dir / "sams_podcast") / EPISODES_DIRNAME
+    covered = earlier_scripts(episodes, archive, now,
+                              repeat_days(config), tags)
     turns = write_script(client, model, cards_text(topics, cases),
                          today_s, hosts, listener(config), style["script"],
-                         target, max_words, tags)
+                         target, max_words, tags, covered)
     if not turns:
         log.warning(f"[{_TAG}] the script came back empty; no episode")
         return
@@ -1556,7 +1638,6 @@ def run_cli(config: dict, data_dir: Path) -> None:
         log.warning(f"[{_TAG}] elevenlabs_api_key is not set; no audio, no "
                     f"episode")
         return
-    archive = (root or data_dir / "sams_podcast") / EPISODES_DIRNAME
     archive.mkdir(parents=True, exist_ok=True)
     (archive / f"{today} cards.html").write_text(notes_page(notes, title),
                                                  encoding="utf-8")
@@ -1566,13 +1647,16 @@ def run_cli(config: dict, data_dir: Path) -> None:
     kp.synthesize(config["elevenlabs_api_key"], turns, voices, mp3,
                   int(max_words * 0.4) + 20, tag=_TAG,
                   settings=voice_settings(config), parts=parts)
-    finish_audio(config, intro_path(config, root), mp3, parts,
-                 kp.word_count(turns))
+    stats: dict = {}
+    words = kp.word_count(turns)
+    finish_audio(config, intro_path(config, root), mp3, parts, words, stats)
 
     record = {"edition": edition["date"] if edition else None,
               "title": title, "mp3": str(mp3),
               "cases": [c["title"] for c in cases if not c.get("quiet")],
-              "published": False}
+              "published": False, "words": words,
+              "hosts_seconds": stats.get("hosts"),
+              "audio_complete": audio_complete(words, stats.get("hosts"))}
     episodes[today] = record
     _write_state(data_dir, state)
 
