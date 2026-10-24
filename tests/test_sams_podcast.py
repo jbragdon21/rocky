@@ -640,3 +640,75 @@ def test_intro_file_from_the_style_file(tmp_path):
     assert sp.parse_settings({"intro_file": "none"}) == \
         {"sams_podcast_intro_file": ""}
     assert sp.parse_settings({"intro_file": "song.docx"}) == {}
+
+
+SOUNDTRACK_MP3 = Path(r"C:\Users\jbragdon\OneDrive - gejlaw.com\Rocky's files - "
+                      r"Sam's Podcast\Sam's Soundtrack.mp3")
+
+
+def test_parts_with_length_headers_decode_in_full():
+    """10/24: each ElevenLabs part is a whole MP3 with a Xing/Info header,
+    and decoding the parts glued together stopped after part one."""
+    import pytest
+    if not SOUNDTRACK_MP3.is_file():
+        pytest.skip("needs an MP3 with a Xing header (Sam's Soundtrack.mp3)")
+    import miniaudio
+    part = SOUNDTRACK_MP3.read_bytes()
+    glued = miniaudio.decode(part + part, nchannels=1, sample_rate=44100)
+    one = len(sp._pcm_parts([part]))
+    assert len(glued.samples) < 1.1 * one          # the bug, for the record
+    assert abs(len(sp._pcm_parts([part, part])) - 2 * one) < 44100 * 0.1
+
+
+def test_finish_audio_joins_every_part_with_and_without_intro(tmp_path):
+    import math
+    from array import array
+    import miniaudio
+    tone = array("h", (int(5000 * math.sin(2 * math.pi * 220 * k / 44100))
+                       for k in range(44100 * 3)))
+    part = sp.encode_mp3(tone)
+    mp3 = tmp_path / "ep.mp3"
+    mp3.write_bytes(part * 3)
+    assert abs(sp.finish_audio({}, None, mp3, [part, part, part]) - 9) < 0.3
+    assert abs(miniaudio.mp3_get_file_info(str(mp3)).duration - 9) < 0.3
+    intro = tmp_path / "intro.mp3"
+    intro.write_bytes(sp.encode_mp3(tone))
+    total = sp.finish_audio({"sams_podcast_intro_seconds": 0,
+                             "sams_podcast_intro_overlap": 1}, intro, mp3,
+                            [part, part, part])
+    assert abs(total - (3 + 9 - 1)) < 0.3
+
+
+def test_finish_audio_keeps_hosts_when_the_intro_fails(tmp_path, monkeypatch):
+    import math
+    from array import array
+    tone = array("h", (int(5000 * math.sin(2 * math.pi * 220 * k / 44100))
+                       for k in range(44100 * 2)))
+    part = sp.encode_mp3(tone)
+    mp3 = tmp_path / "ep.mp3"
+    mp3.write_bytes(part)
+    total = sp.finish_audio({}, tmp_path / "missing.wav", mp3, [part])
+    assert abs(total - 2) < 0.3                    # hosts only, no crash
+
+
+def test_synthesize_hands_back_each_part(monkeypatch, tmp_path):
+    import kirsten_podcast as kp
+
+    class R:
+        status_code, text = 200, ""
+
+        def __init__(self, n):
+            self.content = f"PART{n}".encode()
+
+    calls = []
+
+    def fake_post(url, **kw):
+        calls.append(1)
+        return R(len(calls))
+
+    monkeypatch.setattr(kp.requests, "post", fake_post)
+    parts = []
+    turns = [{"speaker": 1, "text": "x" * 1500}, {"speaker": 2, "text": "y" * 1500}]
+    kp.synthesize("K", turns, ["a", "b"], tmp_path / "o.mp3", parts=parts)
+    assert parts == [b"PART1", b"PART2"]
+    assert (tmp_path / "o.mp3").read_bytes() == b"PART1PART2"

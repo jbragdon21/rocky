@@ -59,6 +59,21 @@ in the .md so the show can be tuned without repackaging Rocky.
   ignore the unknown setting. Suite 151 pass.
 - Tests: suite 150 pass.
 
+- **Cut-off episodes (found 10/24 12:28):** the 10/24 episode was 2:42
+  from a complete 1,218-word script, so the cases were lost; 10/23's was
+  cut too (3:45). Each ElevenLabs part is a whole MP3 whose first frame
+  is a Xing/Info header with that part's length, and miniaudio decoding
+  the parts glued together stops after part one (two glued copies of a
+  57.6 s Xing MP3 decode to 57.6 s). `kirsten_podcast.synthesize` now
+  hands back each part (`parts=`); `finish_audio` decodes them one by
+  one, adds the intro, and always re-encodes one 44.1 kHz stream (with
+  or without an intro) so apps read the true length, and warns when the
+  audio is under 60% of the script's expected length. Check with three
+  Xing parts + intro: 185.8 s, as expected. Suite 159 pass.
+- The Kirsten podcast still attaches glued parts unchanged: some players
+  may stop after part one or show part one's length. Not yet seen in a
+  real file (no Kirsten MP3 has been made).
+
 **Verified**
 
 - Dry run 10/24 with the live file: settings read from it, first real

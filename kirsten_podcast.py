@@ -251,7 +251,8 @@ def chunk(inputs: list[dict], cap: int = _CHUNK_CHARS) -> list[list[dict]]:
 def synthesize(api_key: str, turns: list[dict], voices: list[str],
                out_path: Path, max_seconds: int = MAX_SECONDS,
                tag: str = "kirsten podcast",
-               settings: dict | None = None) -> float:
+               settings: dict | None = None,
+               parts: list | None = None) -> float:
     """Voice the script into out_path. Returns the length in seconds.
     settings is the dialogue request's "settings" (e.g. stability); if
     ElevenLabs rejects it, that part is retried once without it."""
@@ -281,6 +282,8 @@ def synthesize(api_key: str, turns: list[dict], voices: list[str],
             raise RuntimeError(f"ElevenLabs HTTP {resp.status_code} on part "
                                f"{i}/{len(batches)}: {resp.text[:300]}")
         audio += resp.content
+        if parts is not None:
+            parts.append(resp.content)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_bytes(audio)
     seconds = len(audio) * 8 / _BITRATE

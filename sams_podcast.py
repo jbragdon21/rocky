@@ -484,26 +484,73 @@ def encode_mp3(samples, rate: int = _RATE, kbps: int = 64) -> bytes:
     return bytes(enc.encode(samples.tobytes()) + enc.flush())
 
 
-def add_intro(config: dict, intro: Path, mp3: Path) -> None:
-    """Put the intro music in front of the hosts' MP3. Both are decoded and
-    the result re-encoded as one stream: the soundtrack is 48 kHz stereo and
-    the hosts are 44.1 kHz, and gluing MP3 frames of different rates plays
-    wrong in many podcast apps. A failure leaves the hosts' MP3 as it was."""
-    seconds = float(config.get("sams_podcast_intro_seconds", INTRO_SECONDS))
+def _pcm_parts(parts: list[bytes], rate: int = _RATE):
+    """Each ElevenLabs part decoded on its own, then joined. Every part is a
+    complete MP3 whose first frame states that part's length (a Xing/Info
+    header), so decoding the parts glued together stops after part one:
+    10/24's episode was 2:42 from a nine-minute script."""
+    import miniaudio
+    from array import array
+    out = array("h")
+    for data in parts:
+        out.extend(miniaudio.decode(
+            data, output_format=miniaudio.SampleFormat.SIGNED16, nchannels=1,
+            sample_rate=rate).samples)
+    return out
+
+
+def finish_audio(config: dict, intro: Path | None, mp3: Path,
+                 parts: list[bytes] | None = None,
+                 words: int | None = None) -> float | None:
+    """The episode's final audio: the hosts (from the ElevenLabs parts, each
+    decoded separately), the intro music in front if there is one, all
+    re-encoded as one 44.1 kHz stream, so podcast apps read the true length.
+    Returns its length in seconds. If the hosts can't be decoded, mp3 stays
+    as ElevenLabs returned it; if only the intro fails, it is left out."""
     try:
-        # The whole track ends on its own; only a cut-short one fades.
-        fade = float(config.get("sams_podcast_intro_fade", INTRO_FADE))
-        overlap = float(config.get("sams_podcast_intro_overlap",
-                                   INTRO_OVERLAP))
-        out = mix_intro(_pcm(intro), _pcm(mp3), seconds,
-                        fade if seconds > 0 else 0, overlap)
+        speech = _pcm_parts(parts) if parts else _pcm(mp3)
+    except Exception as e:
+        log.warning(f"[{_TAG}] could not decode the hosts' audio ({e}); the "
+                    f"episode goes out as ElevenLabs returned it, without "
+                    f"intro music")
+        return None
+    out, seconds = speech, float(
+        config.get("sams_podcast_intro_seconds", INTRO_SECONDS))
+    if intro:
+        try:
+            # The whole track ends on its own; only a cut-short one fades.
+            fade = float(config.get("sams_podcast_intro_fade", INTRO_FADE))
+            overlap = float(config.get("sams_podcast_intro_overlap",
+                                       INTRO_OVERLAP))
+            out = mix_intro(_pcm(intro), speech, seconds,
+                            fade if seconds > 0 else 0, overlap)
+            log.info(f"[{_TAG}] intro music {intro.name} added "
+                     f"({'whole track' if seconds <= 0 else f'{seconds:g}s'})")
+        except Exception as e:
+            log.warning(f"[{_TAG}] intro music FAILED ({e}); the episode goes "
+                        f"out without it")
+            out = speech
+    try:
         mp3.write_bytes(encode_mp3(out))
     except Exception as e:
-        log.warning(f"[{_TAG}] intro music FAILED ({e}); the episode goes "
-                    f"out without it")
-        return
-    log.info(f"[{_TAG}] intro music {intro.name} added "
-             f"({'whole track' if seconds <= 0 else f'{seconds:g}s'})")
+        log.warning(f"[{_TAG}] could not re-encode the episode ({e}); it goes "
+                    f"out as ElevenLabs returned it")
+        return None
+    total = len(out) / _RATE
+    hosts = len(speech) / _RATE
+    log.info(f"[{_TAG}] episode audio {total / 60:.1f} min (hosts "
+             f"{hosts / 60:.1f} min from {len(parts or [])} part(s))")
+    if words and hosts < words / 150 * 60 * 0.6:
+        log.warning(f"[{_TAG}] the hosts' audio is {hosts:.0f}s for a "
+                    f"{words}-word script (about {words / 150:.0f} min "
+                    f"expected): it may be cut short")
+    return total
+
+
+def add_intro(config: dict, intro: Path, mp3: Path,
+              parts: list[bytes] | None = None) -> None:
+    """finish_audio with intro music (kept for callers and tests)."""
+    finish_audio(config, intro, mp3, parts)
 
 
 def style_path(config: dict, root: Path | None) -> Path | None:
@@ -1493,12 +1540,12 @@ def run_cli(config: dict, data_dir: Path) -> None:
                 log.warning(f"[{_TAG}] --audio needs elevenlabs_api_key")
             else:
                 mp3 = out / "sams_podcast_preview.mp3"
+                parts: list[bytes] = []
                 kp.synthesize(config["elevenlabs_api_key"], turns, voices,
                               mp3, int(max_words * 0.4) + 20, tag=_TAG,
-                              settings=voice_settings(config))
-                intro = intro_path(config, root)
-                if intro:
-                    add_intro(config, intro, mp3)
+                              settings=voice_settings(config), parts=parts)
+                finish_audio(config, intro_path(config, root), mp3, parts,
+                             kp.word_count(turns))
         log.info(f"[{_TAG}] DRY RUN — would publish {title!r}. Preview: "
                  f"{out / 'sams_podcast_preview.html'}, script "
                  f"{out / 'sams_podcast_preview.txt'}"
@@ -1515,11 +1562,12 @@ def run_cli(config: dict, data_dir: Path) -> None:
                                                  encoding="utf-8")
     (archive / f"{today} script.txt").write_text(script, encoding="utf-8")
     mp3 = archive / f"{today}.mp3"
+    parts: list[bytes] = []
     kp.synthesize(config["elevenlabs_api_key"], turns, voices, mp3,
-                  int(max_words * 0.4) + 20, tag=_TAG, settings=voice_settings(config))
-    intro = intro_path(config, root)
-    if intro:
-        add_intro(config, intro, mp3)
+                  int(max_words * 0.4) + 20, tag=_TAG,
+                  settings=voice_settings(config), parts=parts)
+    finish_audio(config, intro_path(config, root), mp3, parts,
+                 kp.word_count(turns))
 
     record = {"edition": edition["date"] if edition else None,
               "title": title, "mp3": str(mp3),
