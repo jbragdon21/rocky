@@ -115,11 +115,46 @@ under Monitored Litigation\Hunt, Robert (Washington state fees)).
 
 - Restored `Case Folder` as Sheet1 column C from OneDrive version 41.0
   (10/18 2:08 PM ET) via Excel COM, with 0042/0043 fixed. Every other cell
-  on both sheets is unchanged (checked). No code changes.
+  on both sheets is unchanged (checked).
+- `summarize_case_emails` call: `max_tokens` 2048 → 8192, plus a warning on
+  `stop_reason == "max_tokens"`. The catch-up run from the dev laptop
+  (stopped after RRID-0009) lost 0002/0004/0007/0009 summaries to truncated
+  JSON. Suite 150 pass.
+- 8192 wasn't enough either: Hunt's 47 emails hit it at email 43 (live
+  repro, nothing saved). The summary now runs `EMAIL_SUMMARY_BATCH` (10)
+  emails per call via `_summarize_email_batch` and merges with
+  `_merge_email_summaries` (summaries joined, per-email entries
+  concatenated, action items newest batch first, deduped, capped at 6). A
+  bad batch loses only its own part. Live: Hunt 47/47 structured. 4 tests
+  added to `tests/test_daily_digest.py`; suite 155 pass.
+- The Rocky laptop's 11:56 run (exe built 11:47) still failed Ghumman with
+  7 emails, which needed 1,912 tokens here, so that exe was built without
+  even the 8192 change.
+
+**Watch-outs**
+
+- The Excel COM save of the index sat local-only on the dev laptop for 30+
+  minutes (cloud stayed at version 44.0) while other files from the same
+  laptop synced within seconds. The Rocky laptop's 9:48 AM daily-cases run
+  read the old cloud copy and reported no Case Folder paths.
+- The deployed exe has no `--hours` (added 10/19, not yet built), so a
+  catch-up can only run from source until the exe is rebuilt.
 
 **Open**
 
-- Catch-up mail: `--daily-cases --hours 150` (last fetch 10/18 18:12 UTC).
+- Catch-up mail: 0001/0005/0008 done 10/24 (dev laptop). Hunt (0043)
+  fetched 47 emails / saved 92 files at 11:17, then the network dropped and
+  its summary failed ("(error: Connection error.)" event); every other case
+  failed to log in. James is running the catch-up from the Rocky laptop.
+  The exes in OneDrive Program Files\Rocky were built 10/24 9:37 AM (have
+  `--hours`), before the max_tokens fix, so rebuild first.
+- ~~Rerun the 11 failed cases~~ DONE 10/24 12:11–12:30 from the dev laptop
+  with the batched code: 0002, 0004, 0007, 0009, 0015, 0019, 0032, 0033,
+  0034, 0037, 0043 all parsed (structured count = emails fetched; Hettinger
+  46, Hunt 47). 0 files re-saved (dedupe held). The failed events stay in
+  each activity log beside the good ones.
+- rocky.exe rebuilt with the batching and deployed 10/24 12:13 PM
+  (`build_exe.py --rocky`; dashboard.exe not rebuilt). Not committed.
 - RRID-0044 VA AG Fees has no Case Folder path (never had one).
 - Paths that don't resolve in Outlook: 0003 Eden, 0012 Behroozi, 0030 PJC,
   0035 Moreno-Hutcheson.

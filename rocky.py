@@ -3978,6 +3978,75 @@ RULES:
 """
 
 
+EMAIL_SUMMARY_BATCH = 10
+# Cap on merged action items across batches (each batch returns 0-3).
+EMAIL_SUMMARY_MAX_ACTIONS = 6
+
+
+def _summarize_email_batch(
+    client: Anthropic,
+    rrid: str,
+    case_description: str,
+    email_blocks: list[str],
+    instructions: str,
+    part: tuple[int, int] = (1, 1),
+) -> dict:
+    """One Claude summary call over a batch of email blocks. Never raises."""
+    n, of = part
+    heading = (f"NEW EMAILS SINCE THE LAST RUN ({len(email_blocks)} total)" if of == 1 else
+               f"NEW EMAILS SINCE THE LAST RUN (part {n} of {of}; {len(email_blocks)} emails in this part)")
+    user_prompt = f"""CASE: {case_description}
+RRID: {rrid}
+
+{heading}:
+
+{chr(10).join(email_blocks)}
+
+{f'James added these instructions:{chr(10)}{instructions}{chr(10)}---' if instructions else ''}
+
+Summarize these emails. Return ONLY the JSON object."""
+
+    text_out = ""
+    try:
+        response = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=8192,
+            system=CASE_EMAIL_SUMMARY_PROMPT,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        text_out = response.content[0].text.strip()
+        if response.stop_reason == "max_tokens":
+            log.warning(f"[{rrid}] Email summary part {n}/{of} hit max_tokens "
+                        f"({len(email_blocks)} emails); output truncated.")
+        return _extract_json_from_response(text_out)
+    except json.JSONDecodeError as e:
+        log.error(f"[{rrid}] Could not parse email summary as JSON: {e}")
+        log.error(f"[{rrid}] Raw response (first 1000 chars): {text_out[:1000]}")
+        return {"summary": f"(parse error: {e})", "emails": [], "action_items": []}
+    except Exception as e:
+        log.error(f"[{rrid}] Email summary Claude call failed: {e}")
+        return {"summary": f"(error: {e})", "emails": [], "action_items": []}
+
+
+def _merge_email_summaries(parts: list[dict]) -> dict:
+    """Combine per-batch summaries into the one-call shape the callers expect."""
+    if len(parts) == 1:
+        return parts[0]
+    # Mail is fetched oldest first, so the last batch is the newest. Its action
+    # items go first; an early batch's "file the notice" is often already done.
+    actions: list[str] = []
+    for p in reversed(parts):
+        for a in p.get("action_items") or []:
+            if a not in actions:
+                actions.append(a)
+    return {
+        "summary": "\n\n".join(str(p.get("summary") or "").strip()
+                               for p in parts if p.get("summary")),
+        "action_items": actions[:EMAIL_SUMMARY_MAX_ACTIONS],
+        "emails": [e for p in parts for e in (p.get("emails") or [])],
+    }
+
+
 def process_case_emails(
     client: Anthropic,
     token: str,
@@ -4036,35 +4105,16 @@ def process_case_emails(
             block += f"\n\nExtracted attachment text:\n{att_text}"
         email_blocks.append(block)
 
-    user_prompt = f"""CASE: {case_description}
-RRID: {rrid}
-
-NEW EMAILS SINCE THE LAST RUN ({len(emails)} total):
-
-{chr(10).join(email_blocks)}
-
-{f'James added these instructions:{chr(10)}{instructions}{chr(10)}---' if instructions else ''}
-
-Summarize these emails. Return ONLY the JSON object."""
-
-    # Claude summary call.
-    summary_result = {}
-    try:
-        response = client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=2048,
-            system=CASE_EMAIL_SUMMARY_PROMPT,
-            messages=[{"role": "user", "content": user_prompt}],
-        )
-        text_out = response.content[0].text.strip()
-        summary_result = _extract_json_from_response(text_out)
-    except json.JSONDecodeError as e:
-        log.error(f"[{rrid}] Could not parse email summary as JSON: {e}")
-        log.error(f"[{rrid}] Raw response (first 1000 chars): {text_out[:1000]}")
-        summary_result = {"summary": f"(parse error: {e})", "emails": [], "action_items": []}
-    except Exception as e:
-        log.error(f"[{rrid}] Email summary Claude call failed: {e}")
-        summary_result = {"summary": f"(error: {e})", "emails": [], "action_items": []}
+    # Claude summary calls, EMAIL_SUMMARY_BATCH emails at a time. One call for
+    # a catch-up's worth of mail ran out of output tokens mid-JSON (10/24/2026:
+    # Hunt's 47 emails hit 8192 tokens at email 43) and the whole summary was lost.
+    batches = [email_blocks[i:i + EMAIL_SUMMARY_BATCH]
+               for i in range(0, len(email_blocks), EMAIL_SUMMARY_BATCH)]
+    summary_result = _merge_email_summaries([
+        _summarize_email_batch(client, rrid, case_description, batch, instructions,
+                               part=(n + 1, len(batches)))
+        for n, batch in enumerate(batches)
+    ])
 
     log.info(f"[{rrid}] Summary: {summary_result.get('summary', '')[:120]}")
     if summary_result.get("action_items"):

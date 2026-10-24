@@ -303,3 +303,82 @@ def test_section_labels_normalized_to_bold():
     body = "## What happened\n- x\n\n### **Upcoming dates**\n(none on file)\n- ## not a label"
     assert rocky._normalize_section_labels(body) == (
         "**What happened**\n- x\n\n**Upcoming dates**\n(none on file)\n- ## not a label")
+
+
+# --- Email summary batching (10/24/2026: Hunt's 47 emails overflowed one call) ---
+
+class BatchClient:
+    """Answers each summary call with one structured entry per email block."""
+
+    def __init__(self, fail_part=None, stop_reason="end_turn"):
+        self.calls = 0
+        self.fail_part = fail_part
+        self.stop_reason = stop_reason
+        self.messages = self
+
+    def create(self, **kw):
+        self.calls += 1
+        prompt = kw["messages"][0]["content"]
+        if self.calls == self.fail_part:
+            text = '```json\n{"summary": "cut off'
+        else:
+            n = prompt.count("### Email")
+            text = json.dumps({
+                "summary": f"part {self.calls}",
+                "action_items": ["Call client", f"Item {self.calls}"],
+                "emails": [{"one_line": f"p{self.calls}e{i}"} for i in range(n)],
+            })
+        return SimpleNamespace(content=[SimpleNamespace(text=text)], stop_reason=self.stop_reason)
+
+
+def _blocks(n):
+    return [f"### Email\nSubject: s{i}" for i in range(n)]
+
+
+def _summarize(client, n):
+    batches = [_blocks(n)[i:i + rocky.EMAIL_SUMMARY_BATCH]
+               for i in range(0, n, rocky.EMAIL_SUMMARY_BATCH)]
+    return rocky._merge_email_summaries([
+        rocky._summarize_email_batch(client, "RRID-0043", "Hunt", b, "", part=(k + 1, len(batches)))
+        for k, b in enumerate(batches)])
+
+
+def test_email_summary_single_batch_is_unchanged():
+    client = BatchClient()
+    result = _summarize(client, 7)
+    assert client.calls == 1
+    assert result["summary"] == "part 1"
+    assert len(result["emails"]) == 7
+
+
+def test_email_summary_47_emails_split_and_merged():
+    client = BatchClient()
+    result = _summarize(client, 47)
+    assert client.calls == 5
+    assert len(result["emails"]) == 47
+    assert result["summary"].split("\n\n") == [f"part {i}" for i in range(1, 6)]
+    # Duplicate action items collapse; the merged list is capped.
+    # Newest batch's actions first; duplicates collapse; the list is capped.
+    assert result["action_items"][:2] == ["Call client", "Item 5"]
+    assert result["action_items"].count("Call client") == 1
+    assert len(result["action_items"]) <= rocky.EMAIL_SUMMARY_MAX_ACTIONS
+
+
+def test_email_summary_one_bad_batch_keeps_the_others():
+    client = BatchClient(fail_part=2)
+    result = _summarize(client, 25)
+    assert client.calls == 3
+    assert "(parse error" in result["summary"]
+    assert len(result["emails"]) == 15  # parts 1 and 3
+
+
+def test_email_summary_batch_prompt_names_the_part():
+    seen = []
+
+    class Recorder(BatchClient):
+        def create(self, **kw):
+            seen.append(kw["messages"][0]["content"])
+            return super().create(**kw)
+
+    _summarize(Recorder(), 12)
+    assert "part 1 of 2" in seen[0] and "part 2 of 2" in seen[1]
