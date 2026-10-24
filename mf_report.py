@@ -235,8 +235,8 @@ def untracked_activity(cases: dict, lines: dict, obs: list[dict],
         if not t or t < since:
             continue
         cid = o.get("case")
-        c = cases.get(cid) or {}
-        if cid in on_sheet or c.get("matter_type") in _TRACKED_TYPES:
+        c = cases.get(cid)
+        if not c or cid in on_sheet or c.get("matter_type") in _TRACKED_TYPES:
             continue
         ev = o.get("evidence") or {}
         rec = by_case.setdefault(cid, {
@@ -407,7 +407,7 @@ def build_report(config: dict, paths: dict, llt_paths: dict, *,
 
     now = now or datetime.now(timezone.utc)
     today = now.astimezone().date()
-    cases = mf_brain.load_cases(paths)
+    cases = mf_brain.scoped_cases(paths, mf_brain.load_cases(paths))
     lines = mf_brain.load_lines(paths)
     obs = mf_brain.read_jsonl(paths["observations"])
     state = mf_brain.load_state(paths)

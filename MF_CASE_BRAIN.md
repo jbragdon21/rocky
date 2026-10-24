@@ -159,6 +159,19 @@ The parenthetical in a folder name is **not** reliably the unit.
 
 ## What the brain owns, and what it must not take
 
+> **Narrowed 2026-10-20 (James):** the brain is for *our claims against
+> residents*, mainly evictions. It no longer walks the insured/monitored
+> branch at all, and it skips matter folders that read as a resident's
+> claim against the client (`agency_complaint`, `discrimination`,
+> `habitability`, `demand`): not registered, mail not read, dropped from
+> the digest and daily report. James flags the eviction folders in
+> `Case Brain\eviction_folders.txt` on the share (one Inbox subtree per
+> line); with none flagged it walks everything but the insured branch.
+> Old ledger cases stay (append-only) and are filtered at read time by
+> `scoped_cases()`, so flagging a branch later brings them back. The
+> "164 are the real finding" framing below is superseded for the
+> resident-claim types.
+
 The folder tree spans four different systems of record. Of the 201 live
 off-sheet matters:
 

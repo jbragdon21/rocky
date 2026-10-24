@@ -337,7 +337,7 @@ def thoughts_html(config: dict, summary: dict, cases: dict) -> str:
 def build_email(config: dict, paths: dict, summary: dict,
                 questions: list[dict]) -> str:
     import mf_brain
-    cases = mf_brain.load_cases(paths)
+    cases = mf_brain.scoped_cases(paths, mf_brain.load_cases(paths))
     lines = mf_brain.load_lines(paths)
     preds = mf_brain._last_wins(
         mf_brain.read_jsonl(paths["predictions"]), "pred_id")
@@ -525,7 +525,7 @@ def run_cli(config: dict, data_dir: Path) -> None:
     collect_answers(config, paths, token, dry_run=dry_run)
 
     summary = mf_brain.run_scan(config, paths, token=token, dry_run=dry_run)
-    cases = mf_brain.load_cases(paths)
+    cases = mf_brain.scoped_cases(paths, mf_brain.load_cases(paths))
     questions = build_questions(paths, cases,
                                 summary.get("mail_questions", []), max_q)
     html = build_email(config, paths, summary, questions)

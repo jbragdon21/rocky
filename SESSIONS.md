@@ -189,6 +189,50 @@ ElevenLabs, and publish it to a feed Sam downloads from.
 
 ---
 
+## Session 2026-10-20 — MF Case Brain: claims against residents only
+
+James: the brain walks every folder and doesn't need to. Focus on our
+claims against residents (mainly evictions); skip residents' claims
+against us and the whole insured/monitored branch; he will flag the
+eviction folders.
+
+**What changed**
+
+- `mf_brain.py`: `RESIDENT_CLAIM_TYPES` (agency_complaint, discrimination,
+  habitability, demand). Scope file `Case Brain\eviction_folders.txt` on
+  the share (`load_scope`; `#` comments, optional `Inbox\` prefix, trailing
+  `[n]` ignored). `walk_folders` descends only into flagged subtrees
+  (`should_descend`) and never into insured/monitored. `scan_folders`
+  skips unflagged paths and resident-claim folders and returns
+  `in_scope` ids; `scan_inbox` reads mail only from those (empty set =
+  failed walk, cursor held). `case_in_scope` / `scoped_cases` filter old
+  ledger cases at read time; `--status` shows in-scope count + flagged
+  folders. Needs-review file is rewritten on every walk so stale folders
+  stop being asked.
+- `mf_digest.py`, `mf_report.py` read cases through `scoped_cases`;
+  untracked activity skips cases no longer in scope.
+- Share: `eviction_folders.txt` written with all 44 branches/regions
+  commented out, case counts in brackets.
+- `tests/test_mf_brain_scope.py` (6). Suite 113 pass.
+
+**Decisions**
+
+- Supersedes the 2026-09-12 design's claim on the 164 resident-claim
+  matters. Kept in scope: eviction, other, incident, bankruptcy,
+  lease_exit (incidents and bankruptcies bear on evictions).
+- Scope is a share file, not config, so both laptops read one list and
+  James edits it in Notepad without JSON escaping.
+- Ledger is not rewritten; out-of-scope cases are filtered, so un-flagging
+  is reversible.
+
+**Open**
+
+- James to flag folders in `eviction_folders.txt`. Until then: everything
+  but insured, minus resident claims (2,260 of 2,574 cases in scope).
+- Rebuild + deploy rocky.exe (also still open from 10/19).
+
+---
+
 ## Session 2026-10-18 (8) — Activity log: Litigation Scanner, quiet mail, a leader on every line
 
 James: the live log (Plain mode) showed the monitor's litigation poll as

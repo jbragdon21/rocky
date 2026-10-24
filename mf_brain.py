@@ -78,6 +78,14 @@ CONFIDENCE_FLOOR = 0.75
 # and then leaves them alone.
 FOREIGN_BRANCHES = {"__bozzuto insured/monitored litigation"}
 
+# Claims BY a resident against the client. Out of scope (James,
+# 2026-10-20): the brain tracks our claims against residents, mainly
+# evictions, so a folder of this type is not registered and its mail is
+# not read. Supersedes the 2026-09-12 design, which counted these among
+# the 164 matters the brain owned.
+RESIDENT_CLAIM_TYPES = {"agency_complaint", "discrimination",
+                        "habitability", "demand"}
+
 # matter_type decides which rules may fire. A lease_exit matter absent
 # from the eviction spreadsheet is CORRECT, not a finding, and
 # forgetting that would bury every report in false positives.
@@ -154,6 +162,7 @@ def get_paths(config: dict, data_dir: Path) -> dict:
         "questions": root / "questions.jsonl",
         "answers": root / "answers.jsonl",
         "folder_map": root / "folder_map.json",
+        "scope": root / "eviction_folders.txt",
         "aliases": root / "aliases.md",
         "learning": root / "learning.md",
         "state": root / "state.json",
@@ -279,6 +288,81 @@ def classify_matter_type(*, on_sheet: bool, branch: str = "",
         if pat.search(text or ""):
             return kind
     return "eviction" if on_sheet else "other"
+
+
+# =============================================================================
+# Scope — which folders the brain looks at
+# =============================================================================
+#
+# eviction_folders.txt on the share, one Inbox subtree per line:
+#
+#     __Bozzuto Management\__DC
+#     __Horning
+#
+# Hand-edited by James. No file, or no uncommented lines, means every
+# branch but the excluded ones. The insured/monitored branch is out
+# whatever the file says.
+
+def load_scope(paths: dict) -> list[tuple[str, ...]]:
+    p = paths.get("scope")
+    if not p or not p.exists():
+        return []
+    out = []
+    for raw in p.read_text("utf-8-sig").splitlines():
+        # A trailing "[561]" is the file's own case-count annotation.
+        s = re.sub(r"\s*\[[^\]]*\]\s*$", "", raw).strip()
+        if not s or s.startswith("#"):
+            continue
+        parts = [norm(x) for x in re.split(r"\\", s) if norm(x)]
+        if parts and parts[0] == "inbox":
+            parts = parts[1:]
+        if parts:
+            out.append(tuple(parts))
+    return out
+
+
+def _rel(path: list[str]) -> tuple[str, ...]:
+    """A walked folder's path below Inbox, normalized."""
+    return tuple(norm(x) for x in path[1:])
+
+
+def _excluded_branch(rel: tuple[str, ...]) -> bool:
+    return bool(rel) and rel[0] in {norm(b) for b in FOREIGN_BRANCHES}
+
+
+def path_in_scope(path: list[str], scope: list[tuple[str, ...]]) -> bool:
+    rel = _rel(path)
+    if _excluded_branch(rel):
+        return False
+    return not scope or any(rel[:len(s)] == s for s in scope)
+
+
+def should_descend(path: list[str], scope: list[tuple[str, ...]]) -> bool:
+    """Walk into a folder only if it is in scope or on the way to it,
+    so an unflagged branch costs one listing, not its whole subtree."""
+    rel = _rel(path)
+    if _excluded_branch(rel):
+        return False
+    return not scope or any(rel[:len(s)] == s or s[:len(rel)] == rel
+                            for s in scope)
+
+
+def case_in_scope(case: dict, scope: list[tuple[str, ...]]) -> bool:
+    mt = case.get("matter_type")
+    if mt == "insured_litigation" or mt in RESIDENT_CLAIM_TYPES:
+        return False
+    fp = case.get("folder_path")
+    if not fp:
+        return True     # registered from the eviction sheet
+    return path_in_scope(fp.split("\\"), scope)
+
+
+def scoped_cases(paths: dict, cases: dict[str, dict]) -> dict[str, dict]:
+    """The ledger keeps every case it ever registered (append-only);
+    reports read through this so an unflagged branch drops out, and
+    comes back if James flags it later."""
+    scope = load_scope(paths)
+    return {k: c for k, c in cases.items() if case_in_scope(c, scope)}
 
 
 # =============================================================================
@@ -575,7 +659,8 @@ def scan_spreadsheet(config: dict, cases: dict, lines: dict, *,
 # Source (d) — the Outlook folder tree
 # =============================================================================
 
-def walk_folders(token: str, mailbox: str, max_depth: int = 4) -> list[dict]:
+def walk_folders(token: str, mailbox: str, max_depth: int = 4,
+                 scope: list[tuple[str, ...]] | None = None) -> list[dict]:
     import requests
     import pending_llt as pl
     H = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
@@ -603,7 +688,8 @@ def walk_folders(token: str, mailbox: str, max_depth: int = 4) -> list[dict]:
             out.append({"id": f["id"], "name": f["displayName"], "path": p,
                         "depth": depth, "n": f.get("totalItemCount", 0),
                         "kids": f.get("childFolderCount", 0)})
-            if f.get("childFolderCount") and depth < max_depth:
+            if (f.get("childFolderCount") and depth < max_depth
+                    and should_descend(p, scope or [])):
                 rec(f["id"], depth + 1, p)
 
     root = [f for f in kids("msgfolderroot") if f["displayName"] == "Inbox"]
@@ -624,14 +710,21 @@ def _unit_from_folder(name: str) -> str:
 
 
 def scan_folders(cases: dict, folder_map: dict, token: str,
-                 mailbox: str) -> dict:
-    tree = walk_folders(token, mailbox)
-    log.info(f"[mf-brain] (d) {len(tree)} folders under Inbox")
+                 mailbox: str, scope: list[tuple[str, ...]] | None = None
+                 ) -> dict:
+    scope = scope or []
+    tree = walk_folders(token, mailbox, scope=scope)
+    log.info(f"[mf-brain] (d) {len(tree)} folders under Inbox"
+             + (f" ({len(scope)} flagged subtree(s))" if scope else ""))
     ts = datetime.now(timezone.utc).isoformat()
     obs, new_cases, unresolved = [], [], []
+    in_scope: set[str] = set()
+    skipped_claims = 0
 
     for f in tree:
         if f["name"].startswith("_") or not MATTER_FOLDER_RE.match(f["name"]):
+            continue
+        if not path_in_scope(f["path"], scope):
             continue
         branch = f["path"][1] if len(f["path"]) > 1 else ""
         prop = (f["path"][-2] if len(f["path"]) >= 2 else "").lstrip("_").strip()
@@ -639,6 +732,14 @@ def scan_folders(cases: dict, folder_map: dict, token: str,
         sig = case_signature(prop=prop, name=f["name"], unit=unit)
         cid, conf, why = resolve(sig, cases, folder_id=f["id"],
                                  folder_map=folder_map)
+
+        mtype = ((cases.get(cid) or {}).get("matter_type")
+                 if cid and conf >= CONFIDENCE_FLOOR
+                 else classify_matter_type(on_sheet=False, text=f["name"]))
+        if mtype in RESIDENT_CLAIM_TYPES:
+            skipped_claims += 1
+            continue
+        in_scope.add(f["id"])
 
         if cid and conf >= CONFIDENCE_FLOOR:
             folder_map[f["id"]] = cid
@@ -663,8 +764,7 @@ def scan_folders(cases: dict, folder_map: dict, token: str,
         # (stratos)" matching Stratos/Baldwin on the sheet) under noise.
         # Anything weaker than property+unit or name+unit becomes its own
         # case instead, which a later answer can still merge.
-        if conf >= 0.60 and not (
-                norm(branch) in {norm(b) for b in FOREIGN_BRANCHES}):
+        if conf >= 0.60:
             unresolved.append({
                 "folder_id": f["id"], "path": "\\".join(f["path"]),
                 "name": f["name"], "messages": f["n"], "guess": cid,
@@ -687,8 +787,11 @@ def scan_folders(cases: dict, folder_map: dict, token: str,
         new_cases.append(rec)
         folder_map[f["id"]] = cid
 
+    if skipped_claims:
+        log.info(f"[mf-brain] (d) {skipped_claims} resident-claim folder(s) "
+                 f"skipped")
     return {"obs": obs, "new_cases": new_cases, "unresolved": unresolved,
-            "tree": tree}
+            "tree": tree, "in_scope": in_scope}
 
 
 # =============================================================================
@@ -719,18 +822,27 @@ happen next. If nothing factual happened, return an empty facts list."""
 
 def scan_inbox(config: dict, paths: dict, cases: dict, folder_map: dict,
                token: str, mailbox: str, state: dict, *,
-               dry_run: bool = False) -> dict:
+               scope_ids: set[str], dry_run: bool = False) -> dict:
     """New mail since the last run, grouped by folder, one Claude call
     per folder that actually received something.
 
     ONE Graph query for the whole mailbox rather than 1,564 per-folder
     polls: messages carry parentFolderId, so grouping is free and the
     folders with no new mail cost nothing.
+
+    Only folders this run's walk found in scope (``scope_ids``) are
+    read. An empty set means the walk came back with nothing, which is a
+    Graph failure rather than a fact, so the cursor holds.
     """
     import requests
     import pending_llt as pl
 
     since = state.get("inbox_cursor")
+    if not scope_ids:
+        log.warning("[mf-brain] (c) no in-scope folders from the walk — "
+                    "mail not read, cursor held")
+        return {"obs": [], "questions": [], "cursor": since,
+                "folders_touched": 0, "messages": 0}
     # A cursor weeks old (the brain sat unscheduled from 9/13 to 10/18)
     # would read up to 1,000 messages and spend a Claude call on every
     # folder they touch, all to describe mail that is no longer news.
@@ -767,7 +879,7 @@ def scan_inbox(config: dict, paths: dict, cases: dict, folder_map: dict,
     by_folder: dict[str, list[dict]] = {}
     for m in msgs:
         fid = m.get("parentFolderId")
-        if fid in folder_map:
+        if fid in folder_map and fid in scope_ids:
             by_folder.setdefault(fid, []).append(m)
     log.info(f"[mf-brain] (c) {len(msgs)} new message(s) since {since[:10]}; "
              f"{len(by_folder)} mapped folder(s) affected")
@@ -968,14 +1080,16 @@ def run_scan(config: dict, paths: dict, *, token: str | None = None,
     before_cases, before_lines = len(cases), len(lines)
 
     a = scan_spreadsheet(config, cases, lines, local=local, token=token)
-    d = {"obs": [], "new_cases": [], "unresolved": [], "tree": []}
+    d = {"obs": [], "new_cases": [], "unresolved": [], "tree": [],
+         "in_scope": set()}
+    scope = load_scope(paths)
     c = {"obs": [], "questions": [], "cursor": state.get("inbox_cursor"),
          "folders_touched": 0, "messages": 0}
     if token:
         mailbox = config.get("user_email", "jbragdon@gallagherllp.com")
-        d = scan_folders(cases, folder_map, token, mailbox)
+        d = scan_folders(cases, folder_map, token, mailbox, scope)
         c = scan_inbox(config, paths, cases, folder_map, token, mailbox,
-                       state, dry_run=dry_run)
+                       state, scope_ids=d["in_scope"], dry_run=dry_run)
     else:
         log.info("[mf-brain] (c)/(d) skipped — no token (--local)")
 
@@ -1004,6 +1118,8 @@ def run_scan(config: dict, paths: dict, *, token: str | None = None,
         "by_type": {},
     }
     for cs in cases.values():
+        if not case_in_scope(cs, scope):
+            continue
         t = cs.get("matter_type", "other")
         summary["by_type"][t] = summary["by_type"].get(t, 0) + 1
 
@@ -1017,7 +1133,9 @@ def run_scan(config: dict, paths: dict, *, token: str | None = None,
     append_jsonl(paths["predictions"], settled + fresh_preds)
     paths["folder_map"].write_text(json.dumps(folder_map, indent=1),
                                    encoding="utf-8")
-    if d["unresolved"]:
+    # Rewritten on every walk, empty or not, so a folder that left scope
+    # (or got resolved) stops being asked about.
+    if d["tree"]:
         paths["needs_review"].mkdir(parents=True, exist_ok=True)
         (paths["needs_review"] / "unresolved_folders.json").write_text(
             json.dumps(d["unresolved"], indent=1, ensure_ascii=False),
@@ -1042,7 +1160,13 @@ def run_status(config: dict, paths: dict) -> None:
     print("MF Case Brain — Stage 0 (observe only)")
     print(f"  Ledger      : {paths['root']}")
     print(f"  Last scan   : {(state.get('last_scan') or 'never')[:19]}")
-    print(f"  Cases       : {len(cases):,}")
+    scope = load_scope(paths)
+    in_scope = sum(1 for c in cases.values() if case_in_scope(c, scope))
+    print(f"  Cases       : {len(cases):,} ({in_scope:,} in scope)")
+    print(f"  Folders     : " + ("; ".join("\\".join(s) for s in scope)
+                                  if scope else
+                                  "all but insured/monitored (no "
+                                  "eviction_folders.txt lines)"))
     print(f"  Matter lines: {len(open_l):,} open of {len(lines):,}")
     print(f"  Observations: {len(obs):,}")
     by_v: dict[str, int] = {}
