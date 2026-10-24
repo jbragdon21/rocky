@@ -46,6 +46,18 @@ Rocky parks internal case-file maintenance suggestions (updating the Case Status
 
 ---
 
+## Facts From Filed Pleadings
+
+The facts a filed pleading states are the most reliable record of what happened in this case: what we assert to the court, we have checked, and a court order or notice is the record itself. Read them into the case file so it gets smarter from its pleadings.
+
+- **Whenever you file or index a court filing** (ours, the court's, or the other side's), read its background / statement of facts / procedural history and add each dated event to the Master Case Summary timeline, and any court date it sets to the CASE_SPINE Deadlines table. Then log one `pleading_facts` line to `activity.jsonl`:
+  `{"timestamp": "...Z", "actor": "...", "event": "pleading_facts", "document": "<title>", "filed_by": "us|opposing|court", "filed_on": "YYYY-MM-DD", "source": "<path in this folder>", "facts": [{"date": "YYYY-MM-DD", "fact": "..."}]}`
+- **Weigh by source.** Facts in our filings and in court orders or notices are established — use them to settle open questions (did the deposition go forward? was the answer filed?). Facts in the other side's filings are their allegations: label them "Plaintiff alleges" (or the party's role) in the timeline.
+- **Rocky does this too.** When Rocky files a court filing it logs a `pleading_facts` event itself. When you open this case, fold any `pleading_facts` events not yet in the Master Case Summary timeline into it.
+- Use only dates the document states. Where a later filing contradicts an earlier timeline entry, keep both, note the conflict, and ask James.
+
+---
+
 ## Folder Structure
 
 Every case folder uses these six standard subfolders. Create any that are missing; do not rename or restructure them.

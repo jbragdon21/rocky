@@ -71,6 +71,41 @@ in the .md so the show can be tuned without repackaging Rocky.
 
 ---
 
+## Session 2026-10-24 — Hunt removal missing from digest; Case Folder column restored
+
+James: the 10/23 digest said "No new activity" for Hunt (RRID-0043) though
+we removed to federal court (Arete's 6:26 PM 10/22 email, filed in Outlook
+under Monitored Litigation\Hunt, Robert (Washington state fees)).
+
+**Root causes**
+
+- The 10/19 (2) open item was never done: Sheet1 of `Rocky Case Index.xlsx`
+  still had no `Case Folder` column (lost in the 10/18 2:18 PM save), so
+  `--daily-cases` has read no case mail since 10/18 18:12 UTC. The deployed
+  exe predates the 10/19 "Rocky needs attention" alert, so no digest warned.
+- Hunt's (and RRID-0042 Owens's) path read `Inbox__Bozzuto…` with no
+  backslash after Inbox, so Hunt's mail never resolved even before 10/18.
+- The removal documents sit behind a ShareFile link, not attachments, so
+  even a working fetch logs only the email, not the filings.
+
+**What changed**
+
+- Restored `Case Folder` as Sheet1 column C from OneDrive version 41.0
+  (10/18 2:08 PM ET) via Excel COM, with 0042/0043 fixed. Every other cell
+  on both sheets is unchanged (checked). No code changes.
+
+**Open**
+
+- Catch-up mail: `--daily-cases --hours 150` (last fetch 10/18 18:12 UTC).
+- RRID-0044 VA AG Fees has no Case Folder path (never had one).
+- Paths that don't resolve in Outlook: 0003 Eden, 0012 Behroozi, 0030 PJC,
+  0035 Moreno-Hutcheson.
+- Still: commit + rebuild + deploy rocky.exe so the missing-folder alert ships.
+- Hunt activity.jsonl has two `daily_cases_email_summary` events tagged
+  RRID-0036 (Castillo, 9/25 and 10/12); not investigated.
+
+---
+
 ## Session 2026-10-23 — Sam's Podcast (daily sports + docket episode, private feed)
 
 James asked for a new process: pull the day's research from the Sam's
@@ -189,6 +224,40 @@ ElevenLabs, and publish it to a feed Sam downloads from.
 
 ---
 
+## Session 2026-10-22 — PST to readable archive (standalone tool)
+
+James asked for a script that turns .pst files into a readable document
+database. Standalone; not part of rocky.exe.
+
+**What changed**
+
+- `pst_to_db.py` now lives in `C:\Users\jbragdon\Desktop\PST Processor\`
+  with its README.md, MEMORY.md (design decisions, libpff facts, testing
+  status) and requirements.txt. Drafted in this repo and then moved out; no
+  copy remains here. `convert <pst|folder>... --out DIR`
+  reads PST/OST directly with libpff (`python -m pip install
+  libpff-python`; cp314 wheel exists), no Outlook and nothing added to the
+  profile. Writes `mail.db` (sources / folders / messages / attachments +
+  FTS5 `messages_fts`), one HTML page per item, a per-folder index with a
+  filter box, a root `index.html`, and attachments under
+  `_attachments/<id>/`. `search DIR "query"` runs FTS5. Many PSTs share
+  one DB; `--replace` re-converts one.
+- Tested on java-libpst's public sample PST/OST (no attachments in them);
+  attachment, forwarded-email, long-path and cid-image code tested with
+  stand-in objects. Not yet run on a real firm PST.
+
+**Watch-outs**
+
+- `Documents\`, `Desktop\` and `Documents\Outlook Files\` hold
+  `MIoTJQCL*.pst` files (all 350,000 bytes, some inside `!!!!!<digits>`
+  folders). They look like anti-ransomware decoys planted by endpoint
+  security. Don't open or convert them; don't point `convert` at those
+  folders.
+- Email bodies render in a sandboxed iframe with a CSP that blocks remote
+  loads (no tracking pixels, no scripts).
+
+---
+
 ## Session 2026-10-20 — MF Case Brain: claims against residents only
 
 James: the brain walks every folder and doesn't need to. Focus on our
@@ -230,6 +299,78 @@ eviction folders.
 - James to flag folders in `eviction_folders.txt`. Until then: everything
   but insured, minus resident claims (2,260 of 2,574 cases in scope).
 - Rebuild + deploy rocky.exe (also still open from 10/19).
+
+---
+
+## Session 2026-10-19 (2) — Daily digest: shared RRIDs, lost mail, pleading facts, scheduling info
+
+James's notes on the 10/19 Rocky Daily Digest: Wall listed both with updates
+and as no-activity; Castillo's answer email missing; Ghumman unsure whether
+the 10/5 depositions happened though our filed opposition says they were
+cancelled; Ricks's Friday scheduling conference missing; flag which cases
+have scheduling info.
+
+**Root causes**
+
+- **Wall:** `Board, Bianca (RRID-0040)` and `Murray, Sheena (RRID-0040)` carry
+  Wall's RRID (the index gives Murray 0039 and Board 0041). The digest gave
+  both folders Wall's index row, and `find_case_folder` returned the first
+  match, Board, so **Wall's 10/18 emails were filed into Board's folder**
+  (Board's PLD-011 is Wall's Notice of Filing Exs 11-12; Board's activity log
+  has ~11 Wall events). The digest's "Wall" section was Board's folder.
+- **Castillo:** the case index's Sheet1 lost its `Case Folder` column (file
+  saved 10/18 2:18 PM, minutes after the last good fetch). `--daily-cases`
+  found no Outlook folder for any open case, so no case mail was read on
+  10/19. It also fetched only since UTC midnight (8 PM ET the day before),
+  so mail between a 4 PM run and 8 PM was skipped every day.
+- **Ricks:** `_extract_docx` read paragraphs only; the Master Case Summary
+  keeps its dates in tables (1,066 of ~9,000 chars came through). The digest
+  also never read `CASE_SPINE.md`, whose Deadlines table had 10/23.
+
+**What changed** (all in `rocky.py` unless noted)
+
+- `find_case_folder(rrid, name_hint)` matches the RRID exactly; with
+  duplicates, picks the folder matching the index File Name, else None +
+  error. `find_rrid_collisions()`. Both callers pass the index name.
+- `--daily-cases`: watermark window (`state/daily_cases_last_run.json`, 24h
+  fallback, 7-day cap, `--hours N` override); error + no watermark advance
+  when no open case has a `Case Folder` path.
+- `_docx_body_lines`: tables included, in order (affects every .docx Rocky
+  reads, attachments too).
+- Pleading facts: `extract_pleading_facts` / `log_pleading_facts`; the daily
+  run calls it for each document filed to a pleading/motion/order folder;
+  `--pleading-facts RRID-XXXX <file>... [--dry-run]`.
+  `CLAUDE_MD_PLEADING_FACTS_SECTION` added to `_templates/CLAUDE.md.template`
+  and appended to all 38 case CLAUDE.md files (Moreno-Hutcheson has none).
+- Digest: spine deadlines + all pleading facts in each prompt with trust
+  rules; "Rocky needs attention" alerts (and an alert alone now sends the
+  digest); "Scheduling Info" on-file/not-on-file list; colliding folders
+  skipped; past no-activity deadlines dropped in code; `## What happened`
+  headings normalized to bold.
+- `tests/test_daily_digest.py` (14 tests). Suite 105 pass.
+- Ghumman: 18 facts from WP-033 v12 (the opposition, filed copy not yet in
+  the folder) logged as a `pleading_facts` event.
+- Full digest run to a scratch folder (not emailed): Wall once, Ricks
+  10/23, Board/Murray skipped with an alert, HRI/Taylor past dates gone.
+
+**Open**
+
+- James: restore the `Case Folder` column on the index's Sheet1 (OneDrive
+  version history of `Rocky Case Index.xlsx`, the version before 10/18 2:18
+  PM), then `rocky.exe --daily-cases --hours 72` to catch up mail.
+- ~~Rename Murray/Board, move Wall's documents~~ DONE same day with
+  James's OK: folders are now `Murray, Sheena (RRID-0039)` and `Board,
+  Bianca (RRID-0041)` (RRID corrected in CLAUDE.md, master_file_index,
+  Searchable Text Index, Board's Issues Matrix; old activity events left as
+  history). 12 Wall files moved from Board to Wall; Board's PLD-011 is now
+  Wall's `PLD-003 Plaintiff's Notice of Filing Exhibits 11-12`; 5 index
+  entries moved; a note in each activity log. Wall's two signed copies of
+  the notice sit unfiled in Wall's Raw Documents for the next daily run.
+  Wall's Pleading Index / CASE_SPINE registry still need PLD-003 (Cowork).
+  Board's and Murray's mail was never fetched before the rename (no folder
+  carried 0041/0039).
+- Rebuild + deploy rocky.exe.
+- Backfill pleading facts across existing pleadings (one call per filing).
 
 ---
 

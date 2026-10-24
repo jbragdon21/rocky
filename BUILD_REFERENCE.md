@@ -412,7 +412,13 @@ Case workspace is browsable by Cowork users without needing Rocky-specific knowl
 5. Logs a `daily_cases_email_summary` event to `activity.jsonl`
 6. Runs per-case folder skills (`daily_run`) on cases that received new files
 
-Filenames are prefixed `{receivedYYYYMMDDTHHMM}_{md5(messageId)[:8]}_` so re-runs are idempotent. Case folder lookup is by RRID-substring match in folder name (e.g., `Mackey, Karen (RRID-0001)`).
+Filenames are prefixed `{receivedYYYYMMDDTHHMM}_{md5(messageId)[:8]}_` so re-runs are idempotent. Case folder lookup is by the RRID in the folder name (e.g., `Mackey, Karen (RRID-0001)`), matched exactly.
+
+**The index column is `Case Folder`** (an Outlook path like `Inbox\__Bozzuto Insured%2FMonitored Litigation\Tarpeh, Victor (Atwell on Spring)`), resolved to a folder id at run time. If no open case has one, `--daily-cases` logs an error, the digest shows a "Rocky needs attention" alert, and the fetch watermark is not advanced. (10/18/2026: the column vanished from Sheet1 in an index edit and no case mail was read on 10/19.)
+
+**Fetch window (2026-10-19):** mail received since the last completed full run (`state/daily_cases_last_run.json`), falling back to 24h and capped at 7 days; `--hours N` overrides for a catch-up. It used to start at UTC midnight, which at a 4 PM ET run skipped mail arriving between 4 PM and 8 PM ET every day and never caught up a missed day.
+
+**One RRID, one folder.** Two folders carrying the same RRID are an error. `find_case_folder(rrid, name_hint)` picks the one whose name starts with the index's File Name and returns None (logged) when none matches, rather than filing a client's mail into another client's folder. The digest skips the non-matching folders and lists the collision as an alert. (10/2026: Board and Murray were created as RRID-0040; the first match, Board, received Wall's mail from 10/18.)
 
 ### Stage 2: Daily run — IMPLEMENTED (`python rocky.py --daily-run [RRID-XXXX]`)
 
@@ -428,6 +434,8 @@ For each case folder with `_project/instructions.md`:
 6. Logs each `document_filed` event to `activity.jsonl` and updates `master_file_index.json`
 7. **Seen-but-unfiled guard:** a raw file analyzed but not successfully filed/discarded increments a miss counter (`unfiled_attempts` in `master_file_index.json`). After 3 missed runs the file is **parked**: indexed with `"disposition": "parked_unfiled"` (so it stops surfacing as "new" and stops burning a Claude call daily), a `document_parked_unfiled` event is logged, and a standing "Rocky Unfiled Documents" section is added to the case's `CLAUDE.md` telling the next Cowork/project session to ask James what to do with it. `source_raw` matching is whitespace-tolerant (`_normalize_name_for_match`) — exotic whitespace in filenames (e.g. Outlook's non-breaking-space `Re_ ` artifact) previously made a file unfileable forever.
 
+8. **Facts from filed pleadings (2026-10-19):** a document filed into a court-filing folder (name contains "pleading", "motion" or "order") gets one more Claude call on its full text that pulls its dated facts into a `pleading_facts` event (`document`, `filed_by` us/opposing/court, `filed_on`, `source`, `facts[{date, fact}]`). The digest reads every such event, not just the day's, as the case timeline: our filings and court papers are established, the other side's are allegations. The case `CLAUDE.md` section "Facts From Filed Pleadings" (in the template and all case files) tells project sessions to do the same and to fold Rocky's events into the Master Case Summary timeline. `--pleading-facts RRID-XXXX <file>... [--dry-run]` reads filings already on file. A `pleading_facts` event alone doesn't make a case "active" in the digest.
+
 Cases without `_project/instructions.md` are skipped. A default template is at `_templates/instructions.md` — copy it into a case's `_project/` folder to enable daily runs for that case.
 
 ### Stage 3: Daily case digest — IMPLEMENTED (`python rocky.py --daily-digest [RRID-XXXX] [--hours N]`)
@@ -438,7 +446,11 @@ Rolling N-hour window (default 24h). For each case with `activity.jsonl` events 
 2. Globs for the most-recent `*Case Status*.docx`, extracts text (capped at 8000 chars)
 3. One Claude call per case → markdown section with three subsections (What happened / Recommended next steps / Upcoming dates)
 
-Consolidated output: `Rocky Cases/Daily Digests/YYYY-MM-DD.md`. Skips writing entirely when no case had activity in the window.
+Consolidated output: `Rocky Cases/Daily Digests/YYYY-MM-DD.md`. Skips writing entirely when no case had activity in the window and there is no alert.
+
+**Sources beyond the memo (2026-10-19):** each case's prompt also gets the open and upcoming rows of `CASE_SPINE.md`'s Deadlines table and every `pleading_facts` fact on file; the no-activity batch gets the deadlines table and facts ahead of the memo (4000-char cap). `.docx` extraction now includes tables in document order (`_docx_body_lines`); the Master Case Summaries keep their dates in tables, and paragraphs alone dropped ~90% of Ricks's. A no-activity "next deadline" that leads with a past date is replaced with "None on file" in code.
+
+**Digest blocks (2026-10-19):** *Rocky needs attention* at the top (RRID collisions, open cases with no `Case Folder` path); *Scheduling Info* before the no-activity list, splitting matters with pleadings into "On file" (next date, from the spine, our/court filings, or the Claude calls) and "Not on file" (no scheduling papers, or papers whose dates have all passed), so James knows which scheduling orders to upload. Matters with no pleadings (board service, collections) are left off.
 
 **Digest delivery (current):** file written to disk; James reads manually.
 **Digest delivery (future, when Mail.Send is granted on Rocky's account):** swap `digest_path.write_text(...)` for an emailed message body. The rest of the pipeline is unchanged.

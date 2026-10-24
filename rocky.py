@@ -2,15 +2,20 @@
 Rocky — Virtual Paralegal
 =================================================
 
-  python rocky.py --daily-cases [RRID-XXXX]        (4:00 PM)
-      Pull today's emails from each case's Outlook folder, summarize via
-      Claude, save documents to the case folder.
+  python rocky.py --daily-cases [RRID-XXXX] [--hours N]  (4:00 PM)
+      Pull each case's new emails (since the last completed run, or the last
+      N hours) from its Outlook folder, summarize via Claude, save documents
+      to the case folder.
 
   python rocky.py --daily-run [RRID-XXXX]          (4:30 PM)
       Run per-case _project/claude.md skills (Phase D Stage 2).
 
   python rocky.py --daily-digest [RRID-XXXX] [--hours N]  (5:00 PM)
       Generate a consolidated daily case digest (Phase D Stage 3).
+
+  python rocky.py --pleading-facts RRID-XXXX <file>... [--dry-run]
+      Read the dated facts in court filings already on file into the case
+      timeline (the daily run does this for each court filing it files).
 
   python rocky.py --steve-todo                            (7:30 AM)
   python rocky.py --rommel-todo                           (7:35 AM)
@@ -197,7 +202,7 @@ import re
 import shutil
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import msal
@@ -944,6 +949,37 @@ def _extract_pdf(raw_bytes: bytes, name: str) -> str | None:
         return None
 
 
+def _docx_body_lines(doc) -> list[str]:
+    """Paragraphs and table rows of a python-docx Document, in document order.
+
+    `doc.paragraphs` alone skips every table, and the Master Case Summaries
+    keep their timeline, deadlines and checklist in tables — Ricks's yielded
+    1,066 of ~9,000 characters and lost its 10/23 scheduling conference.
+    A table row comes out as its cells joined by " | " (merged cells, which
+    python-docx repeats, appear once).
+    """
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    lines: list[str] = []
+    for child in doc.element.body.iterchildren():
+        tag = child.tag.rsplit("}", 1)[-1]
+        if tag == "p":
+            text = Paragraph(child, doc).text
+            if text.strip():
+                lines.append(text)
+        elif tag == "tbl":
+            for row in Table(child, doc).rows:
+                cells: list[str] = []
+                for cell in row.cells:
+                    text = " ".join(cell.text.split())
+                    if text and (not cells or cells[-1] != text):
+                        cells.append(text)
+                if cells:
+                    lines.append(" | ".join(cells))
+    return lines
+
+
 def _extract_docx(raw_bytes: bytes, name: str) -> str | None:
     try:
         from docx import Document
@@ -952,7 +988,7 @@ def _extract_docx(raw_bytes: bytes, name: str) -> str | None:
         return None
     try:
         doc = Document(io.BytesIO(raw_bytes))
-        return "\n".join(p.text for p in doc.paragraphs if p.text).strip() or None
+        return "\n".join(_docx_body_lines(doc)).strip() or None
     except Exception as e:
         log.debug(f"DOCX extract failed for {name!r}: {e}")
         return None
@@ -1209,24 +1245,71 @@ _UNSAFE_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 CLOSED_CASES_DIRNAME = "Closed Cases"
 
 
-def find_case_folder(rrid: str) -> Path | None:
+def _folder_name_matches(folder_name: str, file_name: str) -> bool:
+    """True if a case folder's name starts with the index's File Name.
+
+    Whitespace- and case-tolerant: index names often carry trailing spaces
+    ("Ricks, Sharday ").
+    """
+    hint = " ".join(str(file_name or "").split()).lower()
+    return bool(hint) and " ".join(folder_name.split()).lower().startswith(hint)
+
+
+def find_case_folder(rrid: str, name_hint: str | None = None) -> Path | None:
     """Return the on-disk folder for a given RRID, or None if not found.
 
     Folders are named with the convention "Last, First (RRID-XXXX)". We match
-    by looking for the RRID substring rather than reconstructing the full name,
+    on the RRID in the folder name rather than reconstructing the full name,
     so renames don't break the mapping. Only top-level folders are searched —
     a case moved into Closed Cases/ is deliberately not found.
+
+    Two folders carrying the same RRID (a copied folder that kept its old
+    number — 10/2026: Board and Murray were both made as RRID-0040) are an
+    error: the first match used to win, which filed Wall's mail into Board's
+    folder. With duplicates, `name_hint` (the index's File Name) picks the
+    folder whose name starts with it; without a unique match, return None and
+    log an error rather than guess a client.
     """
     if not ROCKY_CASES_ROOT.exists():
         return None
     rrid_upper = rrid.upper()
+    matches: list[Path] = []
     try:
-        for child in ROCKY_CASES_ROOT.iterdir():
-            if child.is_dir() and rrid_upper in child.name.upper():
-                return child
+        for child in sorted(ROCKY_CASES_ROOT.iterdir()):
+            if not child.is_dir():
+                continue
+            found = {m.upper() for m in RRID_PATTERN.findall(child.name)}
+            if rrid_upper in found:
+                matches.append(child)
     except OSError as e:
         log.warning(f"Could not scan {ROCKY_CASES_ROOT}: {e}")
+    if len(matches) <= 1:
+        return matches[0] if matches else None
+    named = [m for m in matches if name_hint and _folder_name_matches(m.name, name_hint)]
+    names = ", ".join(m.name for m in matches)
+    if len(named) == 1:
+        log.warning(f"{rrid_upper} is on {len(matches)} folders ({names}); using {named[0].name}")
+        return named[0]
+    log.error(
+        f"{rrid_upper} is on {len(matches)} folders ({names}) and none matches "
+        f"the case index name {name_hint!r}. Not guessing — fix the folder names."
+    )
     return None
+
+
+def find_rrid_collisions() -> dict[str, list[str]]:
+    """{rrid: [folder names]} for every RRID carried by more than one folder."""
+    by_rrid: dict[str, list[str]] = {}
+    if not ROCKY_CASES_ROOT.exists():
+        return {}
+    try:
+        for child in sorted(ROCKY_CASES_ROOT.iterdir()):
+            if child.is_dir():
+                for m in {m.upper() for m in RRID_PATTERN.findall(child.name)}:
+                    by_rrid.setdefault(m, []).append(child.name)
+    except OSError as e:
+        log.warning(f"Could not scan {ROCKY_CASES_ROOT}: {e}")
+    return {r: names for r, names in by_rrid.items() if len(names) > 1}
 
 
 def _find_in_closed_cases(rrid: str) -> Path | None:
@@ -1385,7 +1468,7 @@ def save_email_to_case(
     Raw Documents folder. Returns a dict summarizing the result; never raises.
     """
     rrid = str(case_match.get("RRID#") or "").upper()
-    case_folder = find_case_folder(rrid)
+    case_folder = find_case_folder(rrid, case_match.get("File Name"))
     if case_folder is None:
         log.warning(
             f"Case folder for {rrid} not found under {ROCKY_CASES_ROOT}. "
@@ -1732,12 +1815,153 @@ def _build_filed_filename(raw_filename: str, suggested_name: str | None) -> str:
     return _sanitize_filename(stripped)
 
 
+# -----------------------------------------------------------------------------
+# Facts from filed pleadings
+# -----------------------------------------------------------------------------
+# A filed pleading is the most reliable account of what happened in a case:
+# when we assert a fact to the court we have checked it, and a court order or
+# notice is the record itself. Each court filing Rocky files gets one extra
+# Claude call that pulls its dated facts into a `pleading_facts` event in
+# activity.jsonl. The digest reads every such event (not just the day's) as
+# the case's timeline, so the folder gets smarter from reading its pleadings,
+# and project sessions fold the facts into the Master Case Summary timeline
+# per CLAUDE_MD_PLEADING_FACTS_SECTION. (10/2026: the digest asked whether
+# Ghumman's Oct. 5 depositions happened; our filed opposition said they were
+# cancelled.)
+
+# Case subfolders whose documents are court filings.
+_COURT_FILING_FOLDER_RE = re.compile(r"pleading|motion|order", re.IGNORECASE)
+PLEADING_FACTS_TEXT_CAP = 60000
+PLEADING_FACTS_MAX = 30
+
+PLEADING_FACTS_SYSTEM_PROMPT = """You are Rocky, a litigation paralegal for James Bragdon at Gallagher LLP. You read one court filing and pull out the dated facts it states, for the case timeline.
+
+Return ONLY a JSON object:
+{
+  "document": "<short title, e.g. Bozzuto's Opposition to Emergency Motion for Protective Order>",
+  "filed_by": "us" | "opposing" | "court" | "unknown",
+  "filed_on": "<YYYY-MM-DD the document was filed or entered, or null>",
+  "facts": [{"date": "<YYYY-MM-DD, or YYYY-MM if only the month is stated>", "fact": "<one sentence>"}]
+}
+
+filed_by: "us" only if the filing is by Gallagher LLP / James Bragdon or is filed on behalf of the client named in WE REPRESENT. "court" for orders, notices, and other court-issued documents. "opposing" for every other party, including the person the case is named after (case folders are usually named for the opposing party). If the filer is unclear, use "unknown", not "us".
+
+FACTS
+- Events with a date: what happened, when (filings, service, notices, deadlines met or missed, depositions noticed, cancelled or taken, productions, correspondence, payments, lease and property events). Look hardest at the background, statement of facts, procedural history, and recitals.
+- Court dates the document SETS or SCHEDULES (hearings, conferences, deadlines) are facts: "Court set a remote scheduling conference for 2026-10-23 at 10:30 AM".
+- State each fact plainly, as the document states it. No legal argument, characterization, or conclusions ("Plaintiff's argument is baseless" is not a fact).
+- Use only dates the document states. Never infer or compute a date. Skip a fact whose date the document does not give.
+- One event per fact. At most 30 facts, the most case-significant first if you must choose.
+- An empty "facts" list is fine for a filing with no dated facts (a bare notice of appearance)."""
+
+CLAUDE_MD_PLEADING_FACTS_SECTION = """## Facts From Filed Pleadings
+
+The facts a filed pleading states are the most reliable record of what happened in this case: what we assert to the court, we have checked, and a court order or notice is the record itself. Read them into the case file so it gets smarter from its pleadings.
+
+- **Whenever you file or index a court filing** (ours, the court's, or the other side's), read its background / statement of facts / procedural history and add each dated event to the Master Case Summary timeline, and any court date it sets to the CASE_SPINE Deadlines table. Then log one `pleading_facts` line to `activity.jsonl`:
+  `{"timestamp": "...Z", "actor": "...", "event": "pleading_facts", "document": "<title>", "filed_by": "us|opposing|court", "filed_on": "YYYY-MM-DD", "source": "<path in this folder>", "facts": [{"date": "YYYY-MM-DD", "fact": "..."}]}`
+- **Weigh by source.** Facts in our filings and in court orders or notices are established — use them to settle open questions (did the deposition go forward? was the answer filed?). Facts in the other side's filings are their allegations: label them "Plaintiff alleges" (or the party's role) in the timeline.
+- **Rocky does this too.** When Rocky files a court filing it logs a `pleading_facts` event itself. When you open this case, fold any `pleading_facts` events not yet in the Master Case Summary timeline into it.
+- Use only dates the document states. Where a later filing contradicts an earlier timeline entry, keep both, note the conflict, and ask James.
+"""
+
+
+def _is_court_filing_folder(folder_name: str) -> bool:
+    return bool(_COURT_FILING_FOLDER_RE.search(folder_name or ""))
+
+
+def extract_pleading_facts(
+    client: Anthropic, case_description: str, document_name: str, text: str,
+    our_client: str = "", case_name: str = "",
+) -> dict | None:
+    """One Claude call: the dated facts a court filing states, or None.
+
+    `our_client` is the Case Index "Client" column. It is stated on its own
+    line because the case name is usually the opposing party's, and the model
+    otherwise reads it as our side when deciding filed_by.
+    """
+    if not text or not text.strip():
+        return None
+    body = text[:PLEADING_FACTS_TEXT_CAP]
+    if len(text) > PLEADING_FACTS_TEXT_CAP:
+        body += "\n[...truncated...]"
+    our_client = (our_client or "").strip()
+    if our_client.lower() in ("", "unknown"):
+        we_represent = ("WE REPRESENT: unknown (Gallagher LLP / James Bragdon). "
+                        "Use filed_by \"us\" only for a filing signed by Gallagher LLP "
+                        "or James Bragdon.")
+    else:
+        we_represent = f"WE REPRESENT: {our_client} (Gallagher LLP / James Bragdon)."
+    if case_name:
+        we_represent += (f" The case name '{case_name}' may be the opposing party's "
+                         f"name; it does not tell you whose side a filing is on.")
+    user_prompt = (
+        f"CASE: {case_description}\n\n{we_represent}\n\nDOCUMENT: {document_name}\n\n"
+        f"TEXT:\n{body}\n\nReturn ONLY the JSON object."
+    )
+    try:
+        response = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=3000,
+            system=PLEADING_FACTS_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        result = _extract_json_from_response(response.content[0].text.strip())
+    except Exception as e:
+        log.warning(f"Pleading-fact extraction failed for {document_name!r}: {e}")
+        return None
+    facts = [
+        {"date": str(f.get("date") or "").strip(), "fact": str(f.get("fact") or "").strip()}
+        for f in (result.get("facts") or []) if isinstance(f, dict)
+    ]
+    result["facts"] = [f for f in facts if f["date"] and f["fact"]][:PLEADING_FACTS_MAX]
+    return result
+
+
+def log_pleading_facts(
+    client: Anthropic,
+    case_folder: Path,
+    rrid: str,
+    case_description: str,
+    source_rel: str,
+    text: str,
+    actor: str = "rocky",
+    our_client: str = "",
+    case_name: str = "",
+) -> dict | None:
+    """Extract a filing's dated facts and append a `pleading_facts` event."""
+    result = extract_pleading_facts(client, case_description, Path(source_rel).name, text,
+                                    our_client=our_client, case_name=case_name)
+    if not result or not result.get("facts"):
+        return None
+    event = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "actor": actor,
+        "event": "pleading_facts",
+        "rrid": rrid,
+        "document": result.get("document") or Path(source_rel).stem,
+        "filed_by": result.get("filed_by") or "unknown",
+        "filed_on": result.get("filed_on"),
+        "source": source_rel,
+        "facts": result["facts"],
+        "summary": (f"Read {len(result['facts'])} dated fact(s) from "
+                    f"{result.get('document') or Path(source_rel).stem} into the case timeline."),
+    }
+    append_case_activity(case_folder, event)
+    _ensure_claude_md_section(case_folder, "## Facts From Filed Pleadings",
+                              CLAUDE_MD_PLEADING_FACTS_SECTION)
+    log.info(f"[{rrid}] {len(result['facts'])} pleading fact(s) from {source_rel}")
+    return event
+
+
 def process_case_folder(
     client: Anthropic,
     case_folder: Path,
     case_description: str,
     rrid: str,
     global_instructions: str,
+    our_client: str = "",
+    case_name: str = "",
 ) -> dict:
     """
     Run the daily review for one case folder. Reads _project/instructions.md
@@ -2106,6 +2330,17 @@ Follow the case-specific instructions above. Return ONLY the JSON object."""
         processed += 1
         handled_names.add(raw_file.name)
 
+        # A court filing's dated facts go into the case timeline. Uses the
+        # full text, not the prompt-capped excerpt the filing call saw.
+        if _is_court_filing_folder(target_folder_name):
+            full_text = extract_text_from_path(raw_file)
+            if full_text:
+                log_pleading_facts(
+                    client, case_folder, rrid, case_description,
+                    str(target_path.relative_to(case_folder)).replace("\\", "/"),
+                    full_text, our_client=our_client, case_name=case_name,
+                )
+
     # Seen-but-unfiled guard. A raw file that keeps getting analyzed without
     # ever being filed or discarded (the model returned no usable file_action,
     # a DISCARD was refused, the copy kept failing) would otherwise be
@@ -2200,7 +2435,9 @@ def daily_run(
         ).strip()
 
         log.info(f"Processing case folder: {child.name}")
-        result = process_case_folder(client, child, case_description, rrid, instructions)
+        result = process_case_folder(client, child, case_description, rrid, instructions,
+                                     our_client=str(meta.get("Client") or ""),
+                                     case_name=str(meta.get("File Name") or child.name))
         results.append(result)
 
     return results
@@ -2227,6 +2464,8 @@ You receive:
 - Recently filed documents with category and one-sentence summaries
 - A FILE INVENTORY listing the documents currently on file in the case folder (use this to judge whether an expected filing is missing)
 - The text of the current Case Status Memorandum or Master Case Summary, if one exists (for posture and upcoming deadlines)
+- CASE SPINE DEADLINES: the open and upcoming rows of the case's deadlines table, kept current by case sessions
+- FACTS FROM FILED PLEADINGS: dated facts read from the court filings on file, each tagged by who filed it
 - Per-case digest instructions from the case folder's CLAUDE.md, if present (follow these for case-specific emphasis)
 
 Your output is a markdown section with exactly four subsections, in this order:
@@ -2254,7 +2493,12 @@ Your output is a markdown section with exactly four subsections, in this order:
 - If the file appears complete relative to known deadlines, write "(none)".
 
 **Upcoming dates**
-- Bulleted list of deadlines or hearings on or after TODAY, pulled from the Case Status Memorandum text. Format each as "YYYY-MM-DD — description". Omit any date that has already passed. If the memo is empty or has no dates on or after TODAY, write "(none on file)".
+- Bulleted list of deadlines or hearings on or after TODAY, pulled from the Case Status Memorandum, the CASE SPINE DEADLINES, and court dates set in FACTS FROM FILED PLEADINGS. Format each as "YYYY-MM-DD — description". Omit any date that has already passed. If none of these sources has a date on or after TODAY, write "(none on file)".
+
+FACTS FROM FILED PLEADINGS — HOW MUCH TO TRUST THEM
+- Facts tagged "our filing" or "court" are established: we checked them before asserting them to the court, and a court order or notice is the record itself. Use them to settle questions the memo leaves open. Do NOT tell James to confirm something they already settle (if our filing says the depositions were cancelled, do not ask whether the depositions went forward).
+- Where the memo and a filed-pleading fact disagree, the later-dated source controls.
+- Facts tagged "opposing party's allegation" are the other side's assertions. Report them as allegations, never as established fact.
 
 DATES — READ CAREFULLY
 TODAY's date is given at the top of the user message. Use it as the reference point for everything in this section.
@@ -2353,8 +2597,10 @@ def _is_substantive_event(ev: dict) -> bool:
     Unknown event types are treated as substantive (bias toward surfacing).
     """
     event_type = ev.get("event", "")
+    # pleading_facts rides along with the document_filed event that already
+    # counts; on its own (a --pleading-facts backfill) it is timeline upkeep.
     if event_type in ("session_start", "session_end", "daily_run_error",
-                      "document_discarded"):
+                      "document_discarded", "pleading_facts"):
         return False
     if event_type == "daily_run":
         # Discarded email artifacts (signature logos) don't count as activity.
@@ -2454,6 +2700,155 @@ def _extract_status_memo_text(case_folder: Path) -> str:
     return text
 
 
+_ISO_DATE_RE = re.compile(r"\b(20\d\d)-(\d\d)-(\d\d)\b")
+_SPINE_DEADLINES_RE = re.compile(
+    r"(?:^|\n)##\s+(?:Key\s+)?Deadlines[^\n]*\n(.*?)(?=\n##\s|\n---|\Z)",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _iso_dates(text: str) -> list[date]:
+    out: list[date] = []
+    for y, m, d in _ISO_DATE_RE.findall(text or ""):
+        try:
+            out.append(date(int(y), int(m), int(d)))
+        except ValueError:
+            continue
+    return out
+
+
+def _read_spine_deadlines(case_folder: Path, today: date) -> tuple[str, list[date]]:
+    """Open and upcoming rows of CASE_SPINE.md's Deadlines table.
+
+    Returns (markdown rows, upcoming dates). Past-dated rows and undated rows
+    marked DONE are dropped. The spine is plain text, so it reads fine as a
+    OneDrive placeholder, and project sessions keep it current — the digest
+    used to ignore it (10/2026: Ricks's 10/23 scheduling conference sat in
+    the spine while the digest said "None on file").
+    """
+    try:
+        text = (case_folder / "CASE_SPINE.md").read_text(encoding="utf-8")
+    except OSError:
+        return "", []
+    m = _SPINE_DEADLINES_RE.search(text)
+    if not m:
+        return "", []
+    rows: list[str] = []
+    upcoming: list[date] = []
+    for line in m.group(1).splitlines():
+        line = line.strip()
+        if not line.startswith("|") or not line.strip("|-: "):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if cells[0].lower() == "date":
+            continue
+        dates = _iso_dates(cells[0])
+        if dates:
+            if dates[0] < today:
+                continue
+            upcoming.append(dates[0])
+        elif "done" in cells[-1].lower():
+            continue
+        rows.append(line)
+    return "\n".join(rows[:30]), upcoming
+
+
+_FILED_BY_LABEL = {
+    "us": "our filing",
+    "court": "court",
+    "opposing": "opposing party's allegation",
+}
+
+
+def _read_pleading_facts(case_folder: Path, today: date, cap: int = 60) -> tuple[str, list[date]]:
+    """Every `pleading_facts` fact on file, oldest first, tagged by source.
+
+    Returns (bullet lines, upcoming court dates). Reads the whole activity
+    log, not the digest window: the timeline is what the case has learned.
+    Only our filings and the court's count toward upcoming dates.
+    """
+    entries: list[tuple[str, str]] = []
+    upcoming: list[date] = []
+    for ev in _read_jsonl(case_folder / "activity.jsonl"):
+        if ev.get("event") != "pleading_facts":
+            continue
+        label = _FILED_BY_LABEL.get(ev.get("filed_by"), "source unclear")
+        doc = ev.get("document") or ev.get("source") or "filing"
+        filed_on = f", filed {ev['filed_on']}" if ev.get("filed_on") else ""
+        for f in ev.get("facts") or []:
+            when = str(f.get("date") or "")
+            entries.append((when, f"- {when} — {f.get('fact')} [{label}: {doc}{filed_on}]"))
+            dates = _iso_dates(when)
+            if dates and dates[0] >= today and ev.get("filed_by") in ("us", "court"):
+                upcoming.append(dates[0])
+    entries.sort(key=lambda e: e[0])
+    lines = [line for _, line in entries]
+    if len(lines) > cap:
+        lines = [f"[...{len(lines) - cap} earlier fact(s) omitted...]"] + lines[-cap:]
+    return "\n".join(lines), upcoming
+
+
+# A filename that suggests the court has set dates: scheduling orders,
+# initial orders, notices of hearings or conferences, pretrial orders.
+_SCHEDULING_DOC_RE = re.compile(
+    r"schedul|initial order|status (hearing|conference)|pretrial|pre-trial|"
+    r"notice of (remote )?(initial )?(hearing|conference|trial)|trial date",
+    re.IGNORECASE,
+)
+
+
+def _scheduling_status(file_inventory: str, upcoming: list[date]) -> str:
+    """'current', 'stale', 'none', or '' for a matter with no court filings.
+
+    current — an upcoming court date is on file (memo, spine, or a filing)
+    stale   — scheduling documents are on file, but every date has passed
+    none    — no scheduling information at all
+    Matters with no pleadings (board service, collections, fee projects) get
+    '' so they stay off the list.
+    """
+    paths = [line[2:] for line in file_inventory.splitlines() if line.startswith("- ")]
+    if not any("pleading" in p.lower() for p in paths):
+        return ""
+    if upcoming:
+        return "current"
+    if any(_SCHEDULING_DOC_RE.search(Path(p).name) for p in paths):
+        return "stale"
+    return "none"
+
+
+def _section_upcoming_dates(body: str, today: date) -> list[date]:
+    """Dates on or after today in a digest section's "Upcoming dates" list."""
+    idx = body.lower().find("upcoming dates")
+    if idx < 0:
+        return []
+    return [d for d in _iso_dates(body[idx:]) if d >= today]
+
+
+def _drop_past_deadline(deadline: str, today: date) -> str:
+    """'None on file' for a next-deadline field that leads with a past date.
+
+    The no-activity call is told never to report a past date and still does
+    (10/19/2026: HRI's 7/24 mediation, Taylor's 8/26 hearing "(PAST)").
+    """
+    dates = _iso_dates(deadline.strip()[:10])
+    if dates and dates[0] < today:
+        return "None on file"
+    return deadline
+
+
+_SECTION_LABEL_RE = re.compile(
+    r"^[ \t]*#{1,6}[ \t]*\**[ \t]*(What happened|Recommended next steps|"
+    r"Internal filing follow-ups|Upcoming dates)[ \t]*\**[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _normalize_section_labels(body: str) -> str:
+    """'## What happened' -> '**What happened**', the form the HTML renderer
+    turns into a subheading (the model sometimes drifts to markdown headings)."""
+    return _SECTION_LABEL_RE.sub(lambda m: f"**{m.group(1)}**", body)
+
+
 def build_case_digest_section(
     client: Anthropic,
     case_meta: dict,
@@ -2462,6 +2857,8 @@ def build_case_digest_section(
     status_memo_text: str,
     instructions: str,
     file_inventory: str = "",
+    spine_deadlines: str = "",
+    pleading_facts: str = "",
 ) -> str:
     """Claude call: returns the per-case markdown subsections (no heading)."""
     # Compact representation of activity / filed docs for the prompt.
@@ -2538,6 +2935,12 @@ DOCUMENTS FILED IN WINDOW ({len(filed_docs)} total):
 FILE INVENTORY (documents currently on file in the case folder):
 {file_inventory or '(inventory unavailable)'}
 
+CASE SPINE DEADLINES (open and upcoming rows of the case's deadlines table):
+{spine_deadlines or '(none on file)'}
+
+FACTS FROM FILED PLEADINGS (dated facts read from court filings, tagged by source):
+{pleading_facts or '(none on file)'}
+
 CASE STATUS MEMORANDUM (current text, may be long):
 {status_memo_text or '(no memo on file)'}
 
@@ -2551,7 +2954,7 @@ Write the four markdown subsections (What happened / Recommended next steps / In
             system=DIGEST_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_prompt}],
         )
-        return response.content[0].text.strip()
+        return _normalize_section_labels(response.content[0].text.strip())
     except Exception as e:
         log.error(f"Digest generation failed for {case_meta.get('RRID#')}: {e}")
         return f"**Error generating digest section:** {e}"
@@ -2563,7 +2966,7 @@ def _is_open_case(case_meta: dict) -> bool:
     return val in ("", "open", "o", "active")
 
 
-NO_ACTIVITY_SYSTEM_PROMPT = """You are Rocky. For each case listed below, derive TWO things from that case's status memorandum text: (1) the single most important recommended NEXT STEP, and (2) the next BIG DEADLINE.
+NO_ACTIVITY_SYSTEM_PROMPT = """You are Rocky. For each case listed below, derive TWO things from that case's deadlines table, court dates from its filings, and status memorandum text: (1) the single most important recommended NEXT STEP, and (2) the next BIG DEADLINE.
 
 TODAY's date is given at the top of the message. A deadline is "upcoming" only if its date is on or after TODAY. A date earlier than TODAY is in the PAST — never report a past date as the next deadline.
 
@@ -2578,8 +2981,8 @@ Rules for the NEXT STEP (middle field):
 Rules for the NEXT BIG DEADLINE (last field):
 - The single most immediate UPCOMING deadline, hearing, or filing date. Under ~12 words.
 - If there is a future date, lead with it formatted YYYY-MM-DD (e.g. "2026-07-14 — Pretrial conference").
-- Use ONLY dates that actually appear in that case's memo text. Do not invent dates. If every date in the memo is before TODAY, there is no upcoming deadline — write "None on file".
-- If the memo is empty or has no future date, write "None on file".
+- Use ONLY dates that actually appear in that case's text below. Do not invent dates. If every date is before TODAY, there is no upcoming deadline — write "None on file".
+- If the case has no future date, write "None on file".
 
 Output ONLY the lines, one per case, no preamble or commentary."""
 
@@ -2591,7 +2994,8 @@ def build_no_activity_next_events(
 ) -> dict[str, tuple[str, str]]:
     """
     One batched Claude call for all no-activity cases.
-    `cases` is a list of (rrid, name, status_memo_text).
+    `cases` is a list of (rrid, name, case_text) — the deadlines table and
+    filing dates first, then the status memo, so truncation cuts the memo.
     Returns {rrid: (next_step, next_deadline)}.
     Falls back to ("None on file", "None on file") for any case the model omits
     or on error.
@@ -2603,10 +3007,10 @@ def build_no_activity_next_events(
     blocks = []
     for rrid, name, memo in cases:
         memo_excerpt = (memo or "").strip()
-        if len(memo_excerpt) > 2500:
-            memo_excerpt = memo_excerpt[:2500] + "\n[...truncated...]"
+        if len(memo_excerpt) > 4000:
+            memo_excerpt = memo_excerpt[:4000] + "\n[...truncated...]"
         blocks.append(
-            f"{rrid} — {name}\nSTATUS MEMO:\n{memo_excerpt or '(no memo on file)'}\n"
+            f"{rrid} — {name}\n{memo_excerpt or '(no memo on file)'}\n"
         )
 
     user_prompt = f"TODAY: {today_str}\n\n" + "\n---\n".join(blocks)
@@ -2647,10 +3051,33 @@ def _get_digest_lawyers(case_meta: dict) -> list[str]:
     return [addr.strip().lower() for addr in re.split(r"[;,\s]+", raw) if "@" in addr]
 
 
+SCHEDULING_MISSING_NOTE = (
+    "No upcoming court date on file. If there is a scheduling order or "
+    "hearing notice, save it to the case folder."
+)
+
+
+def _scheduling_groups(
+    scheduling: list[tuple[str, str, str, str]] | None,
+) -> tuple[list[tuple[str, str, str]], list[tuple[str, str, str]]]:
+    """Split (rrid, name, status, next_date) rows into (on file, missing)."""
+    on_file, missing = [], []
+    for rrid, name, status, next_date in scheduling or []:
+        if status == "current":
+            on_file.append((rrid, name, next_date))
+        elif status == "stale":
+            missing.append((rrid, name, "scheduling papers on file, but every date has passed"))
+        elif status == "none":
+            missing.append((rrid, name, "no scheduling order or notice on file"))
+    return on_file, missing
+
+
 def _build_digest_text(
     sections: list[tuple[str, str]],
     hours_back: int,
     no_activity: list[tuple[str, str, str, str]] | None = None,
+    alerts: list[str] | None = None,
+    scheduling: list[tuple[str, str, str, str]] | None = None,
 ) -> str:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     parts = [
@@ -2661,11 +3088,33 @@ def _build_digest_text(
         f"{len(sections)} case(s) with activity.",
         f"",
     ]
+    if alerts:
+        parts.append("## Rocky Needs Attention")
+        parts.append("")
+        parts.extend(f"- {a}" for a in alerts)
+        parts.append("")
+        parts.append("---")
+        parts.append("")
     for heading, body in sections:
         parts.append(heading)
         parts.append("")
         parts.append(body)
         parts.append("")
+        parts.append("---")
+        parts.append("")
+
+    on_file, missing = _scheduling_groups(scheduling)
+    if on_file or missing:
+        parts.append("## Scheduling Info")
+        parts.append("")
+        if missing:
+            parts.append(f"**Not on file** — {SCHEDULING_MISSING_NOTE}")
+            parts.extend(f"- {rrid} — {name}: {why}" for rrid, name, why in missing)
+            parts.append("")
+        if on_file:
+            parts.append("**On file** (next date)")
+            parts.extend(f"- {rrid} — {name}: {when}" for rrid, name, when in on_file)
+            parts.append("")
         parts.append("---")
         parts.append("")
 
@@ -2738,9 +3187,64 @@ def _build_digest_html(
     sections: list[tuple[str, str]],
     hours_back: int,
     no_activity: list[tuple[str, str, str, str]] | None = None,
+    alerts: list[str] | None = None,
+    scheduling: list[tuple[str, str, str, str]] | None = None,
 ) -> str:
+    from html import escape
+
     today = datetime.now(timezone.utc).strftime("%B %d, %Y")
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    alerts_html = ""
+    if alerts:
+        items = "".join(
+            f'<li style="margin-bottom:4px;">{escape(a)}</li>' for a in alerts
+        )
+        alerts_html = f"""
+                <!-- Rocky needs attention -->
+                <tr><td style="background-color:#fffbea;border-bottom:1px solid #f6e05e;
+                               padding:14px 32px;">
+                    <p style="margin:0 0 6px 0;font-size:14px;font-weight:700;color:#975a16;">
+                        Rocky needs attention</p>
+                    <ul style="margin:0;padding-left:20px;font-size:13px;color:#744210;
+                               line-height:1.5;">{items}</ul>
+                </td></tr>"""
+
+    scheduling_html = ""
+    on_file, missing = _scheduling_groups(scheduling)
+    if on_file or missing:
+        def _rows(entries, color):
+            return "".join(
+                f'<tr><td style="padding:4px 0;font-size:13px;color:#1a202c;">'
+                f'<span style="font-weight:600;color:{color};">{escape(rrid)}</span>'
+                f' — {escape(name)}<span style="color:#718096;"> — {escape(detail)}</span>'
+                f'</td></tr>'
+                for rrid, name, detail in entries
+            )
+        missing_block = (
+            f'<p style="margin:0 0 4px 0;font-size:13px;font-weight:600;color:#c53030;">'
+            f'Not on file</p>'
+            f'<p style="margin:0 0 6px 0;font-size:12px;color:#718096;">'
+            f'{escape(SCHEDULING_MISSING_NOTE)}</p>'
+            f'<table width="100%" cellpadding="0" cellspacing="0" border="0">'
+            f'{_rows(missing, "#c53030")}</table>'
+            if missing else ""
+        )
+        on_file_block = (
+            f'<p style="margin:12px 0 4px 0;font-size:13px;font-weight:600;color:#2f855a;">'
+            f'On file (next date)</p>'
+            f'<table width="100%" cellpadding="0" cellspacing="0" border="0">'
+            f'{_rows(on_file, "#2f855a")}</table>'
+            if on_file else ""
+        )
+        scheduling_html = f"""
+                <!-- Scheduling info -->
+                <tr><td style="border-top:1px solid #e0e0e0;padding:20px 32px 8px 32px;">
+                    <h3 style="margin:0 0 8px 0;font-size:15px;font-weight:700;color:#4a5568;">
+                        Scheduling Info</h3>
+                    {missing_block}
+                    {on_file_block}
+                </td></tr>"""
 
     case_blocks = []
     for i, (heading, body) in enumerate(sections):
@@ -2856,6 +3360,7 @@ def _build_digest_html(
                         Generated {now_str} &middot; Window: last {hours_back} hours
                         &middot; <strong>{len(sections)}</strong> case(s) with activity</p>
                 </td></tr>
+                {alerts_html}
 
                 <!-- Case sections -->
                 <tr><td style="padding:8px 32px 16px 32px;">
@@ -2863,6 +3368,7 @@ def _build_digest_html(
                         {cases_html}
                     </table>
                 </td></tr>
+                {scheduling_html}
                 {no_activity_html}
 
                 <!-- Footer -->
@@ -2907,10 +3413,40 @@ def daily_digest(
     cases_index = load_case_index()
     cases_by_rrid = {str(c.get("RRID#") or "").upper(): c for c in cases_index}
 
+    today_date = datetime.now(timezone.utc).date()
+
+    # Things James has to fix for Rocky to work, shown at the top.
+    alerts: list[str] = []
+    collisions = find_rrid_collisions()
+    for rrid, names in sorted(collisions.items()):
+        index_name = str(cases_by_rrid.get(rrid, {}).get("File Name") or "").strip()
+        alerts.append(
+            f"{rrid} is on {len(names)} folders ({'; '.join(names)}). The case "
+            f"index gives {rrid} to {index_name or 'no case'}; rename the others "
+            f"to their own RRIDs. Until then Rocky skips them, and files mail "
+            f"only to the folder matching the index name."
+        )
+    unmapped = open_cases_without_mail_folder(cases_index)
+    open_count = sum(1 for c in cases_index if str(c.get("RRID#") or "").strip() and _is_open_case(c))
+    if open_count and len(unmapped) == open_count:
+        alerts.append(
+            "No open case in the case index has a Case Folder (Outlook folder) "
+            "path, so Rocky is not reading any case email. Restore the Case "
+            "Folder column on the index's first sheet."
+        )
+    elif unmapped:
+        alerts.append(
+            "Email not monitored (no Case Folder path in the case index): "
+            + ", ".join(f"{c.get('RRID#')} {str(c.get('File Name') or '').strip()}"
+                        for c in unmapped)
+        )
+
     # (heading, body, rrid) — rrid tracked for co-counsel filtering.
     sections: list[tuple[str, str, str]] = []
     # (rrid, name, child) for open cases with no activity in the window.
     no_activity_cases: list[tuple[str, str, Path]] = []
+    # rrid -> (name, status, upcoming dates known before the Claude calls)
+    sched_inputs: dict[str, tuple[str, str, list[date]]] = {}
     cases_examined = 0
 
     for child in sorted(ROCKY_CASES_ROOT.iterdir()):
@@ -2921,6 +3457,13 @@ def daily_digest(
             continue
         rrid = m.group(0).upper()
         if target_rrid and rrid != target_rrid.upper():
+            continue
+        # A folder sharing its RRID with another is only the index's case if
+        # its name matches — otherwise it borrows that case's name and client
+        # (10/19/2026: Jesse Wall listed twice, from the Board and Murray folders).
+        if rrid in collisions and not _folder_name_matches(
+                child.name, cases_by_rrid.get(rrid, {}).get("File Name")):
+            log.error(f"[{rrid}] {child.name} shares its RRID with another folder — skipped.")
             continue
 
         meta = cases_by_rrid.get(rrid, {"RRID#": rrid, "File Name": child.name})
@@ -2937,6 +3480,16 @@ def daily_digest(
         # (an empty daily run, a daily fetch that pulled no mail, session
         # markers) don't count — those cases drop to the no-activity list.
         substantive = [e for e in activity if _is_substantive_event(e)]
+
+        file_inventory = _build_case_file_inventory(child)
+        spine_deadlines, spine_upcoming = _read_spine_deadlines(child, today_date)
+        pleading_facts, facts_upcoming = _read_pleading_facts(child, today_date)
+        sched_inputs[rrid] = (
+            str(meta.get("File Name") or child.name).strip(),
+            _scheduling_status(file_inventory, spine_upcoming + facts_upcoming),
+            spine_upcoming + facts_upcoming,
+        )
+
         if not substantive and not filed:
             # Open cases get listed at the bottom with their next event.
             # (Closed cases were skipped above; this check only matters when
@@ -2957,12 +3510,11 @@ def daily_digest(
                 if instructions else case_digest_instr
             )
 
-        file_inventory = _build_case_file_inventory(child)
-
         log.info(f"Generating digest section for {rrid} ({len(substantive)} events, {len(filed)} filed)")
         body = build_case_digest_section(
             client, meta, substantive, filed, status_memo_text,
             combined_instructions, file_inventory,
+            spine_deadlines=spine_deadlines, pleading_facts=pleading_facts,
         )
         heading = (
             f"## {meta.get('RRID#')} — {meta.get('File Name', child.name)} "
@@ -2970,12 +3522,16 @@ def daily_digest(
         )
         sections.append((heading, body, rrid))
 
-    if not sections:
+    # An alert alone still sends the digest: a broken email fetch makes every
+    # case look quiet, which is exactly when the digest used to stay silent.
+    if not sections and not alerts:
         log.info(
             f"No case activity in the last {hours_back}h "
             f"(examined {cases_examined} case folder(s)). No digest written."
         )
         return {"written": False, "reason": "no_activity", "cases_examined": cases_examined}
+    for alert in alerts:
+        log.warning(f"Digest alert: {alert}")
 
     # Write the file digest (all cases).
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -2991,19 +3547,46 @@ def daily_digest(
     no_activity_rows: list[tuple[str, str, str, str]] = []
     if no_activity_cases:
         today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d (%A)")
-        memo_inputs = [
-            (rrid, name, _extract_status_memo_text(child))
-            for rrid, name, child in no_activity_cases
-        ]
+        memo_inputs = []
+        for rrid, name, child in no_activity_cases:
+            spine_rows, _ = _read_spine_deadlines(child, today_date)
+            facts, _ = _read_pleading_facts(child, today_date, cap=15)
+            text = ""
+            if spine_rows:
+                text += f"DEADLINES TABLE:\n{spine_rows}\n\n"
+            if facts:
+                text += f"FACTS FROM FILED PLEADINGS:\n{facts}\n\n"
+            text += f"STATUS MEMO:\n{_extract_status_memo_text(child) or '(no memo on file)'}"
+            memo_inputs.append((rrid, name, text))
         next_events = build_no_activity_next_events(client, memo_inputs, today_str)
-        no_activity_rows = [
-            (rrid, name, *next_events.get(rrid, ("None on file", "None on file")))
-            for rrid, name, _ in no_activity_cases
-        ]
+        no_activity_rows = []
+        for rrid, name, _ in no_activity_cases:
+            next_step, next_deadline = next_events.get(rrid, ("None on file", "None on file"))
+            no_activity_rows.append(
+                (rrid, name, next_step, _drop_past_deadline(next_deadline, today_date)))
+
+    # Scheduling info per case: dates from the spine and filings, plus the
+    # ones the Claude calls found in the memo.
+    found_upcoming: dict[str, list[date]] = {
+        rrid: _section_upcoming_dates(body, today_date) for _, body, rrid in sections
+    }
+    for rrid, _, _, next_deadline in no_activity_rows:
+        found_upcoming[rrid] = [d for d in _iso_dates(next_deadline[:10]) if d >= today_date]
+    scheduling_rows: list[tuple[str, str, str, str]] = []
+    for rrid, (name, status, known) in sched_inputs.items():
+        if not status:
+            continue
+        upcoming = sorted(known + found_upcoming.get(rrid, []))
+        if upcoming:
+            status = "current"
+        scheduling_rows.append(
+            (rrid, name, status, upcoming[0].isoformat() if upcoming else ""))
 
     all_sections_for_text = [(h, b) for h, b, _ in sections]
-    digest_text = _build_digest_text(all_sections_for_text, hours_back, no_activity_rows)
-    digest_html = _build_digest_html(all_sections_for_text, hours_back, no_activity_rows)
+    digest_text = _build_digest_text(
+        all_sections_for_text, hours_back, no_activity_rows, alerts, scheduling_rows)
+    digest_html = _build_digest_html(
+        all_sections_for_text, hours_back, no_activity_rows, alerts, scheduling_rows)
 
     try:
         digest_path.write_text(digest_text, encoding="utf-8")
@@ -3406,13 +3989,11 @@ def process_case_emails(
     instructions: str,
 ) -> dict:
     """
-    Fetch today's emails from a case's Outlook folder, summarize via Claude,
+    Fetch a case's new emails from its Outlook folder, summarize via Claude,
     save email bodies + attachments to the case's Raw Documents folder.
     Returns a result summary dict.
     """
-    folder_path = str(
-        case.get("Case Folder") or case.get("Outlook Folder") or ""
-    ).strip()
+    folder_path = _case_folder_path(case)
     if not folder_path:
         return {"rrid": rrid, "emails": 0, "saved": 0, "reason": "no_case_folder"}
 
@@ -3458,7 +4039,7 @@ def process_case_emails(
     user_prompt = f"""CASE: {case_description}
 RRID: {rrid}
 
-TODAY'S EMAILS ({len(emails)} total):
+NEW EMAILS SINCE THE LAST RUN ({len(emails)} total):
 
 {chr(10).join(email_blocks)}
 
@@ -3535,16 +4116,65 @@ Summarize these emails. Return ONLY the JSON object."""
     }
 
 
+DAILY_CASES_WATERMARK = STATE_DIR / "daily_cases_last_run.json"
+# A watermark older than this is ignored (a laptop off for a month shouldn't
+# pull a month of mail in one run); use --hours for a deliberate catch-up.
+DAILY_CASES_MAX_LOOKBACK = timedelta(days=7)
+
+
+def _case_folder_path(case: dict) -> str:
+    """The Outlook folder path a case's mail is sorted into, or ''."""
+    return str(case.get("Case Folder") or case.get("Outlook Folder") or "").strip()
+
+
+def open_cases_without_mail_folder(cases_index: list[dict]) -> list[dict]:
+    """Open index rows with no Case Folder path — their mail is never read."""
+    return [
+        c for c in cases_index
+        if str(c.get("RRID#") or "").strip() and _is_open_case(c)
+        and not _case_folder_path(c)
+    ]
+
+
+def _daily_cases_since(now: datetime) -> datetime:
+    """Start of the fetch window: the last completed run, else 24h ago.
+
+    The window used to start at UTC midnight, which at a 4:00 PM ET run is
+    8:00 PM ET the day before — so mail arriving between one day's run and
+    8 PM was never fetched, and a missed day was never caught up. Saved
+    filenames are keyed on the message id, so overlap is harmless.
+    """
+    floor = now - DAILY_CASES_MAX_LOOKBACK
+    try:
+        saved = json.loads(DAILY_CASES_WATERMARK.read_text(encoding="utf-8"))
+        ts = _parse_iso(saved.get("started_at"))
+        if ts and ts >= floor:
+            return ts
+    except (OSError, ValueError, AttributeError):
+        pass
+    return now - timedelta(hours=24)
+
+
+def _save_daily_cases_watermark(started_at: datetime) -> None:
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        DAILY_CASES_WATERMARK.write_text(
+            json.dumps({"started_at": started_at.isoformat()}), encoding="utf-8")
+    except OSError as e:
+        log.warning(f"Could not save {DAILY_CASES_WATERMARK}: {e}")
+
+
 def daily_cases(
     client: Anthropic,
     token: str,
     user_email: str,
     instructions: str,
     target_rrid: str | None = None,
+    since: datetime | None = None,
 ) -> list[dict]:
     """
-    For each case with an Case Folder path, fetch today's emails, summarize,
-    and save to case folders.
+    For each case with a Case Folder path, fetch the emails received since the
+    last completed run (or `since`), summarize, and save to case folders.
     """
     if not ROCKY_CASES_ROOT.exists():
         log.error(f"Rocky Cases root not found: {ROCKY_CASES_ROOT}")
@@ -3555,7 +4185,24 @@ def daily_cases(
         log.error("No cases loaded from index.")
         return []
 
-    since = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    # No Case Folder path on any open case means the index lost the column
+    # (10/18/2026: it vanished from Sheet1 in an edit) and no case mail is
+    # being read at all. Say so loudly, and don't advance the watermark, so
+    # the next run after the fix picks up the missed mail.
+    unmapped = open_cases_without_mail_folder(cases_index)
+    open_count = sum(1 for c in cases_index if str(c.get("RRID#") or "").strip() and _is_open_case(c))
+    if open_count and len(unmapped) == open_count:
+        log.error(
+            "No open case in the case index has a Case Folder (Outlook folder) "
+            "path. No case email will be fetched. Restore the Case Folder "
+            "column on the case index's first sheet."
+        )
+
+    run_started = datetime.now(timezone.utc)
+    explicit_since = since is not None
+    if since is None:
+        since = _daily_cases_since(run_started)
+    log.info(f"Fetching mail received since {since.isoformat()}")
     results: list[dict] = []
 
     for case in cases_index:
@@ -3570,7 +4217,7 @@ def daily_cases(
             results.append({"rrid": rrid, "emails": 0, "saved": 0, "reason": "closed"})
             continue
 
-        case_folder = find_case_folder(rrid)
+        case_folder = find_case_folder(rrid, case.get("File Name"))
         if not case_folder:
             if _find_in_closed_cases(rrid):
                 log.info(f"[{rrid}] Folder is in {CLOSED_CASES_DIRNAME}/ — skipping.")
@@ -3584,6 +4231,17 @@ def daily_cases(
             client, token, user_email, case, case_folder, rrid, since, instructions
         )
         results.append(result)
+
+    # Advance the watermark only after a full, scheduled-style run that could
+    # read at least one folder. A one-case run or an --hours catch-up leaves
+    # it alone, and so does a run where every folder failed to resolve.
+    read_any = any(
+        r.get("reason") in (None, "no_emails_today") for r in results
+    )
+    if not target_rrid and not explicit_since and read_any:
+        _save_daily_cases_watermark(run_started)
+    elif not read_any and results:
+        log.warning("No case mail folder could be read — fetch watermark not advanced.")
 
     return results
 
@@ -3614,10 +4272,16 @@ def run_daily_cases_cli() -> None:
     anthropic_client = Anthropic(api_key=config["anthropic_api_key"])
 
     target_rrid = None
-    for arg in sys.argv[1:]:
+    since = None
+    args = sys.argv[1:]
+    for i, arg in enumerate(args):
         if arg.upper().startswith("RRID-"):
             target_rrid = arg.upper()
-            break
+        elif arg == "--hours" and i + 1 < len(args):
+            try:
+                since = datetime.now(timezone.utc) - timedelta(hours=int(args[i + 1]))
+            except ValueError:
+                log.warning(f"Invalid --hours value {args[i+1]!r}; using the last-run window.")
 
     if target_rrid:
         log.info(f"Target: {target_rrid} only")
@@ -3627,7 +4291,8 @@ def run_daily_cases_cli() -> None:
 
     # Step 1: fetch emails, summarize, save documents.
     results = daily_cases(
-        anthropic_client, token, user_email, instructions, target_rrid=target_rrid
+        anthropic_client, token, user_email, instructions,
+        target_rrid=target_rrid, since=since,
     )
 
     log.info("-" * 40)
@@ -3679,6 +4344,60 @@ def run_daily_run_cli() -> None:
             + (f" — {r.get('reason')}" if r.get('reason') else "")
         )
     log.info(f"Total: {total_processed} filed, {total_errors} error(s).")
+
+
+def run_pleading_facts_cli() -> None:
+    """Entry point for `python rocky.py --pleading-facts RRID-XXXX <file>... [--dry-run]`.
+
+    Reads the dated facts from court filings already in a case folder into
+    its timeline (a `pleading_facts` event each) — the same step the daily run
+    takes when it files a court filing. A path may be absolute or relative to
+    the case folder. --dry-run prints the facts and logs nothing.
+    """
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    config = load_config()
+    args = [a for a in sys.argv[1:] if a not in ("--pleading-facts", "--dry-run")]
+    dry_run = "--dry-run" in sys.argv
+    rrid = next((a.upper() for a in args if RRID_PATTERN.fullmatch(a)), None)
+    paths = [a for a in args if not RRID_PATTERN.fullmatch(a)]
+    if not rrid or not paths:
+        print("usage: rocky.py --pleading-facts RRID-XXXX <file> [<file> ...] [--dry-run]")
+        sys.exit(2)
+    meta = next((c for c in load_case_index()
+                 if str(c.get("RRID#") or "").strip().upper() == rrid), {})
+    case_folder = find_case_folder(rrid, meta.get("File Name"))
+    if not case_folder:
+        log.error(f"No case folder for {rrid}.")
+        sys.exit(1)
+    description = (f"{meta.get('File Name', case_folder.name)} — Client: "
+                   f"{meta.get('Client', 'unknown')}. {meta.get('Description', '')}").strip()
+    our_client = str(meta.get("Client") or "")
+    case_name = str(meta.get("File Name") or case_folder.name)
+    client = Anthropic(api_key=config["anthropic_api_key"])
+    for raw in paths:
+        path = Path(raw)
+        if not path.is_absolute():
+            path = case_folder / path
+        text = extract_text_from_path(path) if path.is_file() else None
+        if not text:
+            log.error(f"No text from {path}")
+            continue
+        try:
+            rel = str(path.relative_to(case_folder)).replace("\\", "/")
+        except ValueError:
+            rel = str(path)
+        if dry_run:
+            result = extract_pleading_facts(client, description, path.name, text,
+                                            our_client=our_client,
+                                            case_name=case_name) or {}
+            print(f"\n{result.get('document') or path.name} "
+                  f"(filed_by={result.get('filed_by')}, filed_on={result.get('filed_on')})")
+            for f in result.get("facts", []):
+                print(f"  {f['date']} — {f['fact']}")
+        else:
+            log_pleading_facts(client, case_folder, rrid, description, rel, text,
+                               actor="rocky (--pleading-facts)",
+                               our_client=our_client, case_name=case_name)
 
 
 def run_daily_digest_cli() -> None:
@@ -5361,6 +6080,8 @@ def main():
         run_daily_run_cli()
     elif "--daily-digest" in sys.argv:
         run_daily_digest_cli()
+    elif "--pleading-facts" in sys.argv:
+        run_pleading_facts_cli()
     elif todo_flag:
         run_todo_cli(todo_flag.lstrip("-").removesuffix("-todo"))
     elif "--ella-digest" in sys.argv:
@@ -5428,9 +6149,11 @@ def main():
         print("Available commands:")
         print("  --monitor      [--once]                 Fast loop (24/7): letterstream + vault mail sweeps every")
         print("                                          monitor_interval_minutes (default 10); --once = single cycle")
-        print("  --daily-cases  [RRID-XXXX]              Fetch emails, summarize, save")
+        print("  --daily-cases  [RRID-XXXX] [--hours N]  Fetch emails, summarize, save")
         print("  --daily-run    [RRID-XXXX]              Run per-case folder skills")
         print("  --daily-digest [RRID-XXXX] [--hours N]  Generate daily case digest")
+        print("  --pleading-facts RRID-XXXX <file>... [--dry-run]")
+        print("                                          Read a court filing's dated facts into the case timeline")
         print("  --steve-todo | --rommel-todo            One person's daily to-do list from their inbox")
         print("  --ella-digest  [--hours N]              Ella's daily case digest from inbox")
         print("  --pending-llt  [--dry-run] [--limit N]  Draft LLT status emails by property")
