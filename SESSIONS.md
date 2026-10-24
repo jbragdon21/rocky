@@ -24,6 +24,53 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-10-24 — Sam's Podcast: tuning moves into the .md, peppier delivery
+
+James changed host 1's voice again, asked for a "pretty peppy" pace, and
+then asked for as much of the style and customization as possible to live
+in the .md so the show can be tuned without repackaging Rocky.
+
+**What changed**
+
+- `PODCAST_STYLE.md` now holds a settings block at the top (host1/2,
+  voice1/2, listener, stability, intro_seconds, intro_fade_seconds,
+  intro_overlap_seconds, target_words, max_words, audio_tags, model) and
+  "## Topic cards" / "## Case cards" sections. `load_style` splits the
+  file; `parse_settings` checks each value (bad ones logged and skipped);
+  `apply_settings` lays them over config.json (the file wins). The card
+  prompts are now `TOPIC_CORE` / `CASE_CORE` (facts and JSON only) plus the
+  file's card style. Code caps on card lists raised (8/6/5, 8/6) so the
+  file sets the real counts.
+- Voice 1 is `Q1QcmfZPmFDVUWmzASdy` (Al). Pace: `stability` 0.0 sent in the
+  dialogue request (`kirsten_podcast.synthesize` gained `settings=`, retried
+  without it on a 400/422; Kirsten unchanged), Eleven v3 cues allowed from
+  `audio_tags` (kept by `parse_turns`/`clean_text`, removed by
+  `strip_tags` for the Transistor transcript), and a Pace section.
+- config.example.json lost the voice/host/listener/stability/model/intro
+  keys: they live in the style file now. The live file on the share was
+  replaced twice; it was still unedited both times (checked first).
+- Tests: suite 150 pass.
+
+**Verified**
+
+- Dry run 10/24 with the live file: settings read from it, first real
+  docket segment (Ogunnupe, Bulgin, VA AG Fees active; 3 quiet). James's
+  work stayed James's; the Oct. 30 AG deadline led the segment. The fact
+  check fixed a "Wednesday" that was Thursday Oct. 22. 56 turns, 1,321
+  words, cues used.
+- Not heard yet: no ElevenLabs key on the dev laptop, so stability 0.0 and
+  the cues are untested in audio. The API docs don't say which stability
+  values v3 accepts; a rejection falls back to none.
+
+**Watch-outs**
+
+- `VA AG Fees (RRID-0044)` is now marked for Sam in the index.
+- The Rocky laptop's `C:\Rocky\config.json` had a JSON error at line 45
+  (missing comma) on 10/23 12:55, which stops every rocky.exe job there.
+  Old `sams_podcast_voices` lines in it are now harmless (the file wins).
+
+---
+
 ## Session 2026-10-23 — Sam's Podcast (daily sports + docket episode, private feed)
 
 James asked for a new process: pull the day's research from the Sam's
@@ -122,6 +169,14 @@ ElevenLabs, and publish it to a feed Sam downloads from.
 - Transistor: create the private show, put `transistor_api_key` and
   `sams_podcast_show_id` in `C:\Rocky\config.json` on the Rocky laptop,
   then `rocky.exe --sams-podcast --subscribe <Sam's email>`.
+- **Rebuilt and deployed 10/23 ~12:57** from a clean `git archive` of
+  c5ecb12 (the working tree held the other session's uncommitted MF
+  brain changes, which are NOT in these exes). rocky.exe 51.9 MB with
+  sams_podcast.py, _miniaudio.pyd and lameenc in the bundle;
+  dashboard.exe 16.3 MB. Previous exes (10/19 15:31) backed up in the
+  session scratchpad. Frozen smoke test: starts, lists the command,
+  dispatches --sams-podcast; a full run needs C:\Rocky\config.json,
+  so it has to happen on the Rocky laptop.
 - `rocky.exe --sams-podcast --dry-run --audio` on the Rocky laptop to hear
   Al's voice. Then rebuild, deploy, and schedule from the dashboard.
 - Listen to the mix: a soundtrack + test tone preview was checked

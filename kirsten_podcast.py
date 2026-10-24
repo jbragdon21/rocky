@@ -250,19 +250,33 @@ def chunk(inputs: list[dict], cap: int = _CHUNK_CHARS) -> list[list[dict]]:
 
 def synthesize(api_key: str, turns: list[dict], voices: list[str],
                out_path: Path, max_seconds: int = MAX_SECONDS,
-               tag: str = "kirsten podcast") -> float:
-    """Voice the script into out_path. Returns the length in seconds."""
+               tag: str = "kirsten podcast",
+               settings: dict | None = None) -> float:
+    """Voice the script into out_path. Returns the length in seconds.
+    settings is the dialogue request's "settings" (e.g. stability); if
+    ElevenLabs rejects it, that part is retried once without it."""
     inputs = [{"text": t["text"], "voice_id": voices[t["speaker"] - 1]}
               for t in turns]
     audio = b""
     batches = chunk(inputs)
     for i, batch in enumerate(batches, 1):
-        resp = requests.post(
-            ELEVEN_URL, params={"output_format": OUTPUT_FORMAT},
-            headers={"xi-api-key": api_key, "Content-Type": "application/json",
-                     "Accept": "audio/mpeg"},
-            json={"inputs": batch, "model_id": ELEVEN_MODEL},
-            timeout=300)
+        body = {"inputs": batch, "model_id": ELEVEN_MODEL}
+        if settings:
+            body["settings"] = settings
+        for attempt in range(2):
+            resp = requests.post(
+                ELEVEN_URL, params={"output_format": OUTPUT_FORMAT},
+                headers={"xi-api-key": api_key,
+                         "Content-Type": "application/json",
+                         "Accept": "audio/mpeg"},
+                json=body, timeout=300)
+            if resp.status_code in (400, 422) and "settings" in body:
+                log.warning(f"[{tag}] ElevenLabs rejected settings "
+                            f"{settings} (HTTP {resp.status_code}: "
+                            f"{resp.text[:200]}); retrying without them")
+                body.pop("settings")
+                continue
+            break
         if resp.status_code != 200:
             raise RuntimeError(f"ElevenLabs HTTP {resp.status_code} on part "
                                f"{i}/{len(batches)}: {resp.text[:300]}")

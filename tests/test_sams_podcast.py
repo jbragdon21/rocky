@@ -245,7 +245,7 @@ def test_dashboard_entry_daily_6am():
 
 def test_default_voices_use_the_show_voice():
     voices, hosts = sp._settings({})
-    assert voices[0] == "SHiZvifpX6NOyojATxRy" and hosts == ["Al", "Sophia"]
+    assert voices[0] == "Q1QcmfZPmFDVUWmzASdy" and hosts == ["Al", "Sophia"]
     assert voices[1] == "LtPsVjX1k0Kl4StEMZPK"
     assert sp._settings({"sams_podcast_hosts": ["Jo", "Sophia"]})[1][0] == "Jo"
 
@@ -455,3 +455,167 @@ def test_ask_uses_effort_on_current_models_and_temperature_on_old_ones():
         assert "declined" in str(e)
     else:
         raise AssertionError("expected RuntimeError")
+
+
+def test_audio_tags_survive_parsing_and_leave_the_transcript():
+    raw = json.dumps({"turns": [{"speaker": 1, "text":
+                                 "[Excited] Big night! [whispers] **Huge** win [laughs]."}]})
+    assert sp.parse_turns(raw) == [
+        {"speaker": 1, "text": "[excited] Big night! Huge win [laughs]."}]
+    assert sp.clean_text("[cheerfully] Hi [pause] there *now*") == \
+        "[cheerfully] Hi there now"
+    assert sp.strip_tags("AL: [excited] Big night! Huge win [laughs].") == \
+        "AL: Big night! Huge win."
+
+
+def test_voice_settings_default_to_expressive():
+    assert sp.voice_settings({}) == {"stability": 0.0}
+    assert sp.voice_settings({"sams_podcast_stability": 0.5}) == \
+        {"stability": 0.5}
+    assert sp.voice_settings({"sams_podcast_stability": None}) is None
+
+
+def test_synthesize_sends_settings_and_drops_them_if_rejected(monkeypatch,
+                                                              tmp_path):
+    import kirsten_podcast as kp
+    bodies = []
+
+    class R:
+        def __init__(self, code):
+            self.status_code, self.content = code, b"MP3"
+            self.text = "bad stability" if code == 400 else ""
+
+    def fake_post(url, **kw):
+        bodies.append(dict(kw["json"]))
+        return R(400 if "settings" in kw["json"] else 200)
+
+    monkeypatch.setattr(kp.requests, "post", fake_post)
+    kp.synthesize("K", [{"speaker": 1, "text": "Hi."}], ["v1", "v2"],
+                  tmp_path / "a.mp3", settings={"stability": 0.0})
+    assert bodies[0]["settings"] == {"stability": 0.0}
+    assert "settings" not in bodies[1] and len(bodies) == 2
+    bodies.clear()
+    kp.synthesize("K", [{"speaker": 1, "text": "Hi."}], ["v1", "v2"],
+                  tmp_path / "b.mp3")                     # Kirsten: unchanged
+    assert bodies == [{"inputs": [{"text": "Hi.", "voice_id": "v1"}],
+                       "model_id": kp.ELEVEN_MODEL}]
+
+
+def test_style_guide_has_a_pace_section_and_the_core_allows_the_tags():
+    assert "## Pace" in sp.DEFAULT_STYLE and "[excited]" in sp.DEFAULT_STYLE
+    core = sp.script_prompt("x", ["Al", "Sophia"], "Sam Cowin")
+    assert "[excited] [cheerfully] [laughs] [chuckles]" in core
+    assert "no bracketed audio tags" not in core
+
+
+STYLE_FILE = """---
+host1: Max
+voice1: Abcdefghij0123456789
+stability: 0.7
+audio_tags: excited, whispers
+target_words: 900
+max_words: 1000
+model: claude-sonnet-5-5
+---
+<!-- a note for James -->
+# Guide
+
+## Pace
+Slow it down, {host1}.
+
+## Topic cards
+- Two developments at most.
+
+## Case cards
+- Status only.
+"""
+
+
+def test_style_file_settings_win_over_config(tmp_path):
+    (tmp_path / "PODCAST_STYLE.md").write_text(STYLE_FILE, encoding="utf-8")
+    style = sp.load_style({}, tmp_path)
+    cfg = sp.apply_settings({"sams_podcast_voices": ["OLDvoice0123456789ab",
+                                                     "OLDvoice2123456789ab"],
+                             "sams_podcast_stability": 0.0}, style["settings"])
+    voices, hosts = sp._settings(cfg)
+    assert voices == ["Abcdefghij0123456789", "OLDvoice2123456789ab"]
+    assert hosts == ["Max", "Sophia"]
+    assert sp.voice_settings(cfg) == {"stability": 0.7}
+    assert sp.word_limits(cfg) == (900, 1000)
+    assert sp.audio_tags(cfg) == ["excited", "whispers"]
+    assert cfg["sams_podcast_model"] == "claude-sonnet-5-5"
+
+
+def test_style_file_sections_split_and_comments_dropped(tmp_path):
+    (tmp_path / "PODCAST_STYLE.md").write_text(STYLE_FILE, encoding="utf-8")
+    style = sp.load_style({}, tmp_path)
+    assert style["script"] == "# Guide\n\n## Pace\nSlow it down, {host1}."
+    assert style["topic"] == "- Two developments at most."
+    assert style["case"] == "- Status only."
+    prompt = sp.card_prompt(sp.TOPIC_CORE, style["topic"], "topic", "Sam Cowin")
+    assert "CARD STYLE (how many items, how long, what to favor)\n- Two " \
+        "developments at most." in prompt
+    assert "a daily audio show for Sam Cowin" in prompt
+    assert "{" not in sp.card_prompt(sp.CASE_CORE, style["case"], "case",
+                                     "Sam Cowin").replace('{"', "").replace(
+                                         "{\n", "")
+
+
+def test_bad_settings_fall_back_and_missing_card_sections_use_defaults(tmp_path):
+    (tmp_path / "PODCAST_STYLE.md").write_text(
+        "---\nvoice1: not a voice!\nstability: 3\nmax_words: lots\n"
+        "colour: blue\ntarget_words: 1200\n---\n## Pace\nQuick.\n",
+        encoding="utf-8")
+    style = sp.load_style({}, tmp_path)
+    assert style["settings"] == {"sams_podcast_target_words": 1200}
+    cfg = sp.apply_settings({"sams_podcast_stability": 0.5}, style["settings"])
+    assert sp._settings(cfg)[0][0] == "Q1QcmfZPmFDVUWmzASdy"     # default kept
+    assert sp.voice_settings(cfg) == {"stability": 0.5}          # config kept
+    assert sp.word_limits(cfg) == (1200, 1600)
+    assert style["topic"].startswith("- **Headline:**")          # defaults
+    assert style["case"].startswith("- **Status:**")
+
+
+def test_max_under_target_is_raised_and_tags_can_be_turned_off():
+    cfg = sp.apply_settings({}, {"sams_podcast_target_words": 1800,
+                                 "sams_podcast_max_words": 1000,
+                                 "sams_podcast_audio_tags": []})
+    assert sp.word_limits(cfg) == (1800, 2000)
+    assert sp.audio_tags(cfg) == []
+    prompt = sp.script_prompt("x", ["Al", "Sophia"], "Sam Cowin", 1800, 2000,
+                              tags=[])
+    assert "No bracketed text at all." in prompt and "At most 2,000" in prompt
+    assert sp.parse_turns('{"turns": [{"speaker": 1, "text": "[excited] Hi"}]}',
+                          tags=[]) == [{"speaker": 1, "text": "Hi"}]
+    assert sp.parse_turns('{"turns": [{"speaker": 1, "text": '
+                          '"[whispers] Hi [excited]"}]}', tags=["whispers"]) \
+        == [{"speaker": 1, "text": "[whispers] Hi"}]
+
+
+def test_intro_timing_comes_from_settings(tmp_path, monkeypatch):
+    from array import array
+    seen = {}
+
+    def fake_mix(music, speech, seconds, fade, overlap, rate=44100):
+        seen.update(seconds=seconds, fade=fade, overlap=overlap)
+        return array("h", [0])
+
+    monkeypatch.setattr(sp, "_pcm", lambda path, rate=44100: array("h", [1]))
+    monkeypatch.setattr(sp, "mix_intro", fake_mix)
+    monkeypatch.setattr(sp, "encode_mp3", lambda samples: b"M")
+    mp3 = tmp_path / "s.mp3"
+    mp3.write_bytes(b"H")
+    sp.add_intro({"sams_podcast_intro_seconds": 30, "sams_podcast_intro_fade": 6,
+                  "sams_podcast_intro_overlap": 1}, tmp_path / "i.wav", mp3)
+    assert seen == {"seconds": 30, "fade": 6, "overlap": 1}
+
+
+def test_default_style_settings_block_parses_clean():
+    style = sp.load_style({}, None)
+    assert set(style["settings"]) == {
+        "host1", "voice1", "host2", "voice2", "sams_podcast_listener",
+        "sams_podcast_stability", "sams_podcast_intro_seconds",
+        "sams_podcast_intro_fade", "sams_podcast_intro_overlap",
+        "sams_podcast_target_words", "sams_podcast_max_words",
+        "sams_podcast_audio_tags", "sams_podcast_model"}
+    assert "---" not in style["script"] and "voice1" not in style["script"]

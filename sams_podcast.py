@@ -54,25 +54,23 @@ and the edition it used, so a second run the same day does nothing unless
 and never publishes; add --audio to voice it (spends ElevenLabs credits).
 --no-publish makes the real files but skips Transistor.
 
-Config:
+Config (config.json, secrets and paths):
     elevenlabs_api_key        shared with the Kirsten podcast; required
     transistor_api_key        Transistor Account > API key; required to publish
     sams_podcast_show_id      the private show's id or slug (--shows lists them)
     sams_podcast_root         the research folder; probed when unset
-    sams_podcast              false turns the whole job off
-    sams_podcast_voices       two ElevenLabs voice ids [host 1, host 2]
-    sams_podcast_hosts        the two hosts' first names
-    sams_podcast_model        Claude model for cards, script and fact
-                              check (default claude-opus-5-5)
-    sams_podcast_listener     Sam's full name as the logs write it (default
-                              Sam Cowin): the listener's own work is "you"
-    sams_podcast_style        the script style guide (default
-                              PODCAST_STYLE.md in the research folder,
-                              written there on first run; read every run)
+    sams_podcast_style        the style guide (default PODCAST_STYLE.md in the
+                              research folder, written there on first run)
     sams_podcast_intro        intro music (default "Sam's Soundtrack" .wav,
                               .flac or .mp3 in the research folder)
-    sams_podcast_intro_seconds  how much of it plays (default 0 = the whole
-                              track; a number cuts it short with a fade)
+    sams_podcast              false turns the whole job off
+
+Everything else is in PODCAST_STYLE.md, read every run: a settings block at
+the top (host1/2, voice1/2, listener, stability, intro_seconds,
+intro_fade_seconds, intro_overlap_seconds, target_words, max_words,
+audio_tags, model), which wins over config.json and falls back to the
+built-in default for any bad value; "## Topic cards" and "## Case cards"
+sections for the show notes; and every other section for the script.
 """
 
 from __future__ import annotations
@@ -106,8 +104,24 @@ MAX_WORDS = 1600         # code cap, about 10.7 minutes at 150 words a minute
 MAX_SECONDS = 660
 
 # The voices James picked for this show (10/23): Al and Sophia.
-_DEFAULT_VOICES = ["SHiZvifpX6NOyojATxRy", "LtPsVjX1k0Kl4StEMZPK"]
+_DEFAULT_VOICES = ["Q1QcmfZPmFDVUWmzASdy", "LtPsVjX1k0Kl4StEMZPK"]
 _DEFAULT_HOSTS = ["Al", "Sophia"]
+
+# Pace (James, 10/23: "pretty peppy"). The dialogue API has no speed
+# setting, so the energy comes from three places: stability 0.0 ("Creative",
+# the most expressive; 0.5 is ElevenLabs' default, and a rejected value is
+# retried without it), a few Eleven v3 audio tags the script may use, and
+# the style guide's Pace section. sams_podcast_stability overrides.
+DEFAULT_STABILITY = 0.0
+AUDIO_TAGS = ("excited", "cheerfully", "laughs", "chuckles")
+
+
+def _tag_re(tags=None):
+    tags = AUDIO_TAGS if tags is None else tags
+    if not tags:
+        return re.compile(r"(?!x)x")          # matches nothing
+    return re.compile(r"\[(" + "|".join(re.escape(t) for t in tags) + r")\]",
+                      re.IGNORECASE)
 
 INTRO_NAME = "Sam's Soundtrack"
 _INTRO_EXTS = (".wav", ".flac", ".mp3")
@@ -123,50 +137,64 @@ _LISTENER = "Sam Cowin"
 _MEMO_CAP = 12000        # characters of one research memo sent for its card
 _TAG = "sams podcast"
 
-TOPIC_PROMPT = """You turn one sports research memo into a card for Sam's Podcast, a daily audio show for Sam, a lawyer at Gallagher LLP. The card is the show notes for this topic and the only source the hosts will read from.
+TOPIC_CORE = """You turn one sports research memo into a card for Sam's Podcast, a daily audio show for {listener}, a lawyer at Gallagher LLP. The card is the show notes for this topic and the only source the hosts will read from.
 
 Return ONLY a JSON object:
 {
-  "headline": "<one sentence, at most 25 words: the most important thing right now>",
+  "headline": "<one sentence>",
   "developments": ["<bullet>", ...],
   "upcoming": [{"date": "<YYYY-MM-DD or null>", "text": "<bullet>"}, ...],
   "angles": ["<bullet>", ...]
 }
 
-- "developments": 0 to 5 verified developments from the memo, newest and most important first, one or two sentences each. Results, scores, injuries, transactions, recruiting, coaching news. Label older context as older ("Last week, ..."). Leave out anything the memo marks as rumor unless you say plainly it is unconfirmed.
-- "upcoming": 0 to 4 scheduled games or events on or after TODAY, soonest first. Each text leads with its date and time as the memo gives them, times Eastern ("Oct. 28, 8 p.m. Eastern — UIC exhibition, B1G+"). A conflict or uncertainty the memo flags stays flagged.
-- "angles": 0 to 3 of the memo's discussion angles, in your words. These are opinions for the hosts to discuss, not facts.
-- Use only the memo. Do not add or calculate dates, scores, or names. No URLs, no markdown, no emojis inside the strings.
+RULES
+- Use only the memo. Do not add or calculate dates, scores, or names.
+- "developments" are verified facts from the memo. Leave out anything the memo marks as rumor unless you say plainly it is unconfirmed.
+- "upcoming" holds only games or events on or after TODAY. Each text leads with its date and time as the memo gives them, times Eastern ("Oct. 28, 8 p.m. Eastern — UIC exhibition, B1G+"). A conflict or uncertainty the memo flags stays flagged.
+- "angles" are opinions for the hosts to discuss, not facts.
+- No URLs, no markdown, no emojis inside the strings.
+
+CARD STYLE (how many items, how long, what to favor)
+{style}
 
 Output the JSON object and nothing else."""
 
-CASE_PROMPT = """You write one case's card for Sam's Podcast, a daily internal audio show for {listener}, a lawyer at Gallagher LLP. This is internal, so name parties, courts, opposing counsel, and Gallagher people where the sources do, and include internal next steps. {listener} is the listener: where a source names {listener} as the one who did something, write it as "you" ("you drafted the declaration"). Use "you" ONLY then. Work a source credits to someone else stays theirs by name; work no source attributes is "the team".
+CASE_CORE = """You write one case's card for Sam's Podcast, a daily internal audio show for {listener}, a lawyer at Gallagher LLP. This is internal, so name parties, courts, opposing counsel, and Gallagher people where the sources do, and include internal next steps. {listener} is the listener: where a source names {listener} as the one who did something, write it as "you" ("you drafted the declaration"). Use "you" ONLY then. Work a source credits to someone else stays theirs by name; work no source attributes is "the team".
 
 You receive the case's identity, the activity recorded on the case YESTERDAY (a line ending [by NAME] is that person's work), and background (the case overview and status memorandum, when they exist).
 
 Return ONLY a JSON object:
-{{
-  "status": "<one sentence, at most 25 words: where the case stands (forum, stage, next key date if known)>",
-  "yesterday": [{{"date": "<YYYY-MM-DD the development itself happened, or null>", "text": "<bullet>"}}, ...],
-  "next_steps": [{{"date": "<YYYY-MM-DD of the date the bullet leads with, or null>", "text": "<bullet>"}}, ...]
-}}
+{
+  "status": "<one sentence>",
+  "yesterday": [{"date": "<YYYY-MM-DD the development itself happened, or null>", "text": "<bullet>"}, ...],
+  "next_steps": [{"date": "<YYYY-MM-DD of the date the bullet leads with, or null>", "text": "<bullet>"}, ...]
+}
 
-- "yesterday": 0 to 5 substantive developments from yesterday's activity: filings and orders, hearings, discovery, settlement talk, deadlines set or moved, significant correspondence, significant work completed. Activity lines carry the day they were recorded; one can describe an older event, so check the event's own date and leave out anything before YESTERDAY. One or two sentences each.
-- "next_steps": 1 to 4 bullets in date order, soonest first (undated last): what happens next and who does it. Every hearing or deadline on or after TODAY that the sources state belongs here. Never list a date before TODAY as upcoming: the memo may be months old. If nothing is pending, return [{{"date": null, "text": "Nothing pending."}}].
+RULES
+- "yesterday" holds only developments from yesterday's activity. Activity lines carry the day they were recorded; one can describe an older event, so check the event's own date and leave out anything before YESTERDAY.
+- "next_steps" is in date order, soonest first (undated last). Every hearing or deadline on or after TODAY that the sources state belongs there. Never list a date before TODAY as upcoming: the memo may be months old. If nothing is pending, return [{"date": null, "text": "Nothing pending."}].
 - Leave out case, docket, and inquiry numbers.
 - Never calculate a date; use only dates the sources state. A contemplated, threatened, or conditional event stays pending. Do not invent facts.
 - Never mention Rocky, AI, activity logs, case folders, file indexes, or documents being saved, renamed, or filed into folders.
 - No markdown, no emojis inside the strings. Past tense for events.
 
+CARD STYLE (how many items, how long, what to favor)
+{style}
+
 Output the JSON object and nothing else."""
 
-# The script prompt is two parts. SCRIPT_CORE stays in code because the
-# parser and the facts depend on it. The style (shape, tone, pacing, how
-# things are said) is PODCAST_STYLE.md in the research folder, so James can
-# change how the show sounds without a new rocky.exe. DEFAULT_STYLE seeds
-# that file when it is missing and is used whenever it can't be read.
-# Placeholders {host1} {host2} {listener} {target} {max_words} are filled by
-# plain replacement (not str.format), so other braces in the file are safe.
+# The prompts are two parts. The *_CORE prompts stay in code because the
+# parser and the facts depend on them. Everything else is PODCAST_STYLE.md in
+# the research folder, so James can tune the show without a new rocky.exe
+# (10/24: "as many of the style and customizations to be in the .md"):
+#   - a settings block at the top (hosts, voices, listener, stability, intro
+#     timing, length, audio cues, model), which wins over config.json;
+#   - "## Topic cards" and "## Case cards" sections, the card style;
+#   - every other section, the script style.
+# DEFAULT_STYLE seeds that file when it is missing and fills in whatever the
+# file lacks or gets wrong. Placeholders {host1} {host2} {listener} {target}
+# {max_words} are filled by plain replacement (not str.format), so other
+# braces in the file are safe.
 STYLE_FILENAME = "PODCAST_STYLE.md"
 _STYLE_CAP = 12000
 
@@ -185,28 +213,65 @@ RULES
 - If a section has no cards, do not mention it anywhere, including the preview.
 - Never mention Rocky, AI, activity logs, cards, or research memos: the hosts just know the news.
 - At most {max_words} words in total across all turns; anything longer is cut off.
-- Spoken words only: no case, inquiry, or docket numbers, no citations, no URLs, no markdown, no stage directions, no bracketed audio tags, no emojis.
+- Spoken words only: no case, inquiry, or docket numbers, no citations, no URLs, no markdown, no stage directions, no emojis.
+- {tag_rule}
 
 STYLE GUIDE
 {style}
 
 Output the JSON object and nothing else."""
 
-DEFAULT_STYLE = """# Sam's Podcast — script style guide
+DEFAULT_STYLE = """---
+host1: Al
+voice1: Q1QcmfZPmFDVUWmzASdy
+host2: Sophia
+voice2: LtPsVjX1k0Kl4StEMZPK
+listener: Sam Cowin
+stability: 0.0
+intro_seconds: 0
+intro_fade_seconds: 4
+intro_overlap_seconds: 2
+target_words: 1400
+max_words: 1600
+audio_tags: excited, cheerfully, laughs, chuckles
+model: claude-opus-5-5
+---
+
+# Sam's Podcast — style guide
 
 <!--
-Rocky reads this file every morning when it writes the episode script.
-Edit it freely: the next episode follows it, with no new rocky.exe.
-Comments like this one are notes for you and are not sent to Claude.
+Rocky reads this file every morning when it makes the episode. Edit it
+freely: the next episode follows it, with no new rocky.exe. Comments like
+this one are notes for you and are never sent to Claude.
 
-Rocky fills in these names: {host1} and {host2} (the hosts), {listener}
-(Sam), {target} (the length to aim for, in words).
+THE SETTINGS BLOCK (between the --- lines at the top). One "name: value"
+per line. Rocky checks each value; a bad or missing one falls back to the
+built-in default and is logged, so a typo can't stop the episode. These win
+over config.json.
+  host1, host2            the hosts' names (match them to the voices)
+  voice1, voice2          ElevenLabs voice IDs
+  listener                Sam's full name as the case logs write it; Sam's
+                          own work is spoken as "you"
+  stability               0 = most expressive (peppiest) to 1 = steadiest;
+                          ElevenLabs' own default is 0.5; "default" sends none
+  intro_seconds           how much of Sam's Soundtrack plays; 0 = all of it
+  intro_fade_seconds      fade-out when the intro is cut short
+  intro_overlap_seconds   how early the hosts start before the music ends
+  target_words            the length to aim for (about 150 words a minute)
+  max_words               hard cap; anything longer is cut
+  audio_tags              Eleven v3 delivery cues the script may use, comma
+                          separated (e.g. excited, laughs, whispers), or none
+  model                   the Claude model that writes cards and script
 
-Fixed rules live in Rocky's code, not here, and win over this file: use
-only facts from the day's cards, never present a past date as upcoming,
-Sam's own work is "you", never mention Rocky or AI or the research, at most
-1,600 words, and no markdown, URLs, or case numbers. Delete this file
-and Rocky writes a fresh copy of the original guide on the next run.
+THE SECTIONS. "## Topic cards" and "## Case cards" style the show notes
+(one card per sports memo and per active case). Every other section styles
+the script. Rocky fills in {host1}, {host2}, {listener} and {target}.
+
+Fixed rules live in Rocky's code and win over this file: only facts from
+the day's research and case logs, no past date as upcoming, only Sam's own
+work is "you", never mention Rocky or AI, no case numbers or URLs, and a
+fact check on every script. Delete this file and Rocky writes a fresh copy
+of the original on the next run.
 -->
 
 ## The show
@@ -224,12 +289,34 @@ A warm, quick, conversational sports-and-docket morning show for Sam, who listen
 
 About {target} words in total (about ten minutes spoken). Budget roughly 60 words for the opening, 200 to 250 per sports topic, 100 to 150 per active case, 30 for the quiet cases, and 50 for the close. A busy day gets less detail per item, not more time.
 
+## Pace
+
+Peppy and upbeat: a quick morning show, not a newscast.
+
+- Short, punchy sentences. One idea per sentence. No long wind-ups or recaps.
+- Quick hand-offs: the other host jumps in with a reaction or the next fact ("Huge night." "And it gets better."). Most turns are one or two sentences.
+- Energy in the words: strong verbs, a little enthusiasm for good news, a bit of banter between segments. Keep it warm, never goofy, and calm for anything serious on the docket.
+- Delivery cues: open the show with [excited], and use a cue about once every four or five turns where it fits. Never on a case turn.
+
 ## Delivery
 
-- Speaker turns alternate. Most turns are one to three sentences.
+- Speaker turns alternate.
 - The hosts' takes are conversation, not caveats: say a sample-size or not-yet-official caution at most once per topic.
 - Write for the ear. Say dates as spoken ("November fourth"), and give every upcoming game its day or date.
 - Say numbers the way a broadcaster does: "a hundred and five to ninety-six", "six hundred and eight yards", "a hundred sixteen point seven". Never digit by digit, like "one oh five".
+
+## Topic cards
+
+- **Headline:** one sentence, at most 25 words: the most important thing right now.
+- **Developments:** 0 to 5, newest and most important first, one or two sentences each: results, scores, injuries, transactions, recruiting, coaching news. Label older context as older ("Last week, ...").
+- **Upcoming:** 0 to 4 games or events, soonest first.
+- **Angles:** 0 to 3 of the memo's discussion angles, in your own words.
+
+## Case cards
+
+- **Status:** one sentence, at most 25 words: where the case stands (forum, stage, next key date if known).
+- **Yesterday:** 0 to 5 substantive developments, one or two sentences each: filings and orders, hearings, discovery, settlement talk, deadlines set or moved, significant correspondence, significant work completed.
+- **Next steps:** 1 to 4 bullets: what happens next and who does it.
 """
 
 
@@ -274,6 +361,42 @@ def _ask(client, model: str, system: str, messages: list[dict],
 
 def enabled(config: dict) -> bool:
     return config.get("sams_podcast", True) is not False
+
+
+def voice_settings(config: dict) -> dict | None:
+    value = config.get("sams_podcast_stability", DEFAULT_STABILITY)
+    return None if value is None else {"stability": float(value)}
+
+
+def _protect(text: str, tags=None) -> str:
+    return _tag_re(tags).sub(
+        lambda m: "\u27e6" + m.group(1).lower() + "\u27e7", text)
+
+
+def _restore(text: str) -> str:
+    return re.sub("\u27e6([^\u27e7]+)\u27e7", r"[\1]", text)
+
+
+def parse_turns(raw: str, tags=None) -> list[dict]:
+    """kirsten_podcast.parse_turns, keeping the allowed audio tags (it strips
+    every bracket, which the Kirsten podcast still wants)."""
+    import kirsten_podcast as kp
+    return [{**t, "text": _restore(t["text"])}
+            for t in kp.parse_turns(_protect(raw, tags))]
+
+
+def clean_text(text: str, tags=None) -> str:
+    """A turn's text with markdown and stray brackets removed, allowed audio
+    tags kept."""
+    text = re.sub(r"\[[^\]]*\]|[*_#`]", "", _protect(text, tags))
+    return _restore(re.sub(r"\s+", " ", text).strip())
+
+
+def strip_tags(text: str, tags=None) -> str:
+    """Audio tags out, for the transcript and anything read rather than
+    heard."""
+    text = re.sub(r"[ \t]{2,}", " ", _tag_re(tags).sub("", text))
+    return re.sub(r" +([.,!?])", r"\1", text)
 
 
 def _settings(config: dict) -> tuple[list[str], list[str]]:
@@ -352,8 +475,11 @@ def add_intro(config: dict, intro: Path, mp3: Path) -> None:
     seconds = float(config.get("sams_podcast_intro_seconds", INTRO_SECONDS))
     try:
         # The whole track ends on its own; only a cut-short one fades.
+        fade = float(config.get("sams_podcast_intro_fade", INTRO_FADE))
+        overlap = float(config.get("sams_podcast_intro_overlap",
+                                   INTRO_OVERLAP))
         out = mix_intro(_pcm(intro), _pcm(mp3), seconds,
-                        INTRO_FADE if seconds > 0 else 0, INTRO_OVERLAP)
+                        fade if seconds > 0 else 0, overlap)
         mp3.write_bytes(encode_mp3(out))
     except Exception as e:
         log.warning(f"[{_TAG}] intro music FAILED ({e}); the episode goes "
@@ -374,41 +500,209 @@ def _uncomment(text: str) -> str:
     return re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL).strip()
 
 
-def style_guide(config: dict, root: Path | None) -> str:
-    """The style guide text for the script prompt: PODCAST_STYLE.md, with
-    <!-- notes --> removed. A missing file in the default place is seeded
-    with DEFAULT_STYLE; anything unreadable or empty falls back to it."""
+_BLOCK_RE = re.compile(r"\A---[ \t]*\n(.*?)\n---[ \t]*(?:\n|\Z)", re.DOTALL)
+
+
+def split_settings(text: str) -> tuple[dict, str]:
+    """The leading --- settings block as raw {name: value}, and the rest."""
+    m = _BLOCK_RE.match(text.lstrip())
+    if not m:
+        return {}, text
+    raw = {}
+    for line in m.group(1).splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or ":" not in line:
+            continue
+        name, value = line.split(":", 1)
+        raw[name.strip().lower()] = value.strip().strip('"').strip("'").strip()
+    return raw, text.lstrip()[m.end():]
+
+
+def _num(value: str, lo: float, hi: float) -> float:
+    n = float(value)
+    if not lo <= n <= hi:
+        raise ValueError(f"must be between {lo:g} and {hi:g}")
+    return n
+
+
+def _name(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z][A-Za-z .'\-]{0,39}", value):
+        raise ValueError("must be a plain name")
+    return value
+
+
+def _voice(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9]{15,40}", value):
+        raise ValueError("doesn't look like an ElevenLabs voice ID")
+    return value
+
+
+def _tags(value: str) -> list[str]:
+    if value.lower() in ("none", "off", ""):
+        return []
+    tags = [t.strip().strip("[]").lower() for t in value.split(",")]
+    tags = [t for t in tags if t]
+    if len(tags) > 12 or not all(re.fullmatch(r"[a-z][a-z \-]{1,29}", t)
+                                 for t in tags):
+        raise ValueError("must be a comma-separated list of short words")
+    return tags
+
+
+def _model(value: str) -> str:
+    if not re.fullmatch(r"claude-[a-z0-9.\-]+", value):
+        raise ValueError("must be a Claude model id like claude-opus-5-5")
+    return value
+
+
+def _stability(value: str):
+    if value.lower() in ("default", "none"):
+        return None
+    return _num(value, 0, 1)
+
+
+def _intro(value: str) -> float:
+    return 0.0 if value.lower() in ("all", "whole") else _num(value, 0, 600)
+
+
+# Settings-block name -> (config key, checker). host/voice 1 and 2 are
+# combined into the two-entry config lists by apply_settings.
+_SETTINGS = {
+    "host1": ("host1", _name), "host2": ("host2", _name),
+    "voice1": ("voice1", _voice), "voice2": ("voice2", _voice),
+    "listener": ("sams_podcast_listener", _name),
+    "stability": ("sams_podcast_stability", _stability),
+    "intro_seconds": ("sams_podcast_intro_seconds", _intro),
+    "intro_fade_seconds": ("sams_podcast_intro_fade",
+                           lambda v: _num(v, 0, 30)),
+    "intro_overlap_seconds": ("sams_podcast_intro_overlap",
+                              lambda v: _num(v, 0, 30)),
+    "target_words": ("sams_podcast_target_words",
+                     lambda v: int(_num(v, 200, 3000))),
+    "max_words": ("sams_podcast_max_words",
+                  lambda v: int(_num(v, 250, 3500))),
+    "audio_tags": ("sams_podcast_audio_tags", _tags),
+    "model": ("sams_podcast_model", _model),
+}
+
+
+def parse_settings(raw: dict) -> dict:
+    """Checked values from the settings block, keyed by config name. A bad or
+    unknown entry is logged and skipped (the default or config.json value
+    then stands), so a typo can't stop the episode."""
+    out = {}
+    for name, value in raw.items():
+        if name not in _SETTINGS:
+            log.warning(f"[{_TAG}] style file setting {name!r} is not one "
+                        f"Rocky knows; ignored")
+            continue
+        key, check = _SETTINGS[name]
+        try:
+            out[key] = check(value)
+        except (TypeError, ValueError) as e:
+            log.warning(f"[{_TAG}] style file setting {name}: {value!r} "
+                        f"{e}; using the default")
+    return out
+
+
+def apply_settings(config: dict, settings: dict) -> dict:
+    """config with the style file's settings laid over it (the file wins)."""
+    out = dict(config)
+    voices, hosts = _settings(config)
+    for i in (1, 2):
+        if f"voice{i}" in settings:
+            voices[i - 1] = settings[f"voice{i}"]
+        if f"host{i}" in settings:
+            hosts[i - 1] = settings[f"host{i}"]
+    out["sams_podcast_voices"], out["sams_podcast_hosts"] = voices, hosts
+    for key, value in settings.items():
+        if key.startswith("sams_podcast_"):
+            out[key] = value
+    target, cap = word_limits(out)
+    if cap < target:
+        log.warning(f"[{_TAG}] max_words {cap} is under target_words "
+                    f"{target}; using {target + 200}")
+        out["sams_podcast_max_words"] = target + 200
+    return out
+
+
+def split_sections(text: str) -> dict:
+    """{"script", "topic", "case"}: the "## Topic cards" and "## Case cards"
+    sections, and everything else (the script style)."""
+    parts = {"script": [], "topic": [], "case": []}
+    where = "script"
+    for line in text.splitlines():
+        heading = re.match(r"##\s+(.+?)\s*$", line)
+        if heading:
+            title = heading.group(1).lower()
+            where = ("topic" if title.startswith("topic card") else
+                     "case" if title.startswith("case card") else "script")
+            if where != "script":
+                continue
+        parts[where].append(line)
+    return {k: "\n".join(v).strip() for k, v in parts.items()}
+
+
+def _read_style_file(config: dict, root: Path | None) -> str:
     path = style_path(config, root)
-    text = DEFAULT_STYLE
     if path is None:
         log.info(f"[{_TAG}] no research folder; built-in style guide")
-    else:
-        try:
-            text = path.read_text(encoding="utf-8-sig")
-            log.info(f"[{_TAG}] style guide: {path}")
-        except FileNotFoundError:
-            if config.get("sams_podcast_style"):
-                log.warning(f"[{_TAG}] sams_podcast_style {path} not found; "
-                            f"built-in style guide")
-            else:
-                try:
-                    path.write_text(DEFAULT_STYLE, encoding="utf-8")
-                    log.info(f"[{_TAG}] wrote the starting style guide to "
-                             f"{path} (edit it to change the show)")
-                except OSError as e:
-                    log.warning(f"[{_TAG}] could not write {path}: {e}")
-        except (OSError, UnicodeDecodeError) as e:
-            log.warning(f"[{_TAG}] cannot read {path} ({e}); built-in style "
-                        f"guide")
-    text = _uncomment(text)
-    if not text:
-        log.warning(f"[{_TAG}] {path} is empty; built-in style guide")
-        text = _uncomment(DEFAULT_STYLE)
-    if len(text) > _STYLE_CAP:
-        log.warning(f"[{_TAG}] style guide is {len(text)} characters; using "
-                    f"the first {_STYLE_CAP}")
-        text = text[:_STYLE_CAP]
-    return text
+        return DEFAULT_STYLE
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+        log.info(f"[{_TAG}] style guide: {path}")
+        return text
+    except FileNotFoundError:
+        if config.get("sams_podcast_style"):
+            log.warning(f"[{_TAG}] sams_podcast_style {path} not found; "
+                        f"built-in style guide")
+        else:
+            try:
+                path.write_text(DEFAULT_STYLE, encoding="utf-8")
+                log.info(f"[{_TAG}] wrote the starting style guide to {path} "
+                         f"(edit it to change the show)")
+            except OSError as e:
+                log.warning(f"[{_TAG}] could not write {path}: {e}")
+    except (OSError, UnicodeDecodeError) as e:
+        log.warning(f"[{_TAG}] cannot read {path} ({e}); built-in style guide")
+    return DEFAULT_STYLE
+
+
+def load_style(config: dict, root: Path | None) -> dict:
+    """PODCAST_STYLE.md read and split: {"settings", "script", "topic",
+    "case"}. Notes in <!-- --> are dropped. Any part the file lacks (or
+    leaves empty) comes from DEFAULT_STYLE."""
+    raw, body = split_settings(_uncomment(_read_style_file(config, root)))
+    default_raw, default_body = split_settings(_uncomment(DEFAULT_STYLE))
+    sections, defaults = split_sections(body), split_sections(default_body)
+    out = {"settings": parse_settings(raw)}
+    for part in ("script", "topic", "case"):
+        text = sections[part]
+        if not text:
+            if part == "script":
+                log.warning(f"[{_TAG}] style guide has no script style; "
+                            f"built-in one used")
+            text = defaults[part]
+        if len(text) > _STYLE_CAP:
+            log.warning(f"[{_TAG}] {part} style is {len(text)} characters; "
+                        f"using the first {_STYLE_CAP}")
+            text = text[:_STYLE_CAP]
+        out[part] = text
+    return out
+
+
+def style_guide(config: dict, root: Path | None) -> str:
+    """The script part of the style guide (see load_style)."""
+    return load_style(config, root)["script"]
+
+
+def word_limits(config: dict) -> tuple[int, int]:
+    return (int(config.get("sams_podcast_target_words") or TARGET_WORDS),
+            int(config.get("sams_podcast_max_words") or MAX_WORDS))
+
+
+def audio_tags(config: dict) -> list[str]:
+    tags = config.get("sams_podcast_audio_tags")
+    return list(AUDIO_TAGS) if tags is None else list(tags)
 
 
 def fill(text: str, values: dict) -> str:
@@ -578,7 +872,16 @@ def _strings(items, cap: int) -> list[str]:
     return [str(i).strip() for i in (items or []) if str(i).strip()][:cap]
 
 
-def topic_card(client, model: str, memo: dict, today: str) -> dict:
+def card_prompt(core: str, style: str | None, part: str,
+                listener: str) -> str:
+    if style is None:
+        style = load_style({}, None)[part]
+    values = {"listener": listener}
+    return fill(core, values).replace("{style}", fill(style, values))
+
+
+def topic_card(client, model: str, memo: dict, today: str,
+               style: str | None = None, listener: str = _LISTENER) -> dict:
     """One Claude call. {kind, title, headline, developments, upcoming,
     angles} or {kind, title, error}."""
     from kirsten_digest import _parse_json
@@ -586,7 +889,9 @@ def topic_card(client, model: str, memo: dict, today: str) -> dict:
     prompt = (f"TODAY: {today}\nTOPIC: {memo['topic']}\n\nMEMO:\n"
               f"{memo['text'][:_MEMO_CAP]}\n\nWrite the JSON card.")
     try:
-        data = _parse_json(_ask(client, model, TOPIC_PROMPT,
+        data = _parse_json(_ask(client, model,
+                                card_prompt(TOPIC_CORE, style, "topic",
+                                            listener),
                                 [{"role": "user", "content": prompt}],
                                 max_tokens=8000))
     except Exception as e:
@@ -595,14 +900,14 @@ def topic_card(client, model: str, memo: dict, today: str) -> dict:
         return {**card, "error": "the card came back unreadable"}
     return {**card,
             "headline": str(data.get("headline") or "").strip(),
-            "developments": _strings(data.get("developments"), 5),
-            "upcoming": _dated_texts(data.get("upcoming"), today[:10])[:4],
-            "angles": _strings(data.get("angles"), 3)}
+            "developments": _strings(data.get("developments"), 8),
+            "upcoming": _dated_texts(data.get("upcoming"), today[:10])[:6],
+            "angles": _strings(data.get("angles"), 5)}
 
 
 def case_card(client, model: str, case: dict, lines: list[str], memo: str,
               background: str, today: str, yesterday: str,
-              listener: str = "Sam") -> dict:
+              listener: str = "Sam", style: str | None = None) -> dict:
     """One Claude call for a case with activity yesterday."""
     from kirsten_digest import _parse_json
     card = {"kind": "case", "title": str(case.get("File Name") or
@@ -628,7 +933,8 @@ CASE STATUS MEMORANDUM (background, may be out of date):
 Write the JSON card."""
     try:
         data = _parse_json(_ask(client, model,
-                                CASE_PROMPT.format(listener=listener),
+                                card_prompt(CASE_CORE, style, "case",
+                                            listener),
                                 [{"role": "user", "content": prompt}],
                                 max_tokens=8000))
     except Exception as e:
@@ -638,9 +944,9 @@ Write the JSON card."""
     return {**card,
             "status": str(data.get("status") or "").strip(),
             "yesterday": _dated_texts(data.get("yesterday"), today[:10],
-                                      drop_before=yesterday[:10])[:5],
+                                      drop_before=yesterday[:10])[:8],
             "next_steps": (_dated_texts(data.get("next_steps"), today[:10])
-                           or ["Nothing pending."])[:4]}
+                           or ["Nothing pending."])[:6]}
 
 
 def quiet_card(case: dict) -> dict:
@@ -692,7 +998,8 @@ def collect_cases(config: dict, client, model: str, now: datetime,
         card = case_card(client, model, case, lines,
                          rocky._extract_status_memo_text(folder),
                          rocky._read_case_digest_instructions(folder),
-                         today_s, yesterday_s, listener(config))
+                         today_s, yesterday_s, listener(config),
+                         config.get("_sams_case_style"))
         if card.get("error"):
             log.warning(f"[{_TAG}] {rrid}: {card['error']}")
         log.info(f"[{_TAG}] {rrid} {folder.name}: {len(lines)} activity "
@@ -756,9 +1063,21 @@ def calendar(day_label: str, days: int = 14, back: int = 10) -> str:
                      for i in range(-back, days)))
 
 
-def script_prompt(style: str, hosts: list[str], listener: str) -> str:
+def tag_rule(tags) -> str:
+    if not tags:
+        return "No bracketed text at all."
+    cues = " ".join(f"[{t}]" for t in tags)
+    return (f"The only brackets allowed are these delivery cues, placed right "
+            f"before the words they color: {cues}. Use them as the style "
+            f"guide says. No other bracketed text.")
+
+
+def script_prompt(style: str, hosts: list[str], listener: str,
+                  target: int = TARGET_WORDS, max_words: int = MAX_WORDS,
+                  tags=None) -> str:
     values = {"host1": hosts[0], "host2": hosts[1], "listener": listener,
-              "target": f"{TARGET_WORDS:,}", "max_words": f"{MAX_WORDS:,}"}
+              "target": f"{target:,}", "max_words": f"{max_words:,}",
+              "tag_rule": tag_rule(AUDIO_TAGS if tags is None else tags)}
     # The style is filled on its own and dropped in last, so a placeholder
     # typed into the file can't pull the rules in twice.
     return fill(SCRIPT_CORE, values).replace("{style}", fill(style, values))
@@ -766,13 +1085,15 @@ def script_prompt(style: str, hosts: list[str], listener: str) -> str:
 
 def write_script(client, model: str, material: str, day_label: str,
                  hosts: list[str], listener: str = "Sam",
-                 style: str | None = None) -> list[dict]:
+                 style: str | None = None, target: int = TARGET_WORDS,
+                 max_words: int = MAX_WORDS, tags=None) -> list[dict]:
     """One Claude call, plus one shorten retry if it runs long."""
     import kirsten_podcast as kp
     if not material:
         return []
-    system = script_prompt(_uncomment(DEFAULT_STYLE) if style is None
-                           else style, hosts, listener)
+    system = script_prompt(load_style({}, None)["script"] if style is None
+                           else style, hosts, listener, target, max_words,
+                           tags)
     if "CASE: " not in material and "QUIET CASES" not in material:
         material += ("\n\n(No case cards today: no docket segment, and do not "
                      "mention the docket or cases at all.)")
@@ -786,20 +1107,20 @@ def write_script(client, model: str, material: str, day_label: str,
     for _ in range(2):
         raw = _ask(client, model, system, messages, max_tokens=16000,
                    temperature=0.4)
-        turns = kp.parse_turns(raw)
+        turns = parse_turns(raw, tags)
         if not turns:
             raise ValueError("the podcast script came back unreadable")
         words = kp.word_count(turns)
-        if words <= MAX_WORDS:
+        if words <= max_words:
             break
         log.info(f"[{_TAG}] script ran {words} words; asking for a shorter one")
         messages += [{"role": "assistant", "content": raw},
                      {"role": "user", "content":
                       f"That is {words} words. Cut it to at most "
-                      f"{TARGET_WORDS} words: less detail per item, same "
+                      f"{target} words: less detail per item, same "
                       f"shape. Return the JSON only."}]
-    turns = kp.fit(turns, MAX_WORDS, tag=_TAG)
-    return check_script(client, model, material, turns, day_label)
+    turns = kp.fit(turns, max_words, tag=_TAG)
+    return check_script(client, model, material, turns, day_label, tags)
 
 
 CHECK_PROMPT = """You fact-check the script of a daily two-host audio show against the cards it was written from. The cards are the only source of truth.
@@ -808,7 +1129,7 @@ You receive TODAY, a CALENDAR, the CARDS, and the SCRIPT as numbered turns.
 
 Check every turn, one claim at a time, including the opening preview and the close, which summarize several cards at once and are where facts get crossed. For each team, case, or person a turn names, confirm the claim is on THAT card.
 
-Find every turn that states something the cards do not support: a fact, date, score, opponent, schedule, bye week, record, or name not in the cards; a fact moved to the wrong team, case, or person (for example one team's game credited to another); a past date presented as upcoming; or something pending or unconfirmed presented as done. A weekday is wrong only if the CALENDAR says so: never change one from your own reckoning. Opinions and discussion of a card's angles are fine. Wording and style are not your concern.
+Find every turn that states something the cards do not support: a fact, date, score, opponent, schedule, bye week, record, or name not in the cards; a fact moved to the wrong team, case, or person (for example one team's game credited to another); a past date presented as upcoming; or something pending or unconfirmed presented as done. A weekday is wrong only if the CALENDAR says so: never change one from your own reckoning. Opinions and discussion of a card's angles are fine. Delivery cues in brackets ([excited], [laughs], ...) are not claims: leave them. Wording and style are not your concern.
 
 Return ONLY a JSON object:
 {"fixes": [{"turn": <number>, "problem": "<short reason>", "text": "<the whole turn rewritten to say only what the cards support, same speaker voice, or empty to drop the turn>"}]}
@@ -817,7 +1138,7 @@ Return {"fixes": []} if every turn is supported. Output the JSON object and noth
 
 
 def check_script(client, model: str, material: str, turns: list[dict],
-                 day_label: str) -> list[dict]:
+                 day_label: str, tags=None) -> list[dict]:
     """One more Claude call: every turn checked against the cards, and any
     unsupported or misattributed claim rewritten (10/23 dry runs: an invented
     bye week, and Illinois' Oregon game credited to the Bears). A failed
@@ -848,8 +1169,7 @@ def check_script(client, model: str, material: str, turns: list[dict],
             continue
         if not 0 <= i < len(out):
             continue
-        text = re.sub(r"\s+", " ", re.sub(r"\[[^\]]*\]|[*_#`]", "",
-                                          str(fix.get("text") or ""))).strip()
+        text = clean_text(str(fix.get("text") or ""), tags)
         log.info(f"[{_TAG}] fact check, turn {i + 1} "
                  f"({fix.get('problem') or 'unsupported'}): "
                  f"{out[i]['text'][:100]!r} -> {text[:100]!r}")
@@ -1076,12 +1396,22 @@ def run_cli(config: dict, data_dir: Path) -> None:
                  f"to make another")
         return
 
+    root = research_root(config)
+    # PODCAST_STYLE.md: its settings block wins over config.json, and its
+    # card sections ride along for collect_cases.
+    style = load_style(config, root)
+    config = apply_settings(config, style["settings"])
+    config["_sams_case_style"] = style["case"]
+    if style["settings"]:
+        log.info(f"[{_TAG}] style file settings: "
+                 f"{', '.join(sorted(style['settings']))}")
+
     from anthropic import Anthropic
     client = Anthropic(api_key=config["anthropic_api_key"])
     model = config.get("sams_podcast_model") or DEFAULT_MODEL
     today_s = now.strftime("%Y-%m-%d (%A)")
-
-    root = research_root(config)
+    target, max_words = word_limits(config)
+    tags = audio_tags(config)
     used = {e.get("edition") for d, e in episodes.items()
             if e.get("edition") and not (force and d == today)}
     edition = None
@@ -1093,7 +1423,8 @@ def run_cli(config: dict, data_dir: Path) -> None:
         if edition is None:
             log.warning(f"[{_TAG}] no complete, unused research edition for "
                         f"today or yesterday under {root}; cases only")
-    topics = [topic_card(client, model, m, today_s)
+    topics = [topic_card(client, model, m, today_s, style["topic"],
+                         listener(config))
               for m in (edition["memos"] if edition else [])]
     for c in topics:
         if c.get("error"):
@@ -1113,8 +1444,8 @@ def run_cli(config: dict, data_dir: Path) -> None:
     notes = render_notes(topics, cases)
     voices, hosts = _settings(config)
     turns = write_script(client, model, cards_text(topics, cases),
-                         today_s, hosts, listener(config),
-                         style_guide(config, root))
+                         today_s, hosts, listener(config), style["script"],
+                         target, max_words, tags)
     if not turns:
         log.warning(f"[{_TAG}] the script came back empty; no episode")
         return
@@ -1137,7 +1468,8 @@ def run_cli(config: dict, data_dir: Path) -> None:
             else:
                 mp3 = out / "sams_podcast_preview.mp3"
                 kp.synthesize(config["elevenlabs_api_key"], turns, voices,
-                              mp3, MAX_SECONDS, tag=_TAG)
+                              mp3, int(max_words * 0.4) + 20, tag=_TAG,
+                              settings=voice_settings(config))
                 intro = intro_path(config, root)
                 if intro:
                     add_intro(config, intro, mp3)
@@ -1158,7 +1490,7 @@ def run_cli(config: dict, data_dir: Path) -> None:
     (archive / f"{today} script.txt").write_text(script, encoding="utf-8")
     mp3 = archive / f"{today}.mp3"
     kp.synthesize(config["elevenlabs_api_key"], turns, voices, mp3,
-                  MAX_SECONDS, tag=_TAG)
+                  int(max_words * 0.4) + 20, tag=_TAG, settings=voice_settings(config))
     intro = intro_path(config, root)
     if intro:
         add_intro(config, intro, mp3)
@@ -1185,7 +1517,7 @@ def run_cli(config: dict, data_dir: Path) -> None:
         audio_url = upload_audio(key, mp3)
         record["episode_id"] = create_episode(key, str(show_id), title,
                                               summary, notes, audio_url,
-                                              script)
+                                              strip_tags(script, tags))
         _write_state(data_dir, state)
         publish_episode(key, record["episode_id"])
     except Exception as e:
