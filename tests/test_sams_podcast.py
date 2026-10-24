@@ -617,5 +617,26 @@ def test_default_style_settings_block_parses_clean():
         "sams_podcast_stability", "sams_podcast_intro_seconds",
         "sams_podcast_intro_fade", "sams_podcast_intro_overlap",
         "sams_podcast_target_words", "sams_podcast_max_words",
-        "sams_podcast_audio_tags", "sams_podcast_model"}
+        "sams_podcast_audio_tags", "sams_podcast_model",
+        "sams_podcast_intro_file"}
     assert "---" not in style["script"] and "voice1" not in style["script"]
+
+
+def test_intro_file_from_the_style_file(tmp_path):
+    (tmp_path / "Sam's Soundtrack.wav").write_bytes(b"x")
+    (tmp_path / "zombie_first_15_seconds.wav").write_bytes(b"x")
+    (tmp_path / "PODCAST_STYLE.md").write_text(
+        "---\nintro_file: zombie_first_15_seconds.wav\nintro_seconds: 15\n---\n"
+        "## Pace\nQuick.\n", encoding="utf-8")
+    cfg = sp.apply_settings({"sams_podcast_intro": str(tmp_path / "Sam's "
+                                                       "Soundtrack.wav")},
+                            sp.load_style({}, tmp_path)["settings"])
+    assert sp.intro_path(cfg, tmp_path).name == "zombie_first_15_seconds.wav"
+    assert cfg["sams_podcast_intro_seconds"] == 15
+    # a missing file falls back to the usual intro; none means no intro
+    assert sp.intro_path({"sams_podcast_intro_file": "gone.wav"},
+                         tmp_path).name == "Sam's Soundtrack.wav"
+    assert sp.intro_path({"sams_podcast_intro_file": ""}, tmp_path) is None
+    assert sp.parse_settings({"intro_file": "none"}) == \
+        {"sams_podcast_intro_file": ""}
+    assert sp.parse_settings({"intro_file": "song.docx"}) == {}

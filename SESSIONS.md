@@ -49,6 +49,14 @@ in the .md so the show can be tuned without repackaging Rocky.
 - config.example.json lost the voice/host/listener/stability/model/intro
   keys: they live in the style file now. The live file on the share was
   replaced twice; it was still unedited both times (checked first).
+- Later 10/24: new intro `zombie_first_15_seconds.wav` (James). New
+  `intro_file` setting (a file in the research folder, a full path, or
+  none) wins over config `sams_podcast_intro` and the Sam's Soundtrack
+  default; a missing file falls back to the usual intro. The clip is
+  48 kHz stereo, starts with ~1 s of silence and ends at full volume
+  mid-music, so the live file sets `intro_seconds: 15` (fade over the
+  last 4 s, hosts in at 13 s) rather than 0 (no fade). Older exes just
+  ignore the unknown setting. Suite 151 pass.
 - Tests: suite 150 pass.
 
 **Verified**

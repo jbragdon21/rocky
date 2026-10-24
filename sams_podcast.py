@@ -228,6 +228,7 @@ host2: Sophia
 voice2: LtPsVjX1k0Kl4StEMZPK
 listener: Sam Cowin
 stability: 0.0
+intro_file: Sam's Soundtrack.wav
 intro_seconds: 0
 intro_fade_seconds: 4
 intro_overlap_seconds: 2
@@ -254,7 +255,10 @@ over config.json.
                           own work is spoken as "you"
   stability               0 = most expressive (peppiest) to 1 = steadiest;
                           ElevenLabs' own default is 0.5; "default" sends none
-  intro_seconds           how much of Sam's Soundtrack plays; 0 = all of it
+  intro_file              the intro music: a .wav, .flac or .mp3 in this
+                          folder (or a full path); none = no intro
+  intro_seconds           how much of it plays; 0 = all of it, unfaded (use
+                          the clip's length to play it all with a fade-out)
   intro_fade_seconds      fade-out when the intro is cut short
   intro_overlap_seconds   how early the hosts start before the music ends
   target_words            the length to aim for (about 150 words a minute)
@@ -415,9 +419,22 @@ def listener(config: dict) -> str:
 
 
 def intro_path(config: dict, root: Path | None) -> Path | None:
-    """The intro music: config sams_podcast_intro if it exists, else
-    "Sam's Soundtrack" in the research folder (WAV, FLAC or MP3, lossless
-    first)."""
+    """The intro music: the style file's intro_file (a name in the research
+    folder, or a full path; empty = no intro), else config
+    sams_podcast_intro, else "Sam's Soundtrack" in the research folder (WAV,
+    FLAC or MP3, lossless first)."""
+    chosen = config.get("sams_podcast_intro_file")
+    if chosen == "":
+        log.info(f"[{_TAG}] intro_file is none; no intro music")
+        return None
+    if chosen:
+        path = Path(chosen)
+        if not path.is_absolute() and root:
+            path = root / path
+        if path.is_file():
+            return path
+        log.warning(f"[{_TAG}] intro_file {chosen} not found; using the "
+                    f"usual intro instead")
     configured = config.get("sams_podcast_intro")
     if configured and Path(configured).is_file():
         return Path(configured)
@@ -560,6 +577,14 @@ def _stability(value: str):
     return _num(value, 0, 1)
 
 
+def _intro_file(value: str) -> str:
+    if value.lower() in ("none", "off"):
+        return ""
+    if not value.lower().endswith(_INTRO_EXTS) or "\n" in value:
+        raise ValueError("must be a .wav, .flac or .mp3 file name, or none")
+    return value
+
+
 def _intro(value: str) -> float:
     return 0.0 if value.lower() in ("all", "whole") else _num(value, 0, 600)
 
@@ -582,6 +607,7 @@ _SETTINGS = {
                   lambda v: int(_num(v, 250, 3500))),
     "audio_tags": ("sams_podcast_audio_tags", _tags),
     "model": ("sams_podcast_model", _model),
+    "intro_file": ("sams_podcast_intro_file", _intro_file),
 }
 
 
