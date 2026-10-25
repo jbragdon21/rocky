@@ -149,3 +149,76 @@ def test_attach_large_file_uses_upload_session(monkeypatch, tmp_path):
     assert [h["Content-Range"] for h in puts] == [
         f"bytes 0-3145727/{size}", f"bytes 3145728-6291455/{size}",
         f"bytes 6291456-{size - 1}/{size}"]
+
+
+class _Claude:
+    """Fake client: hands back the queued replies in order, records calls."""
+
+    def __init__(self, *replies):
+        self.replies, self.calls = list(replies), []
+        self.messages = self
+        self.beta = self
+
+    def create(self, **kw):
+        import json as _json
+        self.calls.append(kw)
+        reply = self.replies.pop(0)
+        text = reply if isinstance(reply, str) else _json.dumps(reply)
+
+        class R:
+            stop_reason = "end_turn"
+            content = [type("T", (), {"type": "text", "text": text})]
+        return R()
+
+
+def test_write_script_uses_opus_calendar_and_a_client_fact_check():
+    client = _Claude(
+        {"turns": [{"speaker": 1, "text": "Welcome to the week update."},
+                   {"speaker": 2, "text": "James Bragdon filed the MTD."},
+                   {"speaker": 1, "text": "Questions? Reply to the report."}]},
+        {"fixes": [{"turn": 2, "problem": "names Gallagher staff",
+                    "text": "The team filed the motion to dismiss."}]})
+    turns = kp.write_script(client, "claude-opus-5-5", CARDS, "Week of Oct 19",
+                            ["George", "Sarah"])
+    assert [t["text"] for t in turns] == [
+        "Welcome to the week update.", "The team filed the motion to dismiss.",
+        "Questions? Reply to the report."]
+    script_call, check_call = client.calls
+    assert "temperature" not in script_call                 # Opus: effort
+    assert script_call["output_config"]["effort"] == "medium"
+    assert "CALENDAR (use it for every weekday" in \
+        script_call["messages"][0]["content"]
+    assert "Take every weekday from the CALENDAR" in script_call["system"]
+    assert check_call["system"] == kp.CHECK_PROMPT
+    assert check_call["output_config"]["effort"] == "high"
+    assert "names a Gallagher attorney or staff member" in kp.CHECK_PROMPT
+
+
+def test_make_rebuilds_the_glued_audio_as_one_stream(monkeypatch, tmp_path):
+    import math
+    from array import array
+    import miniaudio
+    import sams_podcast as sp
+    tone = array("h", (int(5000 * math.sin(2 * math.pi * 220 * k / 44100))
+                       for k in range(44100 * 2)))
+    piece = sp.encode_mp3(tone)
+
+    def fake_synth(key, turns, voices, out, *a, parts=None, **kw):
+        parts.extend([piece, piece, piece])
+        out.write_bytes(piece * 3)
+        return 6.0
+
+    monkeypatch.setattr(kp, "synthesize", fake_synth)
+    monkeypatch.setattr(kp, "write_script", lambda *a, **kw: [
+        {"speaker": 1, "text": "Hello."}, {"speaker": 2, "text": "Bye."}])
+    import anthropic
+    monkeypatch.setattr(anthropic, "Anthropic", lambda api_key: object())
+    mp3 = kp.make({"anthropic_api_key": "k", "elevenlabs_api_key": "e"},
+                  CARDS, "Week", tmp_path / "w.mp3", tmp_path / "w.txt")
+    assert mp3 == tmp_path / "w.mp3"
+    assert abs(miniaudio.mp3_get_file_info(str(mp3)).duration - 6) < 0.3
+
+
+def test_default_models_are_opus():
+    import sams_podcast as sp
+    assert sp.DEFAULT_MODEL == "claude-opus-5-5"

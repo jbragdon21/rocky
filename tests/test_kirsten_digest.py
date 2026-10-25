@@ -213,3 +213,45 @@ def test_collect_applies_config_cases_root(tmp_path, monkeypatch):
     assert kd.collect({"cases_root": str(root)}, 7)[0] is None
     assert rocky.ROCKY_CASES_ROOT == root
     assert rocky.CASE_INDEX_PATH == root / "Rocky Case Index.xlsx"
+
+
+def test_activity_lines_can_name_who_logged_each_item():
+    evs = [{"timestamp": "2026-10-21T22:04:26Z", "event": "research",
+            "actor": "James Bragdon (Cowork)", "summary": "Reviewed the MSA."},
+           {"timestamp": "2026-10-21T23:00:00Z", "event": "call",
+            "actor": "rocky", "summary": "Call logged."},
+           {"timestamp": "2026-10-22T10:00:00Z", "event": "note",
+            "actor": "Kirsten Woelper", "summary": "Sent the lease."}]
+    plain = kd.activity_lines(evs)
+    tagged = kd.activity_lines(evs, authors=True)
+    assert not any("[by" in line for line in plain)
+    assert tagged[0].endswith("Reviewed the MSA. [by James Bragdon]")
+    assert tagged[1].endswith("Call logged.")                 # Rocky: no tag
+    assert tagged[2].endswith("Sent the lease. [by Kirsten Woelper]")
+    assert len(tagged) == len(plain) == 3
+
+
+def test_summarize_case_uses_ask_and_explains_the_author_tags():
+    seen = {}
+
+    class C:
+        def __init__(self):
+            self.messages = self
+            self.beta = self
+
+        def create(self, **kw):
+            seen.update(kw)
+
+            class R:
+                stop_reason = "end_turn"
+                content = [type("T", (), {"type": "text", "text":
+                    '{"status": "MTD pending.", "week": [], "next_steps": []}'})]
+            return R()
+
+    out = kd.summarize_case(C(), "claude-opus-5-5", {"File Name": "Bulgin"},
+                            ["Mon 10/19 research: x [by James Bragdon]"], "", "",
+                            "w", "2026-10-19 (Monday)")
+    assert out["status"] == "MTD pending."
+    assert "temperature" not in seen and seen["max_tokens"] == 8000
+    assert 'A line ending [by NAME] was logged by that person' in seen["system"]
+    assert "[by James Bragdon]" in seen["messages"][0]["content"]

@@ -23,7 +23,8 @@ Config (all optional except the key):
     kirsten_podcast           false turns the podcast off
     kirsten_podcast_voices    two ElevenLabs voice IDs [host 1, host 2]
     kirsten_podcast_hosts     the two hosts' first names
-    kirsten_podcast_model     Claude model for the script
+    kirsten_podcast_model     Claude model for the script and its fact check
+                              (default claude-opus-5-5)
 
 Files sit next to the report: <cases_root>\\_Kirsten Digests\\YYYY-MM-DD.mp3
 and YYYY-MM-DD podcast.txt (the script, so James can check what was said).
@@ -78,6 +79,7 @@ LENGTH — at most {max_words} words in total across all turns (about four and a
 RULES
 - Use only facts in the cards. Do not add, infer, or calculate dates, outcomes, amounts, or parties. Keep every pending, contemplated, or conditional event pending.
 - A date before TODAY is past. Never present it as upcoming or scheduled, even where a card lists it under next steps: leave it out.
+- Take every weekday from the CALENDAR; never work one out yourself.
 - Speak to Kirsten as "you" and to the client as "Bozzuto"; the firm is "Gallagher" or "the team". Never name Gallagher attorneys or staff. The hosts are not lawyers and do not give advice or opinions on how a case will go.
 - Write for the ear: say dates the way a person says them ("November fourth"), spell out abbreviations on first use where the card does, no case numbers, no citations, no URLs, no bullet points or markdown, no stage directions, no bracketed audio tags, no emojis.
 - Plain, warm, professional. No jokes about the cases, no hype.
@@ -179,16 +181,16 @@ def write_script(client, model: str, cards, week_label: str,
     # The model runs long, so the prompt asks for less than the hard cap.
     system = SYSTEM_PROMPT.format(host1=hosts[0], host2=hosts[1],
                                   max_words=MAX_WORDS - 100)
+    from sams_podcast import _ask, calendar
+    today = datetime.now().strftime("%Y-%m-%d (%A)")
     messages = [{"role": "user", "content":
-                 f"TODAY: {datetime.now().strftime('%Y-%m-%d (%A)')}\n"
+                 f"TODAY: {today}\n{calendar(today)}\n"
                  f"WEEK: {week_label}\n\nREPORT CARDS:\n\n{material}\n\n"
                  f"Write the JSON script."}]
     turns: list[dict] = []
     for attempt in range(2):
-        resp = client.messages.create(model=model, max_tokens=4000,
-                                      temperature=0.4, system=system,
-                                      messages=messages)
-        raw = resp.content[0].text
+        raw = _ask(client, model, system, messages, max_tokens=16000,
+                   temperature=0.4)
         turns = parse_turns(raw)
         if not turns:
             raise ValueError("the podcast script came back unreadable")
@@ -202,7 +204,32 @@ def write_script(client, model: str, cards, week_label: str,
                       f"That is {words} words. Cut it to at most "
                       f"{MAX_WORDS - 50} words: less detail per case, same "
                       f"shape. Return the JSON only."}]
-    return fit(turns)
+    return check(client, model, material, fit(turns), today)
+
+
+CHECK_PROMPT = """You fact-check the script of a short two-host audio summary of the Weekly Gallagher-Bozzuto Litigation Report, sent by Gallagher LLP (outside counsel) to its client. The report cards are the only source of truth.
+
+You receive TODAY, a CALENDAR, the REPORT CARDS, and the SCRIPT as numbered turns.
+
+Check every turn, one claim at a time, including the opening preview and the close, which summarize several cases at once and are where facts get crossed. For each case, date, party, or amount a turn names, confirm the claim is on THAT case's card.
+
+Fix every turn that: states a fact, date, amount, party, or outcome not on the cards; moves a fact to the wrong case; presents a past date as upcoming; presents something pending, contemplated, or conditional as done; names a Gallagher attorney or staff member; or gives an opinion or prediction about how a case will go. A weekday is wrong only if the CALENDAR says so: never change one from your own reckoning. Wording and style are not your concern.
+
+Return ONLY a JSON object:
+{"fixes": [{"turn": <number>, "problem": "<short reason>", "text": "<the whole turn rewritten to say only what the cards support, same speaker voice, or empty to drop the turn>"}]}
+
+Return {"fixes": []} if every turn is supported. Output the JSON object and nothing else."""
+
+
+def check(client, model: str, material: str, turns: list[dict],
+          today: str) -> list[dict]:
+    """Sam's Podcast's fact check with a client-facing brief: every turn
+    against the cards, unsupported ones rewritten or dropped. It goes to the
+    client, so it also catches firm names and opinions on outcomes. A failed
+    check keeps the script."""
+    from sams_podcast import check_script
+    return check_script(client, model, material, turns, today, tags=[],
+                        system=CHECK_PROMPT, log_tag="kirsten podcast")
 
 
 def script_text(turns: list[dict], hosts: list[str]) -> str:
@@ -300,12 +327,12 @@ def make(config: dict, cards, week_label: str, mp3_path: Path,
     """Script (always saved) and, if audio, the MP3. Returns the MP3 path,
     or None when there is nothing to attach. Never raises: the written
     report drafts either way."""
-    import rocky
     from anthropic import Anthropic
     try:
         voices, hosts = _settings(config)
         client = Anthropic(api_key=config["anthropic_api_key"])
-        model = config.get("kirsten_podcast_model", rocky.CLAUDE_MODEL)
+        from sams_podcast import DEFAULT_MODEL
+        model = config.get("kirsten_podcast_model") or DEFAULT_MODEL
         turns = write_script(client, model, cards, week_label, hosts)
         if not turns:
             log.info("[kirsten podcast] no summarized cards; no podcast")
@@ -316,7 +343,17 @@ def make(config: dict, cards, week_label: str, mp3_path: Path,
                  f"{word_count(turns)} words -> {script_path}")
         if not audio:
             return None
-        synthesize(config["elevenlabs_api_key"], turns, voices, mp3_path)
+        parts: list[bytes] = []
+        synthesize(config["elevenlabs_api_key"], turns, voices, mp3_path,
+                   parts=parts)
+        # Each ElevenLabs part is a whole MP3 whose first frame states only
+        # its own length, so the glued file read as about two minutes in
+        # header-trusting players (10/19, 10/22, 10/25 all did). Rebuild it
+        # as one stream; if that fails, the glued file still has all the
+        # audio.
+        from sams_podcast import finish_audio
+        finish_audio({}, None, mp3_path, parts, word_count(turns),
+                     log_tag="kirsten podcast")
         return mp3_path
     except Exception as e:
         log.warning(f"[kirsten podcast] FAILED, drafting without audio: {e}")

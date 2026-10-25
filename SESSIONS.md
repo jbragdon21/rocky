@@ -20,7 +20,62 @@ A running record of every working session on Rocky. Each session prepends a new 
 
 This log is append-only history. Don't rewrite past entries. If a past decision was overturned, write a new entry that says so and links back ("supersedes 2026-04-30 entry on X").
 
-Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in one day, add `(2)`, `(3)`, etc.
+Naming entries: `## Session 2026-10-25 — Kirsten Digest: the Sam's Podcast fixes, ported
+
+James asked which Sam's Podcast fixes belong in the Kirsten Digest. Five
+were ported; voices (ElevenLabs defaults retire 12/31/2026) and an editable
+style file were left for later.
+
+**What changed**
+
+- **Audio:** all three real Kirsten MP3s (10/19, 10/22, 10/25) were 2-3
+  ElevenLabs parts glued together, each with its own Xing/Info length
+  header, so header-trusting players read about 2 minutes of a 4-minute
+  podcast (the audio itself was all there: Kirsten never decoded the
+  file). `make` now collects the parts and runs Sam's `finish_audio` (no
+  intro): each part decoded on its own, one 44.1 kHz stream saved. The
+  10/25 draft's file was rebuilt by hand as `2026-10-25 (full length).mp3`
+  in `_Kirsten Digests` (split at the ID3 tags; 4:00 read and decoded) for
+  James to swap onto the draft.
+- **Fact check:** `kirsten_podcast.check` runs Sam's `check_script` with a
+  client-facing brief (`CHECK_PROMPT`): unsupported or crossed facts, past
+  dates as upcoming, pending-as-done, Gallagher staff named, opinions on
+  outcomes. `check_script` gained `system=` and `log_tag=`.
+- **Calendar** in the script call, and a rule to take weekdays from it.
+- **Opus 5.5** for the digest cards and the podcast script (defaults now
+  `sams_podcast.DEFAULT_MODEL`; `kirsten_digest_model` /
+  `kirsten_podcast_model` still override), through Sam's `_ask` (effort,
+  text blocks only, refusal = error, fallbacks). Card `max_tokens` 1200 ->
+  8000 for thinking.
+- **Authors:** `activity_lines(authors=True)` ends each line with
+  `[by NAME]` (Rocky's own events untagged), kept inside the 20,000-char
+  cap; the card prompt says Gallagher people's work is "we" (never named),
+  Kirsten's is "you". Sam's `attributed_lines` now just calls it.
+- Kirsten modules import these from `sams_podcast` lazily (no new module,
+  no build_exe change).
+- Tests: suite 194 pass.
+
+**Verified**
+
+- Dry run, all 11 cases on Opus 5.5: no errors; "you" only where the
+  report addresses Kirsten ("We will report it to you promptly"), no
+  Gallagher names in any card.
+- Script + fact check on three cases (Bulgin, Hettinger, VA AG Fees): 460
+  words, weekdays right (Thu Oct 29, Fri Nov 6, Fri Oct 30), no staff
+  names, no predictions; the check found nothing to fix.
+- Not voiced here (no ElevenLabs key on the dev laptop); the audio rebuild
+  is Sam's tested `finish_audio`.
+
+**Watch-outs**
+
+- This checkout was on `time-entries` (another session's branch, 6 commits
+  ahead of main, unpushed), and the live 10/25 09:04 exe was built from it.
+  These commits went on top of `time-entries` so the deploy keeps that
+  work; they reach main when time-entries is merged.
+
+---
+
+## Session YYYY-MM-DD — short title`. If multiple sessions in one day, add `(2)`, `(3)`, etc.
 
 ---
 

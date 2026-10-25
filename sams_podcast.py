@@ -517,7 +517,8 @@ def _pcm_parts(parts: list[bytes], rate: int = _RATE):
 def finish_audio(config: dict, intro: Path | None, mp3: Path,
                  parts: list[bytes] | None = None,
                  words: int | None = None,
-                 stats: dict | None = None) -> float | None:
+                 stats: dict | None = None,
+                 log_tag: str = _TAG) -> float | None:
     """The episode's final audio: the hosts (from the ElevenLabs parts, each
     decoded separately), the intro music in front if there is one, all
     re-encoded as one 44.1 kHz stream, so podcast apps read the true length.
@@ -556,10 +557,10 @@ def finish_audio(config: dict, intro: Path | None, mp3: Path,
     hosts = len(speech) / _RATE
     if stats is not None:
         stats.update(total=round(total, 1), hosts=round(hosts, 1))
-    log.info(f"[{_TAG}] episode audio {total / 60:.1f} min (hosts "
+    log.info(f"[{log_tag}] episode audio {total / 60:.1f} min (hosts "
              f"{hosts / 60:.1f} min from {len(parts or [])} part(s))")
     if words and hosts < words / 150 * 60 * 0.6:
-        log.warning(f"[{_TAG}] the hosts' audio is {hosts:.0f}s for a "
+        log.warning(f"[{log_tag}] the hosts' audio is {hosts:.0f}s for a "
                     f"{words}-word script (about {words / 150:.0f} min "
                     f"expected): it may be cut short")
     return total
@@ -912,17 +913,11 @@ def yesterday_window(now: datetime) -> tuple[datetime, datetime]:
 
 
 def attributed_lines(events: list[dict]) -> list[str]:
-    """kirsten_digest.activity_lines, plus who did each item. The card turns
+    """kirsten_digest.activity_lines with who did each item: the card turns
     the listener's own work into "you", so it has to know whose work each
-    line is (activity_lines leaves the actor out: the client report never
-    names firm people)."""
+    line is."""
     from kirsten_digest import activity_lines
-    lines = []
-    for ev in sorted(events, key=lambda e: str(e.get("timestamp") or "")):
-        actor = re.sub(r"\s*\(.*?\)", "", str(ev.get("actor") or "")).strip()
-        by = f" [by {actor}]" if actor and actor.lower() != "rocky" else ""
-        lines += [line + by for line in activity_lines([ev])]
-    return lines
+    return activity_lines(events, authors=True)
 
 
 def events_between(events: list[dict], start: datetime, end: datetime
@@ -1236,7 +1231,9 @@ Return {"fixes": []} if every turn is supported. Output the JSON object and noth
 
 def check_script(client, model: str, material: str, turns: list[dict],
                  day_label: str, tags=None,
-                 covered: list[tuple[str, str]] | None = None) -> list[dict]:
+                 covered: list[tuple[str, str]] | None = None,
+                 system: str | None = None,
+                 log_tag: str = _TAG) -> list[dict]:
     """One more Claude call: every turn checked against the cards, and any
     unsupported or misattributed claim rewritten (10/23 dry runs: an invented
     bye week, and Illinois' Oregon game credited to the Bears). A failed
@@ -1246,7 +1243,7 @@ def check_script(client, model: str, material: str, turns: list[dict],
                          for i, t in enumerate(turns, 1))
     try:
         raw = _ask(
-            client, model, CHECK_PROMPT, effort="high", max_tokens=16000,
+            client, model, system or CHECK_PROMPT, effort="high", max_tokens=16000,
             messages=[{"role": "user", "content":
                        f"TODAY: {day_label}\n{calendar(day_label)}\n\n"
                        f"CARDS:\n\n{material}\n\n"
@@ -1254,10 +1251,10 @@ def check_script(client, model: str, material: str, turns: list[dict],
                        + f"SCRIPT:\n{numbered}\n\nReturn the JSON."}])
         data = _parse_json(raw)
     except Exception as e:
-        log.warning(f"[{_TAG}] fact check FAILED ({e}); script kept as written")
+        log.warning(f"[{log_tag}] fact check FAILED ({e}); script kept as written")
         return turns
     if not data:
-        log.warning(f"[{_TAG}] fact check came back unreadable; script kept "
+        log.warning(f"[{log_tag}] fact check came back unreadable; script kept "
                     f"as written")
         return turns
     out = [dict(t) for t in turns]
@@ -1269,7 +1266,7 @@ def check_script(client, model: str, material: str, turns: list[dict],
         if not 0 <= i < len(out):
             continue
         text = clean_text(str(fix.get("text") or ""), tags)
-        log.info(f"[{_TAG}] fact check, turn {i + 1} "
+        log.info(f"[{log_tag}] fact check, turn {i + 1} "
                  f"({fix.get('problem') or 'unsupported'}): "
                  f"{out[i]['text'][:100]!r} -> {text[:100]!r}")
         out[i]["text"] = text

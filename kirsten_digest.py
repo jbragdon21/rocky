@@ -90,7 +90,7 @@ _FONT = "Segoe UI,Helvetica,Arial,sans-serif"
 
 SYSTEM_PROMPT = """You are drafting one case's section of the Weekly Gallagher-Bozzuto Litigation Report, a weekly email from Gallagher LLP (outside litigation counsel) to Kirsten Woelper, the in-house contact at Bozzuto who oversees these cases. James Bragdon, the Gallagher attorney, reviews it and sends it from his own account.
 
-You receive the case's identity, the activity recorded on the case over the past week, and background: the case's status memorandum and case overview, when they exist. Activity may include emails received (with summaries), documents received or filed, drafting, research, calls, and the firm's own notes.
+You receive the case's identity, the activity recorded on the case over the past week, and background: the case's status memorandum and case overview, when they exist. Activity may include emails received (with summaries), documents received or filed, drafting, research, calls, and the firm's own notes. A line ending [by NAME] was logged by that person: work by a Gallagher person is "we" or "Gallagher" (never by name), work by Kirsten Woelper is "you", and anyone else's stays theirs as the line describes. A line with no [by NAME] is not Kirsten's own action unless it says so.
 
 Return ONLY a JSON object with these keys:
 {
@@ -221,14 +221,26 @@ def _local_day(ts: str | None) -> str:
         return "?"
 
 
-def activity_lines(events: list[dict]) -> list[str]:
-    """Compact, dated lines for the prompt. Housekeeping never appears."""
+def _author(ev: dict) -> str:
+    """" [by NAME]" for an event a person logged ("James Bragdon (Cowork)" ->
+    James Bragdon); nothing for Rocky's own events."""
+    actor = re.sub(r"\s*\(.*?\)", "", str(ev.get("actor") or "")).strip()
+    return f" [by {actor}]" if actor and actor.lower() != "rocky" else ""
+
+
+def activity_lines(events: list[dict], authors: bool = False) -> list[str]:
+    """Compact, dated lines for the prompt. Housekeeping never appears.
+    authors=True ends each line with who logged it ([by NAME]), so the card
+    can tell Gallagher's work ("we") from the client's own ("you"): 10/23,
+    Sam's Podcast credited James's work to the listener until it could."""
     from rocky import _is_substantive_event
     lines: list[str] = []
     for ev in sorted(events, key=lambda e: str(e.get("timestamp") or "")):
         kind = ev.get("event", "")
         if kind in _HOUSEKEEPING or not _is_substantive_event(ev):
             continue
+        first = len(lines)
+        by = _author(ev) if authors else ""
         day = _local_day(ev.get("timestamp"))
         if kind == "daily_cases_email_summary":
             for em in ev.get("emails") or []:
@@ -261,6 +273,8 @@ def activity_lines(events: list[dict]) -> list[str]:
                 text = f"{text} ({details})"
             if text:
                 lines.append(_clip(f"{day} {kind.replace('_', ' ')}: {text}"))
+        if by:
+            lines[first:] = [line + by for line in lines[first:]]
     # Keep the newest material when a busy week runs over the cap.
     out, total = [], 0
     for line in reversed(lines):
@@ -371,10 +385,10 @@ CASE STATUS MEMORANDUM (background, may be out of date):
 
 Write the JSON object for this case."""
     try:
-        resp = client.messages.create(
-            model=model, max_tokens=1200, temperature=0, system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}])
-        data = _parse_json(resp.content[0].text)
+        from sams_podcast import _ask
+        data = _parse_json(_ask(client, model, SYSTEM_PROMPT,
+                                [{"role": "user", "content": prompt}],
+                                max_tokens=8000))
     except Exception as e:
         return {"error": str(e)}
     if not data:
@@ -560,7 +574,10 @@ def collect(config: dict, days: int, rrids: list[str] | None = None
     window = (f"{local_start.strftime('%a %Y-%m-%d %H:%M')} to "
               f"{local_end.strftime('%a %Y-%m-%d %H:%M')}")
     client = Anthropic(api_key=config["anthropic_api_key"])
-    model = config.get("kirsten_digest_model", rocky.CLAUDE_MODEL)
+    # Opus 5.5 by default (10/25), as for Sam's Podcast: on Sonnet 4.5 the
+    # podcast scripts invented facts, crossed cases and miscounted weekdays.
+    from sams_podcast import DEFAULT_MODEL
+    model = config.get("kirsten_digest_model") or DEFAULT_MODEL
 
     cards = []
     for case in selected:
@@ -572,7 +589,8 @@ def collect(config: dict, days: int, rrids: list[str] | None = None
             cards.append((title, subtitle,
                           {"error": "no case folder found under Rocky Cases"}))
             continue
-        lines = activity_lines(rocky._read_activity_since(folder, start))
+        lines = activity_lines(rocky._read_activity_since(folder, start),
+                               authors=True)
         memo = rocky._extract_status_memo_text(folder)
         background = rocky._read_case_digest_instructions(folder)
         section = summarize_case(client, model, case, lines, memo,
