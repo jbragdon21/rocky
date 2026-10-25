@@ -49,8 +49,21 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
   30/34 (88.2%). Two misses are 10/19 sends that the .msg export missed;
   corpus.db has them only as quotes in later replies.
 
+- **Real backtest (Rocky laptop, brain.db, default settings):** High
+  rows' cited email in the top 6 for 194/216 (89.8%; pass mark 90%).
+  Sept P2 104/117, Oct P1 15/16, Oct P2 43/49, Oct P4 32/34. corpus.db
+  stand-in: 193/216. Recipient addresses vs display names made no
+  measurable difference, so corpus.db is a faithful stand-in for tuning.
+  Misses: 4 matters with no tokens, 3 instructor-class, 4 next-morning
+  batch (stages stop at the first non-empty window), 2 matter number in
+  the body, 9 busy-day ranking. Detail in TIME_ENTRIES_DESIGN.md.
+
 **Open items**
 
+- Tuning candidates (not done): consider adjacent-day mail even when
+  the same day has candidates (penalized), and score matter numbers
+  written in the mail ("pay under 6104-1524"). Re-backtest on corpus.db,
+  then confirm once on the Rocky laptop.
 - The Cowork hand process must be pointed at the new folder path.
 - On the Rocky laptop: catch Minotaur up (`brain ingest`), pin the folder
   ("Always keep on this device"), `rocky.exe --time-entries --migrate`,

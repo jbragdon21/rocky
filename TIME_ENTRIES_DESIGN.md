@@ -450,12 +450,36 @@ candidates for that entry at least 90% of the time. Tests cover:
   That sits just under the 90% mark. There are two kinds of miss. Some matters produce no tokens at
   all: "Residences on the Avenue" is all generic words, and the instructor class matter has none.
   In the others, the cited email scored but ranked below six others on a busy day.
-- **The real backtest hasn't run yet.** It needs Minotaur's mail on the Rocky laptop. `rocky.exe`
-  was deployed from this branch on 10/25 for it, and the folder moved into `Program Files\Rocky`
-  the same morning. Tuning waits
-  for those numbers, because brain.db carries recipient addresses where the `.msg` exports carried
-  display names. That changes contact-surname scoring, so tuning on `corpus.db` would have to be
-  redone.
+- **The real backtest ran on 10/25** on the Rocky laptop against brain.db, with the branch build
+  deployed that morning and default settings.
+
+  | Hand run | High rows | Cited email in brain.db | Top 6, brain.db | Top 6, `corpus.db` |
+  |---|---|---|---|---|
+  | September Part 2 | 117 | 116 | 104 (88.9%) | 104 (88.9%) |
+  | October Part 1 | 16 | 16 | 15 (93.8%) | 15 (93.8%) |
+  | October Part 2 | 49 | 49 | 43 (87.8%) | 44 (89.8%) |
+  | October Part 4 | 34 | 34 | 32 (94.1%) | 30 (88.2%) |
+  | **All four** | **216** | **215** | **194 (89.8%)** | **193 (89.4%)** |
+
+  That is one row short of the 90% mark. Minotaur's mail scores the same as the `.msg` corpus,
+  so recipient addresses cost nothing measurable, and `corpus.db` is a faithful stand-in for
+  tuning on the dev laptop. Three rows changed. Minotaur's mail gained two in Part 4 (10/19
+  sends the export missed) and one in September Part 2 (Butler). It lost two: the 9/23 class
+  night, which `corpus.db` had ranked sixth, and 10/7 "Wayland oppo".
+
+  The 22 misses fall into five groups:
+  - **The matter has no search terms (4 rows):** Residences on the Avenue, Steel Works, Bridge
+    Commons RUBS, and 012947-0000. The fix is an alias, which James approves.
+  - **The instructor matter, 006950-0000 (3 rows):** class-night mail with no distinctive
+    words. Also fixed by an alias.
+  - **The email is the next morning's batch, or the evening before (4 rows):** for example, a
+    9/9 entry whose email went out at 07:31 on 9/10. The scorer widens to ±1 day only when
+    the same day has no candidates at all, and on a busy day six weak same-day matches fill
+    the list first. This is a scorer change.
+  - **The email names the matter number (2 rows):** "Please pay under 6104-1524" and "6103-157".
+    The scorer doesn't read matter numbers. Also a scorer change.
+  - **Ranked out on a busy day (9 rows):** for example, "100 Voucher Screening" for Accolade,
+    where the email never names the property.
 - **A stale workbook.** `drafts\2026-10 Part 2 - draft narratives.xlsx` holds 10 rows, while its
   `_work` source holds the run's 76, so the backtest reads the `_work` file for that period.
 
