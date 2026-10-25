@@ -1,6 +1,6 @@
 # Time Entries in Rocky: Design Draft
 
-Draft for James's review, 2026-10-24. No code has been written yet.
+Design of 2026-10-24. James has settled decisions 1–5, and Phase 1 is built (see "Build phases").
 
 Rocky takes over the process in `OneDrive - gejlaw.com\Time Entries\`. That process takes James's
 Aspen timecard export, correlates every blank or partial entry with his sent mail, drafts narratives
@@ -60,6 +60,7 @@ James, or whoever handles his time, emails the Aspen export to rocky@
        detect the spreadsheet, hash-dedupe, ingest it as a snapshot, file the email
        to Inbox\Time Entries, start a detached --time-entries-run <snapshot>
             ├─ 1. Learn: compare this snapshot with the last recommendations   (Opus 5.5)
+            │       and save the email-to-matter links the snapshot confirms
             ├─ 2. Check mail coverage in brain.db for the snapshot's dates
             ├─ 3. Correlate the blanks and partials                       (deterministic)
             ├─ 4. Draft, one call per day                                       (Opus 5.5)
@@ -154,8 +155,9 @@ one James posed: what can we learn from this? The call answers in JSON:
     "confidence": "high | medium"}]}
 ```
 
-**What applies by itself.** New `submitted` narratives, the rebuilt name index, and the accuracy
-numbers for the round. All of these come from James's own text or from arithmetic.
+**What applies by itself.** New `submitted` narratives, the rebuilt name index, the accuracy
+numbers for the round, and the confirmed email-to-matter links (below). All of these come from
+James's own text or from arithmetic.
 
 **What waits for James.** Each lesson goes into a `[TL-####]` email as a numbered item, five at most
 per round. James answers with `YES` (all), `YES 1 3`, or `NO 2`. The reply parsing works like
@@ -182,6 +184,63 @@ next round's five.
 rewritten; the same for Medium; the count of `review_filled` rows the learning call judged
 recoverable from mail; the take rate for uncaptured suggestions; and suggested hours against hours
 James entered. The email reports the trend, so you can see whether the lessons help.
+
+#### Confirmed email-to-matter links
+
+Today nothing records which matter an email belongs to. Minotaur's `brain classify` tags each pair
+by recipient domain and by one of 40 topic clusters, whose ids reshuffle as the corpus grows, and
+neither tag knows matters. The folder's `corpus.db` has a `links` table built for this, and it holds
+0 rows. A finished timecard answers the question for every entry Rocky drafted, so the learning
+diff saves the answer in a `links` table in te.db.
+
+| Column | Holds |
+|---|---|
+| `work_date`, `matter` | The submitted entry the email supports |
+| `entry_id`, `snapshot_id` | The entry row, and the spreadsheet that confirmed it |
+| `recommendation_id` | The draft or uncaptured suggestion that cited the email |
+| `internet_message_id` | The join key into brain.db. It is Minotaur's dedupe key and survives a re-ingest, which `graph_id` can't promise |
+| `conversation_id`, `sent_at`, `subject` | Kept so a link stays readable without brain.db. No bodies |
+| `verdict` | `confirmed` or `rejected` |
+| `source` | `submitted` when James's submission settles it, `inferred` when the learning call picked the email |
+| `outcome` | The learning outcome that wrote the row |
+
+Rows are unique on (work_date, matter, internet_message_id). One entry can cite several emails, and
+one email can support two entries when the work was split.
+
+Each outcome writes rows this way:
+
+- `accepted` and `edited`: every Basis email becomes `confirmed` / `submitted`. James kept the
+  draft's substance on the same matter, and the evidence comes with it.
+- `uncaptured_taken`: the suggestion's Basis email links to the new entry, `confirmed` / `submitted`.
+- `recoded`: the Basis email becomes `rejected` for the old matter. If the learning call says it
+  belongs to the new matter, that row goes in as `confirmed` / `inferred`.
+- `rewritten` and `review_filled`: the learning call already sees the day's mail. When it names the
+  email behind James's final narrative, the row is `confirmed` / `inferred`.
+- `still_blank`, `deleted`, `rehoured` with no other change, and `uncaptured_ignored` write nothing.
+  A deleted entry can be non-billable work on the right matter, so deletion proves nothing about the
+  email.
+
+Only `submitted` rows count as ground truth, which follows decision 2: they come from James's own
+submission. `inferred` rows are kept for the learning call and for review, and on their own they
+never feed an alias proposal or a backtest score. Rows are never deleted. When a later snapshot
+contradicts a link, for example James recoding an entry he had accepted, the verdict flips and the
+`runs` record names the snapshot that flipped it.
+
+What the links are for:
+
+- **Alias proposals with evidence.** Words that keep turning up in a matter's confirmed emails but
+  aren't among its tokens become `matter_note` proposals, each citing the messages. They still need
+  James's YES, for the `at&t` reason above. This is `LEARNED_RULES.md` Rule 1 ("learn topic aliases
+  from later mail") with ground truth behind it.
+- **Backtest ground truth.** Backtests can score against confirmed links as well as hand-run Basis
+  citations, so the pass mark still means something after the hand process stops.
+- **Thread evidence.** A confirmed email marks its `conversation_id`. Whether later mail in that
+  thread should score toward the same matter is a scorer change, so it waits for backtest evidence.
+  The known risk is the invoice-approval thread that names one matter while discussing another (the
+  RealPage note in `MEMORY.md`).
+- **Minotaur.** The table is the first set of matter-labeled emails anywhere. Minotaur could read
+  it read-only, the way Rocky reads brain.db, for example to split its `external` recipient class
+  into clients and opposing counsel. That is Minotaur's call and outside this build.
 
 ### 2. Mail coverage check
 
@@ -294,7 +353,7 @@ pass see what the verifier caught.
 
 | What | Where | Why |
 |---|---|---|
-| `te.db`: snapshots, entries, narratives, recommendations, outcomes, lessons, anomalies, runs | `C:\Rocky\time_entries_data\` on the Rocky laptop (not `time_entries`, which is the source package's name in the repo) | It holds client narratives and quoted mail. Under `DATA_SECURITY.md`, corpora stay off OneDrive. The folder has also corrupted SQLite on a synced mount before (the `corpus.db-journal` incident on 9/5). Minotaur's mail is only on that laptop anyway. |
+| `te.db`: snapshots, entries, narratives, recommendations, outcomes, links, lessons, anomalies, runs | `C:\Rocky\time_entries_data\` on the Rocky laptop (not `time_entries`, which is the source package's name in the repo) | It holds client narratives and quoted mail. Under `DATA_SECURITY.md`, corpora stay off OneDrive. The folder has also corrupted SQLite on a synced mount before (the `corpus.db-journal` incident on 9/5). Minotaur's mail is only on that laptop anyway. |
 | Property Reference Table, `matter_overlay.json`, style guide, `LESSONS.md`, `time_entries_settings.json`, open questions | OneDrive `Program Files\Rocky\Time Entries\` (pinned with the rest of the program folder) | James edits these from either laptop. Rocky reads them on every run and writes only the overlay and `LESSONS.md`, and only after a YES. |
 | Recommendation workbooks | Emailed, with a copy in OneDrive `Time Entries\drafts\` | This matches where the drafts live today. |
 | Sent mail | `C:\Minotaur\email_brain\brain.db`, read-only | Single source of truth |
@@ -310,7 +369,7 @@ through October.
 ```
 time_entries/
   __init__.py
-  db.py            schema, migration from corpus.db, snapshot supersession
+  db.py            schema (including links), migration from corpus.db, snapshot supersession
   timecards.py     CSV (both shapes) and XLSX importer
   mail.py          brain.db reader: read-only, schema check, Eastern dates, own_text, threads
   reference.py     Property Reference Table + overlay + settings; time_entries_root resolution
@@ -320,7 +379,7 @@ time_entries/
   anomalies.py     port of detect_anomalies.py
   daysheet.py      port of daydump.py, as packets for the prompts
   draft.py         drafting + verification calls, output validation
-  learn.py         diff, outcomes, learning call, [TL-####] proposals and replies
+  learn.py         diff, outcomes, confirmed links, learning call, [TL-####] proposals and replies
   workbook.py      port of build_workbook.py
   run.py           --time-entries-mail, --time-entries-run, --time-entries (CLI on a file)
 tests/test_time_entries_*.py
@@ -397,12 +456,20 @@ export, and the August Part 2 blanks in Part 3. Score Rocky's drafts against wha
 submitted, using the same outcome categories the learning step uses. Go live only if the High rows
 hold up at least as well as the hand runs did after verification.
 
+Phase 2 also creates the `links` table and seeds it from the hand runs. The Phase 1 backtest
+already resolves each hand-cited Basis to an email in brain.db. Running the deterministic outcome
+diff over each hand run whose entries James has since submitted in a later export turns those into
+`submitted` links. That way the table starts with the hand runs' labeled emails, without waiting
+for a live round. The seed needs brain.db, so it runs on the Rocky laptop.
+
 **Phase 3: the mail trigger and email delivery go live.** Add `--time-entries-mail` to
 `monitor_commands`. The first live spreadsheet runs with James reviewing the workbook exactly as he
 does now.
 
 **Phase 4: the learning loop.** The first real round is the next export covering 10/6–10/18 after
 James submits those entries. It compares his submitted text with the October Part 2 workbook.
+From then on, every round's diff writes its confirmed and rejected links. Alias proposals draw on
+them, and the recommendations email reports how many links the round added.
 
 Later, not in this build: James's calendar through Graph. The 8/30 retrospective found that 25 of
 the 40 REVIEW entries James filled himself were calls, invoice work or meetings with no email trace,
@@ -420,9 +487,12 @@ mailbox, which is a permissions decision for later.
 - **The 195 matters missing from the Property Reference Table** (open question 1c in `MEMORY.md`)
   are still the biggest accuracy lever. Rocky lists the unknown matters it hits each round, sorted
   by hours, so the list shrinks.
+- **A confirmed link is only as good as James's review.** An accepted draft confirms the email
+  Rocky cited, even if James accepted it without opening the email. Two things limit the damage: a
+  later recode flips the verdict, and an alias built from links still needs his YES.
 - **The run has to know what day it is.** A spreadsheet sent Sunday night reaches Rocky before Monday's
   07:xx batch exists, so the coverage check holds the Sunday entries until that batch lands or the
   wait expires.
 - **Docs to update when this is built:** `BUILD_REFERENCE.md`, where phase 3 now belongs to Rocky;
-  `DATA_SECURITY.md`, for the new data store and the read-only path to Minotaur; and a new
-  `TIME_ENTRIES.md` operator guide in Rocky's usual style.
+  `DATA_SECURITY.md`, for the new data store, the links table and the read-only path to Minotaur;
+  and a new `TIME_ENTRIES.md` operator guide in Rocky's usual style.

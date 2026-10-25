@@ -49,6 +49,12 @@ phase 1 built on branch `time-entries`.
   `[TL-####]` lessons to James alone, applied only on his YES.
 - Opus 5.5 for drafting, verification and learning (phase 2+). Learning
   never edits Python: data/prompt/settings layers only.
+- Added after phase 1: a `links` table in te.db for confirmed email-to-matter
+  links, filled by the learning diff (accepted/edited/uncaptured_taken give
+  `submitted` rows; the learning call's picks are `inferred` and never count
+  as ground truth). Seeded from the hand runs in phase 2. Nothing anywhere
+  labeled emails by matter before: Minotaur's classify has recipient class
+  plus unstable topic clusters, and corpus.db's `links` table was empty.
 
 **What changed**
 
