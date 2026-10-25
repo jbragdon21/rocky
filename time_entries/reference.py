@@ -21,7 +21,11 @@ NO_EMAIL_COL = "Typically No Sent Email"
 CASE_NAME_COL = "Matter / Case Name"
 COLLISION_COL = "Correlation Notes / Collisions"
 
-# Defaults reproduce correlate3.py exactly.
+# With window_batch_hour, window_pool_days and weight_matter_number at 0,
+# these reproduce correlate3.py exactly. The 10/25 backtest turned on the
+# 9 AM next-morning batch and matter numbers (193 -> 198 of 216 High rows on
+# corpus.db). A one-day pool at penalty 3 also scored 198, with more churn
+# (eight gained, three lost), so it stays off.
 DEFAULT_SETTINGS = {
     "weight_phrase": 4,          # multi-word distinctive phrase
     "weight_word": 2,            # single distinctive word
@@ -30,7 +34,11 @@ DEFAULT_SETTINGS = {
     "weight_contact": 1,         # property contact surname
     "weight_name_phrase": 3,     # learned resident name, two+ words
     "weight_name_word": 2,       # learned resident name, one word
+    "weight_matter_number": 6,   # the matter number written in the mail
     "short_token_len": 4,        # Rule 8: word boundaries at or below this
+    "window_batch_hour": 9,      # next-morning mail before this hour counts as same-day
+    "window_pool_days": 0,       # whole days each side searched with the entry's own
+    "window_pool_penalty": 3,    # score penalty for mail from those days
     "window_near_days": 1,       # Rule 7 stage 2
     "window_far_days": 3,        # Rule 7 stage 3
     "sunday_forward_from": 4,    # Rule 6: Sunday entries reach forward
@@ -43,7 +51,9 @@ _BOUNDS = {
     "weight_phrase": (0, 10), "weight_word": (0, 10),
     "weight_alias_phrase": (0, 10), "weight_alias_word": (0, 10),
     "weight_contact": (0, 10), "weight_name_phrase": (0, 10),
-    "weight_name_word": (0, 10), "short_token_len": (2, 8),
+    "weight_name_word": (0, 10), "weight_matter_number": (0, 10),
+    "short_token_len": (2, 8), "window_batch_hour": (0, 12),
+    "window_pool_days": (0, 3), "window_pool_penalty": (0, 5),
     "window_near_days": (0, 3), "window_far_days": (1, 7),
     "sunday_forward_from": (1, 7), "sunday_forward_to": (1, 10),
     "max_candidates": (1, 20), "partial_max_chars": (1, 200),

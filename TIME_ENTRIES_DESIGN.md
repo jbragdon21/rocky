@@ -480,6 +480,33 @@ candidates for that entry at least 90% of the time. Tests cover:
     The scorer doesn't read matter numbers. Also a scorer change.
   - **Ranked out on a busy day (9 rows):** for example, "100 Voucher Screening" for Accolade,
     where the email never names the property.
+- **Tuning, 10/25 (on `corpus.db`).** Two scorer changes, each a setting in
+  `time_entries_settings.json`:
+  - `window_batch_hour` (default 9): the next morning's mail sent before 9 AM is searched with the
+    entry's own day, unpenalized.
+  - `weight_matter_number` (default 6): a matter number written in the mail ("pay this under
+    6104-1524", "006104-1524", "6103-157") adds 6 to the score.
+
+  With both at 0, the scorer still matches `correlate3.py` exactly on all 257 entries (checked
+  again on 10/25 data).
+
+  | Hand run | High rows | Before | After |
+  |---|---|---|---|
+  | September Part 2 | 117 | 104 (88.9%) | 107 (91.5%) |
+  | October Part 1 | 16 | 15 (93.8%) | 15 (93.8%) |
+  | October Part 2 | 49 | 44 (89.8%) | 45 (91.8%) |
+  | October Part 4 | 34 | 30 (88.2%) | 31 (91.2%) |
+  | **All four** | **216** | **193 (89.4%)** | **198 (91.7%)** |
+
+  - **Gains (six rows):** three next-morning batch rows, and three found by matter number,
+    including Residences on the Avenue.
+  - **Loss (one row):** the 9/23 class night, which had ranked sixth.
+  - **Medium rows:** 29 to 33 of 54.
+  - **Alternative not taken:** a third setting, `window_pool_days`, searches whole neighboring
+    days at a penalty. One day at penalty 3 also reached 198, with eight rows gained and three
+    lost, so it stays off. At penalty 1 it broke even.
+  - **Still to do:** confirm on brain.db, which needs another deploy. The no-token and
+    instructor-class rows still need aliases.
 - **A stale workbook.** `drafts\2026-10 Part 2 - draft narratives.xlsx` holds 10 rows, while its
   `_work` source holds the run's 76, so the backtest reads the `_work` file for that period.
 

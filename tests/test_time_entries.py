@@ -193,16 +193,74 @@ def test_rule9_collision_tokens_never_score_bare():
 
 def test_rule6_sunday_reaches_forward():
     sunday = correlate.windows("2026-10-11", S)
-    assert sunday[-1][1].startswith("week-forward")
-    assert "2026-10-15" in sunday[-1][2] and "2026-10-18" in sunday[-1][2]
-    assert not correlate.windows("2026-10-12", S)[-1][1].startswith("week")
+    assert sunday[-1][0].startswith("week-forward")
+    days = [dt for dt, _pen, _hour in sunday[-1][1]]
+    assert "2026-10-15" in days and "2026-10-18" in days
+    assert not correlate.windows("2026-10-12", S)[-1][0].startswith("week")
 
 
-def _email(i, d, subject, body=""):
+def test_zero_settings_restore_the_staged_windows():
+    off = dict(S, window_batch_hour=0, window_pool_days=0)
+    stages = correlate.windows("2026-10-14", off)
+    assert [lbl for lbl, _ in stages] == ["same-day", "±1d", "±3d"]
+    assert stages[0][1] == [("2026-10-14", 0, None)]
+    assert stages[1][1] == [("2026-10-13", 1, None), ("2026-10-15", 1, None)]
+
+
+def _email(i, d, subject, body="", at="10:00"):
     e = {"id": i, "date": d, "subject": subject, "to": "", "cc": "",
-         "body": body, "inv": False, "sent_at": d + "T10:00:00"}
+         "body": body, "inv": False, "sent_at": f"{d}T{at}:00"}
     e["hay"] = mail.make_hay(e)
     return e
+
+
+def test_next_morning_batch_counts_for_the_day_before():
+    props = {"006104-0889": {"property": "Falls Green"},
+             "006104-1717": {"property": "The Gramercy"}}
+    emails = [_email("weak", "2026-09-09", "RE: Gramercy renewal", "falls"),
+              _email("batch", "2026-09-10", "RE: Falls Green Unit C604", at="07:31"),
+              _email("later", "2026-09-10", "RE: Falls Green follow up", at="11:15")]
+    entry = [{"row": 1, "work_date": "2026-09-09", "matter": "006104-0889",
+              "matter_name": "Falls Green", "narrative": ""}]
+    got = correlate.correlate(entry, emails, props, {}, {}, S)[0]
+    assert [c["id"] for c in got["cands"]] == ["batch", "weak"]
+    off = correlate.correlate(entry, emails, props, {}, {}, dict(S, window_batch_hour=0))[0]
+    assert [c["id"] for c in off["cands"]] == ["weak"]     # the old staged search
+
+
+def test_pool_days_join_the_first_search_penalized():
+    props = {"006104-1717": {"property": "The Gramercy"}}
+    emails = [_email("a", "2026-09-03", "RE: Gramercy renewal lease"),
+              _email("b", "2026-09-04", "RE: Gramercy follow up")]
+    entry = [{"row": 1, "work_date": "2026-09-03", "matter": "006104-1717",
+              "matter_name": "The Gramercy", "narrative": ""}]
+    pooled = dict(S, window_pool_days=1, window_pool_penalty=3)
+    got = correlate.correlate(entry, emails, props, {}, {}, pooled)[0]
+    a, b = got["cands"]
+    assert (a["id"], b["id"]) == ("a", "b") and a["score"] - b["score"] == 3
+
+
+def test_matter_number_written_in_mail():
+    rx = correlate.matter_number_re("006104-1524")
+    for text in ("please pay this under 6104-1524", "matter 006104-1524.",
+                 "c/m 6104 - 1524"):
+        assert rx.search(text), text
+    for text in ("6104-15240", "16104-1524", "6104-1525"):
+        assert not rx.search(text), text
+    assert correlate.matter_number_re("006103-0157").search("pay under 6103-157")
+    general = correlate.matter_number_re("006104-0000")
+    assert general.search("bill to 6104-0") and not general.search("6104-0222")
+    assert correlate.matter_number_re("") is None
+
+    emails = [_email("inv", "2026-09-08", "RE: AUG Invoice: MRE0069A",
+                     "Please pay this under 6104-1524")]
+    entry = [{"row": 1, "work_date": "2026-09-08", "matter": "006104-1524",
+              "matter_name": "RealPage MD AG", "narrative": ""}]
+    got = correlate.correlate(entry, emails, {}, {}, {}, S)[0]
+    assert got["cands"][0]["id"] == "inv"
+    assert "#006104-1524" in got["cands"][0]["hits"]
+    none = correlate.correlate(entry, emails, {}, {}, {}, dict(S, weight_matter_number=0))[0]
+    assert none["cands"] == []
 
 
 def test_correlate_prefers_same_day_and_reports_zero_hit_token():
@@ -215,8 +273,8 @@ def test_correlate_prefers_same_day_and_reports_zero_hit_token():
                {"row": 2, "work_date": "2026-09-03", "matter": "006104-0796",
                 "matter_name": "", "narrative": ""}]
     res = correlate.correlate(entries, emails, props, {}, {}, S)
-    assert [c["id"] for c in res[0]["cands"]] == ["a"]
-    assert res[0]["stage"] == "same-day"
+    assert [c["id"] for c in res[0]["cands"]] == ["a"]   # 9/4 10:00 is past the batch hour
+    assert res[0]["stage"].startswith("same-day")
     assert res[1]["cands"] == [] and res[1]["zero_hit_token"]
 
 

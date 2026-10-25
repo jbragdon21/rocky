@@ -60,10 +60,16 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 **Open items**
 
-- Tuning candidates (not done): consider adjacent-day mail even when
-  the same day has candidates (penalized), and score matter numbers
-  written in the mail ("pay under 6104-1524"). Re-backtest on corpus.db,
-  then confirm once on the Rocky laptop.
+- **Tuned (James's go-ahead):** `window_batch_hour` 9 (next-morning
+  mail before 9 AM joins the entry's day) and `weight_matter_number` 6
+  (matter number written in the mail). corpus.db: 193 -> 198/216 High
+  (91.7%); every period passes alone; Medium 29 -> 33/54. Zero settings
+  still = correlate3 on 257 entries (re-run c3 on 10/25 data; the 10/24
+  c3 output was stale after James's Part 4 workbook edits). A whole-day
+  pool (`window_pool_days`) also hit 198 at penalty 3 but churned more;
+  left off. Tests 189 pass (4 new).
+- Not yet confirmed on brain.db: the Rocky laptop exe predates the
+  tuning, so it needs another deploy and the four backtests re-run.
 - The Cowork hand process must be pointed at the new folder path.
 - On the Rocky laptop: catch Minotaur up (`brain ingest`), pin the folder
   ("Always keep on this device"), `rocky.exe --time-entries --migrate`,

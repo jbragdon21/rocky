@@ -5,11 +5,14 @@ anything: the drafting call (phase 2) reads the day's mail, and these
 rankings tell it where to look first. The eleven rules are in the Time
 Entries folder's LEARNED_RULES.md; the numbers in comments refer to them.
 
-With default settings this reproduces correlate3.py's candidates exactly
-(checked on the October Part 2 timecard against corpus.db). The inputs are
-what changed: mail comes from Minotaur's brain, matter data from the
-reference workbook plus the overlay, and weights and windows from
-time_entries_settings.json.
+With `window_batch_hour`, `window_pool_days` and `weight_matter_number` at 0
+this reproduces correlate3.py's candidates exactly (checked on 257 entries
+against corpus.db). The defaults differ in two ways, after the 10/25
+backtest: the next morning's mail before 9 AM is searched with the entry's
+own day, and a matter number written in the mail scores. The other inputs
+changed too: mail comes from Minotaur's brain,
+matter data from the reference workbook plus the overlay, and weights and
+windows from time_entries_settings.json.
 """
 
 import re
@@ -116,25 +119,69 @@ def matter_tokens(mn: str, matter_name: str, props: dict, notes: dict,
     return {k: v for k, v in t.items() if k not in (COLLISION_BARE - exempt)}
 
 
-def windows(d0: str, settings: dict) -> list[tuple[int, str, list[str]]]:
+def windows(d0: str, settings: dict) -> list[tuple[str, list[tuple[str, int, int | None]]]]:
     """Rule 7 (±3 days, distance-penalized) and Rule 6 (Sunday entries are
-    week backfills, so they reach forward across the week)."""
+    week backfills, so they reach forward across the week).
+
+    Each stage is a label and its (date, penalty, before_hour) days; a day
+    with a before_hour only counts mail sent earlier than that hour, Eastern.
+    The search stops at the first stage with a candidate, so on a busy day
+    six weak same-day matches used to fill the list before the next morning's
+    07:xx batch was ever read (the 10/25 backtest). Two settings widen the
+    first stage:
+      * window_batch_hour: the next morning's mail before this hour joins the
+        entry's own day, unpenalized. 0 turns it off.
+      * window_pool_days: whole neighboring days join it, each penalized by
+        window_pool_penalty.
+    With both at 0 this is correlate3's same-day-first search."""
     d = date.fromisoformat(d0)
+    pool, batch = settings["window_pool_days"], settings["window_batch_hour"]
+    pool_pen = settings["window_pool_penalty"]
     near, far = settings["window_near_days"], settings["window_far_days"]
-    stages = [(0, "same-day", [d])]
-    if near >= 1:
-        stages.append((1, f"±{near}d",
-                       [d - timedelta(k) for k in range(1, near + 1)]
-                       + [d + timedelta(k) for k in range(1, near + 1)]))
-    if far > near:
-        stages.append((2, f"±{far}d",
-                       [d - timedelta(k) for k in range(near + 1, far + 1)]
-                       + [d + timedelta(k) for k in range(near + 1, far + 1)]))
+
+    def ring(lo: int, hi: int, pen: int) -> list[tuple[date, int, None]]:
+        ks = range(lo, hi + 1)
+        return ([(d - timedelta(k), pen, None) for k in ks]
+                + [(d + timedelta(k), pen, None) for k in ks])
+
+    first = [(d, 0, None)]
+    if batch and pool < 1:
+        first.append((d + timedelta(1), 0, batch))
+    first += ring(1, pool, pool_pen)
+    label = "same-day"
+    if pool:
+        label += f" ±{pool}d"
+    elif batch:
+        label += f" + next day before {batch}:00"
+    stages = [(label, first)]
+    if near > pool:
+        stages.append((f"±{near}d", ring(pool + 1, near, 1)))
+    if far > max(near, pool):
+        stages.append((f"±{far}d", ring(max(near, pool) + 1, far, 2)))
     if d.weekday() == 6:
         lo, hi = settings["sunday_forward_from"], settings["sunday_forward_to"]
-        stages.append((3, "week-forward(Sun backfill)",
-                       [d + timedelta(k) for k in range(lo, hi + 1)]))
-    return [(pen, lbl, [x.isoformat() for x in ds]) for pen, lbl, ds in stages]
+        stages.append(("week-forward(Sun backfill)",
+                       [(d + timedelta(k), 3, None) for k in range(lo, hi + 1)]))
+    return [(lbl, [(x.isoformat(), p, h) for x, p, h in ds]) for lbl, ds in stages]
+
+
+def _sent_hour(e: dict) -> int:
+    try:
+        return int(str(e.get("sent_at") or "")[11:13])
+    except ValueError:
+        return 0
+
+
+def matter_number_re(mn: str):
+    """The matter number the way it gets written in mail: "pay this under
+    6104-1524", "006104-1524", "the c/m is 6104-881". Leading zeros on
+    either half are optional. None for a blank or odd-shaped matter."""
+    m = re.fullmatch(r"(\d+)-(\d+)", (mn or "").strip())
+    if not m:
+        return None
+    client = m.group(1).lstrip("0") or "0"
+    number = m.group(2).lstrip("0") or "0"
+    return re.compile(rf"(?<!\d)0*{client}\s?[-–.]\s?0*{number}(?!\d)")
 
 
 def mail_window(entries: list[dict], settings: dict) -> tuple[str, str]:
@@ -143,7 +190,8 @@ def mail_window(entries: list[dict], settings: dict) -> tuple[str, str]:
     dates = sorted(e["work_date"] for e in entries)
     lo = date.fromisoformat(dates[0]) - timedelta(days=settings["gap_lookback_days"])
     hi = date.fromisoformat(dates[-1]) + timedelta(
-        days=max(settings["window_far_days"], settings["sunday_forward_to"]))
+        days=max(settings["window_far_days"], settings["window_pool_days"],
+                 settings["sunday_forward_to"]))
     return lo.isoformat(), hi.isoformat()
 
 
@@ -166,15 +214,22 @@ def correlate(entries: list[dict], emails: list[dict], props: dict,
         d = ent["work_date"]
         t = matter_tokens(mn, ent.get("matter_name") or "", props, notes, m2n,
                           settings) if mn else {}
+        w_num = settings["weight_matter_number"]
+        num_re = matter_number_re(mn) if w_num else None
         cands, stage = [], None
-        for pen, lbl, dates in windows(d, settings):
-            for dt in dates:
+        for lbl, days in windows(d, settings):
+            for dt, pen, before_hour in days:
                 for e in by_date.get(dt, []):
+                    if before_hour is not None and _sent_hour(e) >= before_hour:
+                        continue
                     sc, hits = 0, []
                     for ph, w in t.items():
                         if hay_has(e["hay"], ph, short):
                             sc += w
                             hits.append(ph)
+                    if num_re is not None and num_re.search(e["hay"]):
+                        sc += w_num
+                        hits.append("#" + mn)
                     if sc > 0:
                         cands.append({
                             "score": sc - pen, "date": dt, "id": e["id"],
