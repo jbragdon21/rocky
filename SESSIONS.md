@@ -24,6 +24,41 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-10-25 — Time Entries: deploy for the real backtest
+
+**What changed**
+
+- `rocky.exe` built from branch `time-entries` and deployed to OneDrive
+  Program Files\Rocky (10/25 09:04, 54,563,636 bytes; sha256 matches
+  dist). Production had been main's tip (9d253ff, 10/24 13:22), so Time
+  Entries is the only new code. All ten `time_entries` modules bundled,
+  0 PyInstaller warnings. 185 tests pass. Rollback = rebuild from main.
+- Design doc: added October Part 4 to the stand-in table.
+- Folder moved (James's go-ahead): `Time Entries\emails\` deleted after
+  confirming all 7,560 `.msg` were in corpus.db by path (3.9 GB; OneDrive
+  recycle bin has them), then the folder moved to `Program Files\Rocky\Time
+  Entries`. The whole-folder `mv` failed "busy" (this session had it as a
+  working folder), so items were moved one by one and the empty shell
+  removed. Dev-laptop backtest re-run from the new path: same numbers.
+  Folder `CLAUDE.md` change log notes the move.
+
+**Verified**
+
+- James ran a hand pass on 10/24 night: October Part 4 (10/19–10/24, 53
+  blanks; High 34 / Medium 12 / REVIEW 7). Stand-in backtest on it: High
+  30/34 (88.2%). Two misses are 10/19 sends that the .msg export missed;
+  corpus.db has them only as quotes in later replies.
+
+**Open items**
+
+- The Cowork hand process must be pointed at the new folder path.
+- On the Rocky laptop: catch Minotaur up (`brain ingest`), pin the folder
+  ("Always keep on this device"), `rocky.exe --time-entries --migrate`,
+  then backtests for Oct P4, Oct P2, Oct P1, Sept P2 (`--mail minotaur`
+  is the default). Results land in `C:\Rocky\time_entries_data\backtests\`.
+
+---
+
 ## Session 2026-10-24 (3) — Time Entries: design, then phase 1 (port + backtest)
 
 James wants Rocky to take over the OneDrive "Time Entries" process (Aspen

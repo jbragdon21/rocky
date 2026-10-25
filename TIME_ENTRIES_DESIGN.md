@@ -2,7 +2,8 @@
 
 Design of 2026-10-24. James has settled decisions 1–5, and Phase 1 is built (see "Build phases").
 
-Rocky takes over the process in `OneDrive - gejlaw.com\Time Entries\`. That process takes James's
+Rocky takes over the process in `OneDrive - gejlaw.com\Program Files\Rocky\Time Entries\` (at the
+OneDrive root until 10/25). That process takes James's
 Aspen timecard export, correlates every blank or partial entry with his sent mail, drafts narratives
 in his style, verifies the drafts against the email bodies, lists sent threads that have no entry,
 and delivers a workbook. Today a Claude session runs all of it by hand from the folder's `CLAUDE.md`,
@@ -334,7 +335,7 @@ pass see what the verifier caught.
   `YYYY-MM-DD to YYYY-MM-DD - draft narratives.xlsx`.
 - **Basis** stays human-readable (`10/6 16:02 'RE: Marina Bay...' to G. Sapire`). A hidden column
   holds the `internet_message_id`.
-- A copy goes to the OneDrive `Time Entries\drafts\` folder.
+- A copy goes to the OneDrive `Program Files\Rocky\Time Entries\drafts\` folder.
 - Rocky sends through `send_mail_guarded` from rocky@ to James, with the workbook attached. If someone
   else sent the spreadsheet, they are cc'd. The body
   covers:
@@ -355,7 +356,7 @@ pass see what the verifier caught.
 |---|---|---|
 | `te.db`: snapshots, entries, narratives, recommendations, outcomes, links, lessons, anomalies, runs | `C:\Rocky\time_entries_data\` on the Rocky laptop (not `time_entries`, which is the source package's name in the repo) | It holds client narratives and quoted mail. Under `DATA_SECURITY.md`, corpora stay off OneDrive. The folder has also corrupted SQLite on a synced mount before (the `corpus.db-journal` incident on 9/5). Minotaur's mail is only on that laptop anyway. |
 | Property Reference Table, `matter_overlay.json`, style guide, `LESSONS.md`, `time_entries_settings.json`, open questions | OneDrive `Program Files\Rocky\Time Entries\` (pinned with the rest of the program folder) | James edits these from either laptop. Rocky reads them on every run and writes only the overlay and `LESSONS.md`, and only after a YES. |
-| Recommendation workbooks | Emailed, with a copy in OneDrive `Time Entries\drafts\` | This matches where the drafts live today. |
+| Recommendation workbooks | Emailed, with a copy in OneDrive `Program Files\Rocky\Time Entries\drafts\` | This matches where the drafts live today. |
 | Sent mail | `C:\Minotaur\email_brain\brain.db`, read-only | Single source of truth |
 
 After cutover, the 95 MB `corpus.db` on OneDrive, which holds 7,210 email bodies, should be archived
@@ -405,7 +406,8 @@ Rocky already bundles.
 - Schedule `minotaur.py brain ingest` nightly on the Rocky laptop.
 - Delete `Time Entries\emails\`, then move the folder to `Program Files\Rocky\Time Entries`. Keep
   `corpus.db`: it holds the email text the hand process reads, plus the entry and narrative
-  history Phase 1 migrates.
+  history Phase 1 migrates. **Done 2026-10-25.** All 7,560 `.msg` files were confirmed in
+  `corpus.db` by path before the delete.
 - On the Rocky laptop, confirm brain.db carries his sent meeting responses (`subject LIKE
   'Accepted:%'`). Rule 2 depends on them. If they aren't there, Minotaur's ingest needs a change.
 
@@ -439,11 +441,18 @@ candidates for that entry at least 90% of the time. Tests cover:
   | October Part 1 | 16 | 16 | 15 (93.8%) |
   | September Part 2 | 117 | 116 | 104 (88.9%) |
   | **All three** | **182** | **181** | **163 (89.6%)** |
+  | October Part 4 (10/19–10/24, hand run of 10/24, added 10/25) | 34 | 34 | 30 (88.2%) |
+
+  Two of the Part 4 misses are Monday 10/19 sends. The `.msg` export had nothing for 10/19, so
+  `corpus.db` holds those emails only as quotes inside later replies, dated the day of the reply.
+  brain.db should hold the sends themselves.
 
   That sits just under the 90% mark. There are two kinds of miss. Some matters produce no tokens at
   all: "Residences on the Avenue" is all generic words, and the instructor class matter has none.
   In the others, the cited email scored but ranked below six others on a busy day.
-- **The real backtest hasn't run yet.** It needs Minotaur's mail on the Rocky laptop. Tuning waits
+- **The real backtest hasn't run yet.** It needs Minotaur's mail on the Rocky laptop. `rocky.exe`
+  was deployed from this branch on 10/25 for it, and the folder moved into `Program Files\Rocky`
+  the same morning. Tuning waits
   for those numbers, because brain.db carries recipient addresses where the `.msg` exports carried
   display names. That changes contact-surname scoring, so tuning on `corpus.db` would have to be
   redone.
