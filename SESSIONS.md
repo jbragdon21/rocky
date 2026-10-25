@@ -20,7 +20,52 @@ A running record of every working session on Rocky. Each session prepends a new 
 
 This log is append-only history. Don't rewrite past entries. If a past decision was overturned, write a new entry that says so and links back ("supersedes 2026-04-30 entry on X").
 
-Naming entries: `## Session 2026-10-25 — Kirsten Digest: the Sam's Podcast fixes, ported
+Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in one day, add `(2)`, `(3)`, etc.
+
+---
+
+## Session 2026-10-25 (3) — Time Entries: aliases, then the tuned deploy
+
+**What changed**
+
+- First `matter_overlay.json`, in `Program Files\Rocky\Time Entries`
+  (James approved every alias in the draft): 006104-0390 Residences on
+  the Avenue, 1434 Steel Works, 1658/1659/1660 Bridge Commons + Bridge
+  District, 012947-0000 CHAI, 006950-0000 the Pretrial class. The list is
+  in TIME_ENTRIES_DESIGN.md. Rocky reads it every run, so the aliases
+  needed no deploy.
+- `rocky.exe` rebuilt from `time-entries` at 2e74a50 and deployed (10/25
+  12:46, 54,567,487 bytes): the tuned scorer plus the Kirsten Digest
+  commit. Rollback: zero the four new settings in
+  `time_entries_settings.json` (that reproduces correlate3), or rebuild
+  from main.
+- This log's header: the Kirsten entry below had landed inside the
+  "Naming entries" line. It now has its own heading, numbered (2).
+
+**Verified**
+
+- Real CLI on corpus.db with the overlay: High 203/216 (94.0%), up from
+  198. Sept P2 111/117, Oct P1 15/16, Oct P2 46/49, Oct P4 31/34. Medium
+  33/54. No row lost.
+- Tests: 194 pass. The deployed exe's bundle holds the tuned `reference`
+  and `correlate` and Kirsten's `finish_audio`/`CHECK_PROMPT`. The exe
+  itself can't run on the dev laptop (no `C:\Rocky\config.json`).
+
+**Open items**
+
+- Confirm on brain.db: the four backtests on the Rocky laptop.
+- Steel Works: the mail is Bozzuto's Harrison, NJ property, billed to
+  1434 (Georgia). James to say whether that's the right matter.
+- Fold the overlay into the Matter Notes sheet so correlate3 sees it.
+
+**Watch-outs**
+
+- Two sessions share `time-entries` in this checkout and both deploy
+  rocky.exe. Build from the branch tip so neither drops the other's work.
+
+---
+
+## Session 2026-10-25 (2) — Kirsten Digest: the Sam's Podcast fixes, ported
 
 James asked which Sam's Podcast fixes belong in the Kirsten Digest. Five
 were ported; voices (ElevenLabs defaults retire 12/31/2026) and an editable
@@ -72,10 +117,6 @@ style file were left for later.
   ahead of main, unpushed), and the live 10/25 09:04 exe was built from it.
   These commits went on top of `time-entries` so the deploy keeps that
   work; they reach main when time-entries is merged.
-
----
-
-## Session YYYY-MM-DD — short title`. If multiple sessions in one day, add `(2)`, `(3)`, etc.
 
 ---
 

@@ -507,6 +507,32 @@ candidates for that entry at least 90% of the time. Tests cover:
     lost, so it stays off. At penalty 1 it broke even.
   - **Still to do:** confirm on brain.db, which needs another deploy. The no-token and
     instructor-class rows still need aliases.
+- **Aliases, 10/25 (James approved all of them).** The first `matter_overlay.json`, in the Time
+  Entries folder:
+
+  | Matter | Aliases added |
+  |---|---|
+  | 006104-0390 Residences on the Avenue | Residences on the Avenue |
+  | 006104-1434 Steelworks (GA) | Steel Works |
+  | 006104-1658 Alula, 1659 Poplar House, 1660 Stratos | Bridge Commons, Bridge District (on all three, since the Bridge District ownership work is billed in identical thirds) |
+  | 012947-0000 CHAI General | Comprehensive Housing Assistance, CHAI, Stachura |
+  | 006950-0000 Instructor (Pretrial seminar) | Pretrial Civil Litigation, "Pretrial -", Deposition Assignment, umaryland.edu |
+
+  On `corpus.db` the four runs go from 198 to **203 of 216 (94.0%)**: September Part 2 111,
+  October Part 1 15, October Part 2 46, October Part 4 31. No row lost, and Medium stays at 33 of
+  54. The gains are CHAI 9/13, Steel Works 9/18, Poplar House 9/24, and the class nights of 9/23
+  and 10/14.
+  - **Left out:** "mediation project" (it matches inside "remediation project"), and "for class",
+    "Kevin Sullivan" and "Pretrial" alone, which hit too much other mail.
+  - **Steel Works:** the mail is about Bozzuto's Harrison, NJ property, billed to the Georgia
+    matter 1434. No Harrison matter exists in the timecards or the reference.
+  - **Still missing (13 rows):** the 9/9 class night cites an email sent four days later, beyond
+    the ±3-day search. The Labor Day batch (two days later) and a Teams invite sent the day before
+    are also out of reach. The rest are busy-day ranking.
+  - **The hand process doesn't see these.** `correlate3.py` reads only the workbook. Folding the
+    overlay into the Matter Notes sheet is a later step.
+  - **Deployed 10/25 12:46** with the tuned scorer (and the Kirsten Digest fixes another session
+    committed on this branch). Confirming on brain.db is the four backtests on the Rocky laptop.
 - **A stale workbook.** `drafts\2026-10 Part 2 - draft narratives.xlsx` holds 10 rows, while its
   `_work` source holds the run's 76, so the backtest reads the `_work` file for that period.
 
