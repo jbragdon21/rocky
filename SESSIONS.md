@@ -63,6 +63,12 @@ Feud"; hosts Archie (male) and Frieda (female), taking turns opening; no
   name (Sam Cowin, James Bragdon), no "you", no docket numbers. The fact
   check made one fix (a proposed Hettinger call said as scheduled).
 - Not voiced (no ElevenLabs key on the dev laptop), not published.
+- Deployed 10/26 ~14:18 from `d2b33be`: rocky.exe (52.1 MB) and
+  dashboard.exe (16.3 MB) copied to OneDrive `Program Files\Rocky`, hashes
+  equal to `dist\`. The bundle holds `multifamily_feud.py` and
+  `sams_podcast.py` identical to source, plus miniaudio, lameenc and
+  anthropic; the frozen exe dispatches `--multifamily-feud` (stops on the
+  dev laptop's missing `C:\Rocky\config.json`, as expected).
 
 **Open items**
 
@@ -75,8 +81,9 @@ Feud"; hosts Archie (male) and Frieda (female), taking turns opening; no
   `rocky.exe --multifamily-feud --subscribe EMAIL` per listener.
 - The daily report writer and its schedule aren't set; reports must land
   before 5 AM or they air a day late.
-- Rebuild and deploy rocky.exe and dashboard.exe; schedule from the
-  dashboard.
+- Schedule the 05:00 run from the dashboard. The entry shows once the
+  Rocky laptop's dashboard restarts on the new build (the 3 AM restart
+  task, or `restart_dashboard.cmd` sooner).
 
 **Watch-outs**
 
@@ -85,6 +92,9 @@ Feud"; hosts Archie (male) and Frieda (female), taking turns opening; no
   run is unaffected.
 - This work is on `time-entries` again (shared with the Time Entries
   session), so a deploy from its tip carries both.
+- Sam's 6 AM run on 10/27 is the first on the refactored engine (rocky.exe
+  runs pick up the new build at once). Its tests are unchanged and pass;
+  check that morning's episode if anything looks off.
 
 ---
 
