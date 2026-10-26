@@ -87,6 +87,7 @@ def build_rocky():
         "--add-data", f"{ROOT / 'kirsten_digest.py'};.",
         "--add-data", f"{ROOT / 'kirsten_podcast.py'};.",
         "--add-data", f"{ROOT / 'sams_podcast.py'};.",
+        "--add-data", f"{ROOT / 'multifamily_feud.py'};.",
         "--add-data", f"{ROOT / 'pacer_monitor.py'};.",
         "--add-data", f"{ROOT / 'courtlistener.py'};.",
         "--add-data", f"{ROOT / 'pacer_api.py'};.",

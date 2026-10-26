@@ -112,6 +112,16 @@ Rocky — Virtual Paralegal
       --shows lists Transistor shows; --subscribe adds Sam's private feed.
       See sams_podcast.py.
 
+  python rocky.py --multifamily-feud [--dry-run] [--audio] [--force] [--no-publish] [RRID-XXXX ...]  (5:00 AM daily)
+  python rocky.py --multifamily-feud --shows | --subscribe EMAIL
+      Multifamily Feud: Sam's Podcast's engine for an internal daily show
+      on fee and multifamily class action defense, hosted by Archie and
+      Frieda (they take turns opening). Sources: the day's edition in the
+      Fee Class Action Tracker's Daily Reports folder (RRID-0045,
+      REPORT_WORKFLOW.md there) and yesterday's activity on cases marked
+      yes in the case index's "Multifamily Feud?" column. Published to its
+      own private Transistor show. See multifamily_feud.py.
+
 
   python rocky.py --vault [--dry-run] [--source inbox|vault-mail|dropbox] [--backfill-days N] [--limit N]  (3:00 PM daily)
       The Vault: gather leases, ledgers, affidavits of service, and
@@ -6154,6 +6164,10 @@ def main():
         import sams_podcast
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         sams_podcast.run_cli(load_config(), DATA_DIR)
+    elif "--multifamily-feud" in sys.argv:
+        import multifamily_feud
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        multifamily_feud.run_cli(load_config(), DATA_DIR)
     elif "--multifamily-digest" in sys.argv:
         import multifamily_digest
         multifamily_digest.run_cli(load_config(), DATA_DIR)
@@ -6241,6 +6255,9 @@ def main():
         print("  --sams-podcast [--dry-run] [--audio] [--force] [--no-publish] [RRID-XXXX ...] | --shows | --subscribe EMAIL")
         print("                                          Sam's Podcast (6 AM daily): sports research + yesterday's case")
         print("                                          activity as a two-host episode on a private Transistor feed")
+        print("  --multifamily-feud [--dry-run] [--audio] [--force] [--no-publish] [RRID-XXXX ...] | --shows | --subscribe EMAIL")
+        print("                                          Multifamily Feud (5 AM daily): the tracker's daily class action")
+        print("                                          report + yesterday's case activity, on its own private feed")
         print("  --vault        [--dry-run] [--source inbox|vault-mail|dropbox] [--backfill-days N] [--limit N] [--max-age-days N]")
         print("                 --status | --reindex | --dropbox-auth <account>")
         print("                 --cleanup [--execute] [--force]  Merge fragmented property/tenant folders (dry-run writes _vault\\cleanup_plan.txt)")

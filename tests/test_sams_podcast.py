@@ -642,8 +642,14 @@ def test_intro_file_from_the_style_file(tmp_path):
     assert sp.parse_settings({"intro_file": "song.docx"}) == {}
 
 
-SOUNDTRACK_MP3 = Path(r"C:\Users\jbragdon\OneDrive - gejlaw.com\Rocky's files - "
-                      r"Sam's Podcast\Sam's Soundtrack.mp3")
+# The whole Podcasts folder has been shared since 10/26; the older
+# Sam's-only shortcut is the fallback.
+SOUNDTRACK_MP3 = next(
+    (p for p in (Path(r"C:\Users\jbragdon\OneDrive - gejlaw.com\Rocky's files - "
+                      r"Podcasts\Sam's Podcast\Sam's Soundtrack.mp3"),
+                 Path(r"C:\Users\jbragdon\OneDrive - gejlaw.com\Rocky's files - "
+                      r"Sam's Podcast\Sam's Soundtrack.mp3")) if p.is_file()),
+    Path("Sam's Soundtrack.mp3"))
 
 
 def test_parts_with_length_headers_decode_in_full():

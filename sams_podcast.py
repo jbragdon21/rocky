@@ -66,11 +66,18 @@ Config (config.json, secrets and paths):
     sams_podcast              false turns the whole job off
 
 Everything else is in PODCAST_STYLE.md, read every run: a settings block at
-the top (host1/2, voice1/2, listener, stability, intro_seconds,
+the top (host1/2, voice1/2, opener, listener, stability, intro_seconds,
 intro_fade_seconds, intro_overlap_seconds, target_words, max_words,
 audio_tags, model), which wins over config.json and falls back to the
 built-in default for any bad value; "## Topic cards" and "## Case cards"
 sections for the show notes; and every other section for the script.
+
+More than one show runs on this engine. Each is a Show profile (name,
+config prefix, folders, index column, prompts, default style); SAMS, at the
+bottom of this module, is Sam's Podcast and the default for every function.
+Multifamily Feud is multifamily_feud.FEUD (rocky.py --multifamily-feud).
+Its config keys are the same names under its own prefix
+(multifamily_feud_root, multifamily_feud_show_id, ...).
 """
 
 from __future__ import annotations
@@ -79,9 +86,11 @@ import json
 import logging
 import re
 import sys
-from datetime import datetime, timedelta
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 from html import escape
 from pathlib import Path
+from typing import Callable
 
 import requests
 
@@ -91,11 +100,55 @@ SHOW_NAME = "Sam's Podcast"
 EPISODES_DIRNAME = "_Episodes"
 _ONEDRIVE = "OneDrive - gejlaw.com"
 # The Rocky laptop's own OneDrive holds the folder; on James's laptop it is
-# rocky@'s share, named "<owner>'s files - <folder>".
+# rocky@'s share, named "<owner>'s files - <folder>". Since 10/26 the whole
+# Podcasts folder is shared ("Rocky's files - Podcasts"); the older
+# Sam's-only shortcut is still probed in case a laptop kept it.
 _ROOT_CANDIDATES = [
     Path(_ONEDRIVE) / "Podcasts" / "Sam's Podcast",
+    Path(_ONEDRIVE) / "Rocky's files - Podcasts" / "Sam's Podcast",
     Path(_ONEDRIVE) / "Rocky's files - Sam's Podcast",
 ]
+
+
+@dataclass(frozen=True)
+class Show:
+    """One podcast on this engine. Config keys are prefix + "_" + name
+    (sams_podcast_root, multifamily_feud_show_id, ...); the state file and
+    dry-run previews carry the prefix too."""
+    prefix: str                 # config keys, state\<prefix>.json, previews
+    name: str                   # show and episode titles
+    tag: str                    # log tag
+    flag: str                   # the rocky.py switch, for messages
+    roots: tuple                # the show folder, relative to the home dir
+    intro_name: str             # default intro music stem in the show folder
+    column_words: tuple         # an index header holding all of these flags
+    hosts: tuple
+    voices: tuple
+    listener: str               # whose own work is "you"; "" = nobody's
+    audience: str               # who heard the ALREADY COVERED episodes
+    topic_core: str
+    case_core: str
+    script_core: str
+    check_prompt: str
+    default_style: str
+    topic_label: str = "TOPIC"  # how research/report cards are labeled
+    no_topics_note: str = ("(No sports cards today: no sports segment, and "
+                           "do not mention sports at all.)")
+    topics_heading: str = "Sports"
+    cases_heading: str = "Cases"
+    edition_word: str = "research edition"
+    # Where the dated editions live, given (config, show folder). None = in
+    # the show folder itself (Sam's research automation writes there).
+    editions: Callable | None = None
+    stability: float | None = 0.0
+    audio_tags: tuple = ("excited", "cheerfully", "laughs", "chuckles")
+
+    def key(self, name: str) -> str:
+        return f"{self.prefix}_{name}"
+
+
+def _sh(show: Show | None) -> Show:
+    return show or SAMS
 
 TRANSISTOR = "https://api.transistor.fm/v1"
 
@@ -378,12 +431,13 @@ def _ask(client, model: str, system: str, messages: list[dict],
 # Config
 # ---------------------------------------------------------------------------
 
-def enabled(config: dict) -> bool:
-    return config.get("sams_podcast", True) is not False
+def enabled(config: dict, show: Show | None = None) -> bool:
+    return config.get(_sh(show).prefix, True) is not False
 
 
-def voice_settings(config: dict) -> dict | None:
-    value = config.get("sams_podcast_stability", DEFAULT_STABILITY)
+def voice_settings(config: dict, show: Show | None = None) -> dict | None:
+    s = _sh(show)
+    value = config.get(s.key("stability"), s.stability)
     return None if value is None else {"stability": float(value)}
 
 
@@ -418,29 +472,47 @@ def strip_tags(text: str, tags=None) -> str:
     return re.sub(r" +([.,!?])", r"\1", text)
 
 
-def _settings(config: dict) -> tuple[list[str], list[str]]:
-    voices = list(config.get("sams_podcast_voices") or _DEFAULT_VOICES)
-    hosts = list(config.get("sams_podcast_hosts") or _DEFAULT_HOSTS)
+def _settings(config: dict, show: Show | None = None
+              ) -> tuple[list[str], list[str]]:
+    s = _sh(show)
+    voices = list(config.get(s.key("voices")) or s.voices)
+    hosts = list(config.get(s.key("hosts")) or s.hosts)
     if len(voices) < 2 or len(hosts) < 2:
-        raise ValueError("sams_podcast_voices and sams_podcast_hosts each "
-                         "need two entries")
+        raise ValueError(f"{s.key('voices')} and {s.key('hosts')} each "
+                         f"need two entries")
     return voices[:2], hosts[:2]
 
 
-def listener(config: dict) -> str:
+def listener(config: dict, show: Show | None = None) -> str:
     """The listener's full name, so the cards can turn their own work into
-    "you" (the activity logs name Gallagher people in full)."""
-    return str(config.get("sams_podcast_listener") or _LISTENER).strip()
+    "you" (the activity logs name Gallagher people in full). Empty for a
+    show with no single listener (Multifamily Feud)."""
+    s = _sh(show)
+    if not s.listener:
+        return ""
+    return str(config.get(s.key("listener")) or s.listener).strip()
 
 
-def intro_path(config: dict, root: Path | None) -> Path | None:
-    """The intro music: the style file's intro_file (a name in the research
-    folder, or a full path; empty = no intro), else config
-    sams_podcast_intro, else "Sam's Soundtrack" in the research folder (WAV,
+def opener_index(mode: str | None, now: datetime) -> int:
+    """Which host opens today: 0 (host 1) or 1. "alternate" swaps every
+    calendar day, host 1 on 10/27/2026 and every second day from it."""
+    if mode == "host2":
+        return 1
+    if mode == "alternate":
+        return (now.date() - date(2026, 10, 27)).days % 2
+    return 0
+
+
+def intro_path(config: dict, root: Path | None,
+               show: Show | None = None) -> Path | None:
+    """The intro music: the style file's intro_file (a name in the show
+    folder, or a full path; empty = no intro), else config <prefix>_intro,
+    else the show's intro name ("Sam's Soundtrack") in the show folder (WAV,
     FLAC or MP3, lossless first)."""
-    chosen = config.get("sams_podcast_intro_file")
+    s = _sh(show)
+    chosen = config.get(s.key("intro_file"))
     if chosen == "":
-        log.info(f"[{_TAG}] intro_file is none; no intro music")
+        log.info(f"[{s.tag}] intro_file is none; no intro music")
         return None
     if chosen:
         path = Path(chosen)
@@ -448,17 +520,17 @@ def intro_path(config: dict, root: Path | None) -> Path | None:
             path = root / path
         if path.is_file():
             return path
-        log.warning(f"[{_TAG}] intro_file {chosen} not found; using the "
+        log.warning(f"[{s.tag}] intro_file {chosen} not found; using the "
                     f"usual intro instead")
-    configured = config.get("sams_podcast_intro")
+    configured = config.get(s.key("intro"))
     if configured and Path(configured).is_file():
         return Path(configured)
-    for ext in _INTRO_EXTS if root else ():
-        path = root / f"{INTRO_NAME}{ext}"
+    for ext in _INTRO_EXTS if root and s.intro_name else ():
+        path = root / f"{s.intro_name}{ext}"
         if path.is_file():
             return path
     if configured:
-        log.warning(f"[{_TAG}] sams_podcast_intro {configured} not found; "
+        log.warning(f"[{s.tag}] {s.key('intro')} {configured} not found; "
                     f"no intro music")
     return None
 
@@ -518,40 +590,42 @@ def finish_audio(config: dict, intro: Path | None, mp3: Path,
                  parts: list[bytes] | None = None,
                  words: int | None = None,
                  stats: dict | None = None,
-                 log_tag: str = _TAG) -> float | None:
+                 log_tag: str = _TAG,
+                 show: Show | None = None) -> float | None:
     """The episode's final audio: the hosts (from the ElevenLabs parts, each
     decoded separately), the intro music in front if there is one, all
     re-encoded as one 44.1 kHz stream, so podcast apps read the true length.
     Returns its length in seconds. If the hosts can't be decoded, mp3 stays
     as ElevenLabs returned it; if only the intro fails, it is left out."""
+    s = _sh(show)
     try:
         speech = _pcm_parts(parts) if parts else _pcm(mp3)
     except Exception as e:
-        log.warning(f"[{_TAG}] could not decode the hosts' audio ({e}); the "
-                    f"episode goes out as ElevenLabs returned it, without "
+        log.warning(f"[{log_tag}] could not decode the hosts' audio ({e}); "
+                    f"the episode goes out as ElevenLabs returned it, without "
                     f"intro music")
         return None
     out, seconds = speech, float(
-        config.get("sams_podcast_intro_seconds", INTRO_SECONDS))
+        config.get(s.key("intro_seconds"), INTRO_SECONDS))
     if intro:
         try:
             # The whole track ends on its own; only a cut-short one fades.
-            fade = float(config.get("sams_podcast_intro_fade", INTRO_FADE))
-            overlap = float(config.get("sams_podcast_intro_overlap",
+            fade = float(config.get(s.key("intro_fade"), INTRO_FADE))
+            overlap = float(config.get(s.key("intro_overlap"),
                                        INTRO_OVERLAP))
             out = mix_intro(_pcm(intro), speech, seconds,
                             fade if seconds > 0 else 0, overlap)
-            log.info(f"[{_TAG}] intro music {intro.name} added "
+            log.info(f"[{log_tag}] intro music {intro.name} added "
                      f"({'whole track' if seconds <= 0 else f'{seconds:g}s'})")
         except Exception as e:
-            log.warning(f"[{_TAG}] intro music FAILED ({e}); the episode goes "
-                        f"out without it")
+            log.warning(f"[{log_tag}] intro music FAILED ({e}); the episode "
+                        f"goes out without it")
             out = speech
     try:
         mp3.write_bytes(encode_mp3(out))
     except Exception as e:
-        log.warning(f"[{_TAG}] could not re-encode the episode ({e}); it goes "
-                    f"out as ElevenLabs returned it")
+        log.warning(f"[{log_tag}] could not re-encode the episode ({e}); it "
+                    f"goes out as ElevenLabs returned it")
         return None
     total = len(out) / _RATE
     hosts = len(speech) / _RATE
@@ -567,13 +641,15 @@ def finish_audio(config: dict, intro: Path | None, mp3: Path,
 
 
 def add_intro(config: dict, intro: Path, mp3: Path,
-              parts: list[bytes] | None = None) -> None:
+              parts: list[bytes] | None = None,
+              show: Show | None = None) -> None:
     """finish_audio with intro music (kept for callers and tests)."""
-    finish_audio(config, intro, mp3, parts)
+    finish_audio(config, intro, mp3, parts, show=show)
 
 
-def style_path(config: dict, root: Path | None) -> Path | None:
-    configured = config.get("sams_podcast_style")
+def style_path(config: dict, root: Path | None,
+               show: Show | None = None) -> Path | None:
+    configured = config.get(_sh(show).key("style"))
     if configured:
         return Path(configured)
     return root / STYLE_FILENAME if root else None
@@ -655,148 +731,169 @@ def _intro(value: str) -> float:
     return 0.0 if value.lower() in ("all", "whole") else _num(value, 0, 600)
 
 
-# Settings-block name -> (config key, checker). host/voice 1 and 2 are
-# combined into the two-entry config lists by apply_settings.
-_SETTINGS = {
-    "host1": ("host1", _name), "host2": ("host2", _name),
-    "voice1": ("voice1", _voice), "voice2": ("voice2", _voice),
-    "listener": ("sams_podcast_listener", _name),
-    "stability": ("sams_podcast_stability", _stability),
-    "intro_seconds": ("sams_podcast_intro_seconds", _intro),
-    "intro_fade_seconds": ("sams_podcast_intro_fade",
-                           lambda v: _num(v, 0, 30)),
-    "intro_overlap_seconds": ("sams_podcast_intro_overlap",
-                              lambda v: _num(v, 0, 30)),
-    "target_words": ("sams_podcast_target_words",
-                     lambda v: int(_num(v, 200, 3000))),
-    "max_words": ("sams_podcast_max_words",
-                  lambda v: int(_num(v, 250, 3500))),
-    "audio_tags": ("sams_podcast_audio_tags", _tags),
-    "model": ("sams_podcast_model", _model),
-    "repeat_lookback_days": ("sams_podcast_repeat_days",
-                             lambda v: int(_num(v, 0, 7))),
-    "intro_file": ("sams_podcast_intro_file", _intro_file),
-}
+def _opener(value: str) -> str:
+    value = value.lower().replace(" ", "")
+    if value not in ("alternate", "host1", "host2"):
+        raise ValueError("must be alternate, host1 or host2")
+    return value
 
 
-def parse_settings(raw: dict) -> dict:
+def _settings_map(show: Show | None = None) -> dict:
+    """Settings-block name -> (config key, checker). host/voice 1 and 2 are
+    combined into the two-entry config lists by apply_settings."""
+    k = _sh(show).key
+    return {
+        "host1": ("host1", _name), "host2": ("host2", _name),
+        "voice1": ("voice1", _voice), "voice2": ("voice2", _voice),
+        "opener": (k("opener"), _opener),
+        "listener": (k("listener"), _name),
+        "stability": (k("stability"), _stability),
+        "intro_seconds": (k("intro_seconds"), _intro),
+        "intro_fade_seconds": (k("intro_fade"), lambda v: _num(v, 0, 30)),
+        "intro_overlap_seconds": (k("intro_overlap"),
+                                  lambda v: _num(v, 0, 30)),
+        "target_words": (k("target_words"),
+                         lambda v: int(_num(v, 200, 3000))),
+        "max_words": (k("max_words"), lambda v: int(_num(v, 250, 3500))),
+        "audio_tags": (k("audio_tags"), _tags),
+        "model": (k("model"), _model),
+        "repeat_lookback_days": (k("repeat_days"),
+                                 lambda v: int(_num(v, 0, 7))),
+        "intro_file": (k("intro_file"), _intro_file),
+    }
+
+
+def parse_settings(raw: dict, show: Show | None = None) -> dict:
     """Checked values from the settings block, keyed by config name. A bad or
     unknown entry is logged and skipped (the default or config.json value
     then stands), so a typo can't stop the episode."""
+    tag, known = _sh(show).tag, _settings_map(show)
     out = {}
     for name, value in raw.items():
-        if name not in _SETTINGS:
-            log.warning(f"[{_TAG}] style file setting {name!r} is not one "
+        if name not in known:
+            log.warning(f"[{tag}] style file setting {name!r} is not one "
                         f"Rocky knows; ignored")
             continue
-        key, check = _SETTINGS[name]
+        key, check = known[name]
         try:
             out[key] = check(value)
         except (TypeError, ValueError) as e:
-            log.warning(f"[{_TAG}] style file setting {name}: {value!r} "
+            log.warning(f"[{tag}] style file setting {name}: {value!r} "
                         f"{e}; using the default")
     return out
 
 
-def apply_settings(config: dict, settings: dict) -> dict:
+def apply_settings(config: dict, settings: dict,
+                   show: Show | None = None) -> dict:
     """config with the style file's settings laid over it (the file wins)."""
+    s = _sh(show)
     out = dict(config)
-    voices, hosts = _settings(config)
+    voices, hosts = _settings(config, s)
     for i in (1, 2):
         if f"voice{i}" in settings:
             voices[i - 1] = settings[f"voice{i}"]
         if f"host{i}" in settings:
             hosts[i - 1] = settings[f"host{i}"]
-    out["sams_podcast_voices"], out["sams_podcast_hosts"] = voices, hosts
+    out[s.key("voices")], out[s.key("hosts")] = voices, hosts
     for key, value in settings.items():
-        if key.startswith("sams_podcast_"):
+        if key.startswith(s.prefix + "_"):
             out[key] = value
-    target, cap = word_limits(out)
+    target, cap = word_limits(out, s)
     if cap < target:
-        log.warning(f"[{_TAG}] max_words {cap} is under target_words "
+        log.warning(f"[{s.tag}] max_words {cap} is under target_words "
                     f"{target}; using {target + 200}")
-        out["sams_podcast_max_words"] = target + 200
+        out[s.key("max_words")] = target + 200
     return out
 
 
 def split_sections(text: str) -> dict:
-    """{"script", "topic", "case"}: the "## Topic cards" and "## Case cards"
-    sections, and everything else (the script style)."""
+    """{"script", "topic", "case"}: the "## Topic cards" (or "## Report
+    cards") and "## Case cards" sections, and everything else (the script
+    style)."""
     parts = {"script": [], "topic": [], "case": []}
     where = "script"
     for line in text.splitlines():
         heading = re.match(r"##\s+(.+?)\s*$", line)
         if heading:
             title = heading.group(1).lower()
-            where = ("topic" if title.startswith("topic card") else
-                     "case" if title.startswith("case card") else "script")
+            where = ("topic" if title.startswith(("topic card", "report card"))
+                     else "case" if title.startswith("case card")
+                     else "script")
             if where != "script":
                 continue
         parts[where].append(line)
     return {k: "\n".join(v).strip() for k, v in parts.items()}
 
 
-def _read_style_file(config: dict, root: Path | None) -> str:
-    path = style_path(config, root)
+def _read_style_file(config: dict, root: Path | None,
+                     show: Show | None = None) -> str:
+    s = _sh(show)
+    path = style_path(config, root, s)
     if path is None:
-        log.info(f"[{_TAG}] no research folder; built-in style guide")
-        return DEFAULT_STYLE
+        log.info(f"[{s.tag}] no show folder; built-in style guide")
+        return s.default_style
     try:
         text = path.read_text(encoding="utf-8-sig")
-        log.info(f"[{_TAG}] style guide: {path}")
+        log.info(f"[{s.tag}] style guide: {path}")
         return text
     except FileNotFoundError:
-        if config.get("sams_podcast_style"):
-            log.warning(f"[{_TAG}] sams_podcast_style {path} not found; "
+        if config.get(s.key("style")):
+            log.warning(f"[{s.tag}] {s.key('style')} {path} not found; "
                         f"built-in style guide")
         else:
             try:
-                path.write_text(DEFAULT_STYLE, encoding="utf-8")
-                log.info(f"[{_TAG}] wrote the starting style guide to {path} "
+                path.write_text(s.default_style, encoding="utf-8")
+                log.info(f"[{s.tag}] wrote the starting style guide to {path} "
                          f"(edit it to change the show)")
             except OSError as e:
-                log.warning(f"[{_TAG}] could not write {path}: {e}")
+                log.warning(f"[{s.tag}] could not write {path}: {e}")
     except (OSError, UnicodeDecodeError) as e:
-        log.warning(f"[{_TAG}] cannot read {path} ({e}); built-in style guide")
-    return DEFAULT_STYLE
+        log.warning(f"[{s.tag}] cannot read {path} ({e}); built-in style "
+                    f"guide")
+    return s.default_style
 
 
-def load_style(config: dict, root: Path | None) -> dict:
+def load_style(config: dict, root: Path | None,
+               show: Show | None = None) -> dict:
     """PODCAST_STYLE.md read and split: {"settings", "script", "topic",
     "case"}. Notes in <!-- --> are dropped. Any part the file lacks (or
-    leaves empty) comes from DEFAULT_STYLE."""
-    raw, body = split_settings(_uncomment(_read_style_file(config, root)))
-    default_raw, default_body = split_settings(_uncomment(DEFAULT_STYLE))
+    leaves empty) comes from the show's default style."""
+    s = _sh(show)
+    raw, body = split_settings(_uncomment(_read_style_file(config, root, s)))
+    default_raw, default_body = split_settings(_uncomment(s.default_style))
     sections, defaults = split_sections(body), split_sections(default_body)
-    out = {"settings": parse_settings(raw)}
+    out = {"settings": parse_settings(raw, s)}
     for part in ("script", "topic", "case"):
         text = sections[part]
         if not text:
             if part == "script":
-                log.warning(f"[{_TAG}] style guide has no script style; "
+                log.warning(f"[{s.tag}] style guide has no script style; "
                             f"built-in one used")
             text = defaults[part]
         if len(text) > _STYLE_CAP:
-            log.warning(f"[{_TAG}] {part} style is {len(text)} characters; "
+            log.warning(f"[{s.tag}] {part} style is {len(text)} characters; "
                         f"using the first {_STYLE_CAP}")
             text = text[:_STYLE_CAP]
         out[part] = text
     return out
 
 
-def style_guide(config: dict, root: Path | None) -> str:
+def style_guide(config: dict, root: Path | None,
+                show: Show | None = None) -> str:
     """The script part of the style guide (see load_style)."""
-    return load_style(config, root)["script"]
+    return load_style(config, root, show)["script"]
 
 
-def word_limits(config: dict) -> tuple[int, int]:
-    return (int(config.get("sams_podcast_target_words") or TARGET_WORDS),
-            int(config.get("sams_podcast_max_words") or MAX_WORDS))
+def word_limits(config: dict, show: Show | None = None) -> tuple[int, int]:
+    k = _sh(show).key
+    return (int(config.get(k("target_words")) or TARGET_WORDS),
+            int(config.get(k("max_words")) or MAX_WORDS))
 
 
-def audio_tags(config: dict) -> list[str]:
-    tags = config.get("sams_podcast_audio_tags")
-    return list(AUDIO_TAGS) if tags is None else list(tags)
+def audio_tags(config: dict, show: Show | None = None) -> list[str]:
+    s = _sh(show)
+    tags = config.get(s.key("audio_tags"))
+    return list(s.audio_tags) if tags is None else list(tags)
 
 
 def fill(text: str, values: dict) -> str:
@@ -805,20 +902,32 @@ def fill(text: str, values: dict) -> str:
     return text
 
 
-def research_root(config: dict, home: Path | None = None) -> Path | None:
-    """The research folder: config sams_podcast_root if it exists, else the
-    first candidate under this profile's OneDrive that does."""
-    configured = config.get("sams_podcast_root")
+def research_root(config: dict, home: Path | None = None,
+                  show: Show | None = None) -> Path | None:
+    """The show folder (Sam's: the research folder): config <prefix>_root if
+    it exists, else the first candidate under this profile's OneDrive that
+    does."""
+    s = _sh(show)
+    configured = config.get(s.key("root"))
     if configured and Path(configured).is_dir():
         return Path(configured)
     home = home or Path.home()
-    for rel in _ROOT_CANDIDATES:
+    for rel in s.roots:
         if (home / rel).is_dir():
             if configured:
-                log.info(f"[{_TAG}] sams_podcast_root {configured} not found; "
+                log.info(f"[{s.tag}] {s.key('root')} {configured} not found; "
                          f"using {home / rel}")
             return home / rel
     return None
+
+
+def editions_root(config: dict, root: Path | None,
+                  show: Show | None = None) -> Path | None:
+    """Where the dated editions are: the show folder itself, unless the show
+    reads them from somewhere else (Multifamily Feud: the tracker's Daily
+    Reports folder in Rocky Cases)."""
+    s = _sh(show)
+    return s.editions(config, root) if s.editions else root
 
 
 # ---------------------------------------------------------------------------
@@ -836,7 +945,7 @@ def strip_front_matter(text: str) -> str:
     return text
 
 
-def load_edition(folder: Path) -> dict | None:
+def load_edition(folder: Path, tag: str = _TAG) -> dict | None:
     """A complete edition, or None (with the reason logged). The research
     contract: manifest.json is written last; trust only status complete with
     every listed memo present and nonempty."""
@@ -844,13 +953,13 @@ def load_edition(folder: Path) -> dict | None:
     try:
         data = json.loads(manifest.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        log.info(f"[{_TAG}] {folder.name}: no manifest yet (still writing?)")
+        log.info(f"[{tag}] {folder.name}: no manifest yet (still writing?)")
         return None
     except (OSError, ValueError) as e:
-        log.warning(f"[{_TAG}] {folder.name}: unreadable manifest ({e})")
+        log.warning(f"[{tag}] {folder.name}: unreadable manifest ({e})")
         return None
     if not isinstance(data, dict) or data.get("status") != "complete":
-        log.info(f"[{_TAG}] {folder.name}: manifest not complete")
+        log.info(f"[{tag}] {folder.name}: manifest not complete")
         return None
     memos = []
     for entry in data.get("memos") or []:
@@ -860,23 +969,24 @@ def load_edition(folder: Path) -> dict | None:
         try:
             text = path.read_text(encoding="utf-8").strip()
         except OSError as e:
-            log.warning(f"[{_TAG}] {folder.name}: cannot read {path.name} "
+            log.warning(f"[{tag}] {folder.name}: cannot read {path.name} "
                         f"({e}); edition skipped")
             return None
         if not text:
-            log.warning(f"[{_TAG}] {folder.name}: {path.name} is empty; "
+            log.warning(f"[{tag}] {folder.name}: {path.name} is empty; "
                         f"edition skipped")
             return None
         memos.append({"topic": str(entry.get("topic") or path.stem),
                       "file": path.name, "text": strip_front_matter(text)})
     if not memos:
-        log.warning(f"[{_TAG}] {folder.name}: manifest lists no memos")
+        log.warning(f"[{tag}] {folder.name}: manifest lists no memos")
         return None
     return {"date": str(data.get("edition_date") or folder.name),
             "folder": folder, "memos": memos}
 
 
-def pick_edition(root: Path, today: datetime, used: set[str]) -> dict | None:
+def pick_edition(root: Path, today: datetime, used: set[str],
+                 tag: str = _TAG) -> dict | None:
     """Today's edition, else yesterday's if it was never used. Older ones are
     stale news and are left alone."""
     for day in (today, today - timedelta(days=1)):
@@ -885,7 +995,7 @@ def pick_edition(root: Path, today: datetime, used: set[str]) -> dict | None:
             continue
         folder = root / name
         if folder.is_dir():
-            edition = load_edition(folder)
+            edition = load_edition(folder, tag)
             if edition:
                 return edition
     return None
@@ -895,14 +1005,21 @@ def pick_edition(root: Path, today: datetime, used: set[str]) -> dict | None:
 # Cases
 # ---------------------------------------------------------------------------
 
-def sam_column(cases: list[dict]) -> str | None:
-    """The case-index header that holds the Sam's Podcast flag."""
+def show_column(cases: list[dict], show: Show | None = None) -> str | None:
+    """The case-index header that holds the show's flag: the first header
+    containing every one of the show's column words."""
+    words = _sh(show).column_words
     for case in cases:
         for key in case:
             low = str(key or "").lower()
-            if "sam" in low and "podcast" in low:
+            if all(w in low for w in words):
                 return key
     return None
+
+
+def sam_column(cases: list[dict]) -> str | None:
+    """The case-index header that holds the Sam's Podcast flag."""
+    return show_column(cases, SAMS)
 
 
 def yesterday_window(now: datetime) -> tuple[datetime, datetime]:
@@ -935,8 +1052,8 @@ def events_between(events: list[dict], start: datetime, end: datetime
 # Cards
 # ---------------------------------------------------------------------------
 
-def _dated_texts(items, today: str, drop_before: str | None = None
-                 ) -> list[str]:
+def _dated_texts(items, today: str, drop_before: str | None = None,
+                 tag: str = _TAG) -> list[str]:
     """Bullet texts from [{date, text}] (or plain strings), dropping any dated
     before drop_before (default today)."""
     floor = drop_before or today
@@ -944,10 +1061,10 @@ def _dated_texts(items, today: str, drop_before: str | None = None
     for item in items or []:
         if isinstance(item, dict):
             text = str(item.get("text") or "").strip()
-            date = str(item.get("date") or "")[:10]
-            if floor and re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) \
-                    and date < floor:
-                log.info(f"[{_TAG}] dropped item dated {date}: {text[:80]}")
+            when = str(item.get("date") or "")[:10]
+            if floor and re.fullmatch(r"\d{4}-\d{2}-\d{2}", when) \
+                    and when < floor:
+                log.info(f"[{tag}] dropped item dated {when}: {text[:80]}")
                 continue
         else:
             text = str(item).strip()
@@ -961,25 +1078,27 @@ def _strings(items, cap: int) -> list[str]:
 
 
 def card_prompt(core: str, style: str | None, part: str,
-                listener: str) -> str:
+                listener: str, show: Show | None = None) -> str:
     if style is None:
-        style = load_style({}, None)[part]
+        style = load_style({}, None, show)[part]
     values = {"listener": listener}
     return fill(core, values).replace("{style}", fill(style, values))
 
 
 def topic_card(client, model: str, memo: dict, today: str,
-               style: str | None = None, listener: str = _LISTENER) -> dict:
+               style: str | None = None, listener: str = _LISTENER,
+               show: Show | None = None) -> dict:
     """One Claude call. {kind, title, headline, developments, upcoming,
     angles} or {kind, title, error}."""
     from kirsten_digest import _parse_json
+    s = _sh(show)
     card = {"kind": "topic", "title": memo["topic"]}
     prompt = (f"TODAY: {today}\nTOPIC: {memo['topic']}\n\nMEMO:\n"
               f"{memo['text'][:_MEMO_CAP]}\n\nWrite the JSON card.")
     try:
         data = _parse_json(_ask(client, model,
-                                card_prompt(TOPIC_CORE, style, "topic",
-                                            listener),
+                                card_prompt(s.topic_core, style, "topic",
+                                            listener, s),
                                 [{"role": "user", "content": prompt}],
                                 max_tokens=8000))
     except Exception as e:
@@ -989,15 +1108,18 @@ def topic_card(client, model: str, memo: dict, today: str,
     return {**card,
             "headline": str(data.get("headline") or "").strip(),
             "developments": _strings(data.get("developments"), 8),
-            "upcoming": _dated_texts(data.get("upcoming"), today[:10])[:6],
+            "upcoming": _dated_texts(data.get("upcoming"), today[:10],
+                                     tag=s.tag)[:6],
             "angles": _strings(data.get("angles"), 5)}
 
 
 def case_card(client, model: str, case: dict, lines: list[str], memo: str,
               background: str, today: str, yesterday: str,
-              listener: str = "Sam", style: str | None = None) -> dict:
+              listener: str = "Sam", style: str | None = None,
+              show: Show | None = None) -> dict:
     """One Claude call for a case with activity yesterday."""
     from kirsten_digest import _parse_json
+    s = _sh(show)
     card = {"kind": "case", "title": str(case.get("File Name") or
                                          case.get("RRID#") or "").strip(),
             "subtitle": str(case.get("Description") or "").strip()}
@@ -1021,8 +1143,8 @@ CASE STATUS MEMORANDUM (background, may be out of date):
 Write the JSON card."""
     try:
         data = _parse_json(_ask(client, model,
-                                card_prompt(CASE_CORE, style, "case",
-                                            listener),
+                                card_prompt(s.case_core, style, "case",
+                                            listener, s),
                                 [{"role": "user", "content": prompt}],
                                 max_tokens=8000))
     except Exception as e:
@@ -1032,8 +1154,10 @@ Write the JSON card."""
     return {**card,
             "status": str(data.get("status") or "").strip(),
             "yesterday": _dated_texts(data.get("yesterday"), today[:10],
-                                      drop_before=yesterday[:10])[:8],
-            "next_steps": (_dated_texts(data.get("next_steps"), today[:10])
+                                      drop_before=yesterday[:10],
+                                      tag=s.tag)[:8],
+            "next_steps": (_dated_texts(data.get("next_steps"), today[:10],
+                                        tag=s.tag)
                            or ["Nothing pending."])[:6]}
 
 
@@ -1044,11 +1168,13 @@ def quiet_card(case: dict) -> dict:
 
 
 def collect_cases(config: dict, client, model: str, now: datetime,
-                  rrids: list[str] | None = None) -> tuple[list[dict], str]:
+                  rrids: list[str] | None = None,
+                  show: Show | None = None) -> tuple[list[dict], str]:
     """Case cards for every flagged open case (quiet ones without a Claude
     call). Returns (cards, note) where note explains an empty list."""
     import rocky
     from kirsten_digest import find_folder, select_cases
+    s = _sh(show)
 
     # rocky.exe runs rocky.py as __main__, so this "import rocky" is a second
     # copy whose paths still hold the dev-laptop default (10/19 Kirsten
@@ -1057,13 +1183,13 @@ def collect_cases(config: dict, client, model: str, now: datetime,
     cases = rocky.load_case_index()
     if not cases:
         return [], "case index unreadable (see warning above)"
-    col = sam_column(cases)
+    col = show_column(cases, s)
     if not col:
-        return [], ("no \"Sam's Podcast\" column in the Rocky Case Index "
-                    "(add it with yes/no per case)")
+        return [], (f"no \"{s.name}\" column in the Rocky Case Index "
+                    f"(add it with yes/no per case)")
     selected = select_cases(cases, rrids, col=col)
     if not selected:
-        return [], "no open case is marked yes for Sam's Podcast"
+        return [], f"no open case is marked yes for {s.name}"
 
     start, end = yesterday_window(now)
     today_s = now.strftime("%Y-%m-%d (%A)")
@@ -1073,7 +1199,7 @@ def collect_cases(config: dict, client, model: str, now: datetime,
         rrid = str(case.get("RRID#") or "").upper()
         folder = find_folder(rocky.ROCKY_CASES_ROOT, case)
         if folder is None:
-            log.warning(f"[{_TAG}] {rrid}: no case folder found")
+            log.warning(f"[{s.tag}] {rrid}: no case folder found")
             cards.append({**quiet_card(case), "quiet": False,
                           "error": "no case folder found under Rocky Cases"})
             continue
@@ -1086,11 +1212,11 @@ def collect_cases(config: dict, client, model: str, now: datetime,
         card = case_card(client, model, case, lines,
                          rocky._extract_status_memo_text(folder),
                          rocky._read_case_digest_instructions(folder),
-                         today_s, yesterday_s, listener(config),
-                         config.get("_sams_case_style"))
+                         today_s, yesterday_s, listener(config, s),
+                         config.get("_case_style"), s)
         if card.get("error"):
-            log.warning(f"[{_TAG}] {rrid}: {card['error']}")
-        log.info(f"[{_TAG}] {rrid} {folder.name}: {len(lines)} activity "
+            log.warning(f"[{s.tag}] {rrid}: {card['error']}")
+        log.info(f"[{s.tag}] {rrid} {folder.name}: {len(lines)} activity "
                  f"line(s) yesterday")
         cards.append(card)
     # Active cases first, quiet ones last.
@@ -1102,14 +1228,17 @@ def collect_cases(config: dict, client, model: str, now: datetime,
 # Script
 # ---------------------------------------------------------------------------
 
-def cards_text(topics: list[dict], cases: list[dict]) -> str:
-    """The cards, plain, for the script prompt. Failed cards are left out."""
+def cards_text(topics: list[dict], cases: list[dict],
+               label: str = "TOPIC") -> str:
+    """The cards, plain, for the script prompt. Failed cards are left out.
+    label names the research/report cards (Sam's TOPIC, the Feud's
+    REPORT)."""
     blocks = []
     for c in topics:
         if c.get("error"):
             continue
-        lines = [f"TOPIC: {c['title']}", f"Headline: {c.get('headline') or ''}",
-                 "Developments:"]
+        lines = [f"{label}: {c['title']}",
+                 f"Headline: {c.get('headline') or ''}", "Developments:"]
         lines += [f"- {b}" for b in c.get("developments") or []] or ["- (none)"]
         lines.append("Upcoming:")
         lines += [f"- {b}" for b in c.get("upcoming") or []] or ["- (none)"]
@@ -1162,38 +1291,46 @@ def tag_rule(tags) -> str:
 
 def script_prompt(style: str, hosts: list[str], listener: str,
                   target: int = TARGET_WORDS, max_words: int = MAX_WORDS,
-                  tags=None) -> str:
+                  tags=None, opener: int = 0,
+                  show: Show | None = None) -> str:
+    """The script call's system prompt. opener (0 or 1) is the host who
+    opens today: {opener} and {other} in the core or the style guide."""
+    s = _sh(show)
     values = {"host1": hosts[0], "host2": hosts[1], "listener": listener,
+              "opener": hosts[opener], "other": hosts[1 - opener],
+              "opener_speaker": str(opener + 1),
               "target": f"{target:,}", "max_words": f"{max_words:,}",
-              "tag_rule": tag_rule(AUDIO_TAGS if tags is None else tags)}
+              "tag_rule": tag_rule(s.audio_tags if tags is None else tags)}
     # The style is filled on its own and dropped in last, so a placeholder
     # typed into the file can't pull the rules in twice.
-    return fill(SCRIPT_CORE, values).replace("{style}", fill(style, values))
+    return fill(s.script_core, values).replace("{style}", fill(style, values))
 
 
 def write_script(client, model: str, material: str, day_label: str,
                  hosts: list[str], listener: str = "Sam",
                  style: str | None = None, target: int = TARGET_WORDS,
                  max_words: int = MAX_WORDS, tags=None,
-                 covered: list[tuple[str, str]] | None = None) -> list[dict]:
+                 covered: list[tuple[str, str]] | None = None,
+                 opener: int = 0, show: Show | None = None) -> list[dict]:
     """One Claude call, plus one shorten retry if it runs long. covered is
-    [(day label, script text)] of earlier episodes Sam heard."""
+    [(day label, script text)] of earlier episodes the listeners heard."""
     import kirsten_podcast as kp
+    s = _sh(show)
     if not material:
         return []
-    system = script_prompt(load_style({}, None)["script"] if style is None
+    system = script_prompt(load_style({}, None, s)["script"] if style is None
                            else style, hosts, listener, target, max_words,
-                           tags)
+                           tags, opener, s)
     if "CASE: " not in material and "QUIET CASES" not in material:
         material += ("\n\n(No case cards today: no docket segment, and do not "
                      "mention the docket or cases at all.)")
-    elif "TOPIC: " not in material:
-        material += ("\n\n(No sports cards today: no sports segment, and do "
-                     "not mention sports at all.)")
+    elif f"{s.topic_label}: " not in material:
+        material += "\n\n" + s.no_topics_note
     messages = [{"role": "user", "content":
                  f"TODAY: {day_label}\n{calendar(day_label)}\n\n"
                  f"CARDS:\n\n{material}\n\n"
-                 + covered_text(covered) + "Write the JSON script."}]
+                 + covered_text(covered, s.audience)
+                 + "Write the JSON script."}]
     turns: list[dict] = []
     for _ in range(2):
         raw = _ask(client, model, system, messages, max_tokens=16000,
@@ -1204,15 +1341,17 @@ def write_script(client, model: str, material: str, day_label: str,
         words = kp.word_count(turns)
         if words <= max_words:
             break
-        log.info(f"[{_TAG}] script ran {words} words; asking for a shorter one")
+        log.info(f"[{s.tag}] script ran {words} words; asking for a shorter "
+                 f"one")
         messages += [{"role": "assistant", "content": raw},
                      {"role": "user", "content":
                       f"That is {words} words. Cut it to at most "
                       f"{target} words: less detail per item, same "
                       f"shape. Return the JSON only."}]
-    turns = kp.fit(turns, max_words, tag=_TAG)
+    turns = kp.fit(turns, max_words, tag=s.tag)
     return check_script(client, model, material, turns, day_label, tags,
-                        covered)
+                        covered, system=s.check_prompt, log_tag=s.tag,
+                        audience=s.audience)
 
 
 CHECK_PROMPT = """You fact-check the script of a daily two-host audio show against the cards it was written from. The cards are the only source of truth.
@@ -1233,7 +1372,8 @@ def check_script(client, model: str, material: str, turns: list[dict],
                  day_label: str, tags=None,
                  covered: list[tuple[str, str]] | None = None,
                  system: str | None = None,
-                 log_tag: str = _TAG) -> list[dict]:
+                 log_tag: str = _TAG,
+                 audience: str = "Sam") -> list[dict]:
     """One more Claude call: every turn checked against the cards, and any
     unsupported or misattributed claim rewritten (10/23 dry runs: an invented
     bye week, and Illinois' Oregon game credited to the Bears). A failed
@@ -1247,7 +1387,7 @@ def check_script(client, model: str, material: str, turns: list[dict],
             messages=[{"role": "user", "content":
                        f"TODAY: {day_label}\n{calendar(day_label)}\n\n"
                        f"CARDS:\n\n{material}\n\n"
-                       + covered_text(covered)
+                       + covered_text(covered, audience)
                        + f"SCRIPT:\n{numbered}\n\nReturn the JSON."}])
         data = _parse_json(raw)
     except Exception as e:
@@ -1282,10 +1422,12 @@ def _ul(items: list[str]) -> str:
         if items else ""
 
 
-def render_notes(topics: list[dict], cases: list[dict]) -> str:
+def render_notes(topics: list[dict], cases: list[dict],
+                 show: Show | None = None) -> str:
+    s = _sh(show)
     parts = []
     if topics:
-        parts.append("<h2>Sports</h2>")
+        parts.append(f"<h2>{escape(s.topics_heading)}</h2>")
     for c in topics:
         parts.append(f"<h3>{escape(c['title'])}</h3>")
         if c.get("error"):
@@ -1300,7 +1442,7 @@ def render_notes(topics: list[dict], cases: list[dict]) -> str:
     active = [c for c in cases if not c.get("quiet")]
     quiet = [c["title"] for c in cases if c.get("quiet")]
     if cases:
-        parts.append("<h2>Cases</h2>")
+        parts.append(f"<h2>{escape(s.cases_heading)}</h2>")
     for c in active:
         parts.append(f"<h3>{escape(c['title'])}</h3>")
         if c.get("error"):
@@ -1400,33 +1542,35 @@ def subscribe(api_key: str, show_id: str, email: str) -> str | None:
 # Run
 # ---------------------------------------------------------------------------
 
-def _state_path(data_dir: Path) -> Path:
-    return data_dir / "state" / "sams_podcast.json"
+def _state_path(data_dir: Path, show: Show | None = None) -> Path:
+    return data_dir / "state" / f"{_sh(show).prefix}.json"
 
 
-def _read_state(data_dir: Path) -> dict:
+def _read_state(data_dir: Path, show: Show | None = None) -> dict:
     try:
-        return json.loads(_state_path(data_dir).read_text(encoding="utf-8"))
+        return json.loads(_state_path(data_dir, show).read_text(
+            encoding="utf-8"))
     except (OSError, ValueError):
         return {}
 
 
-def _write_state(data_dir: Path, state: dict) -> None:
+def _write_state(data_dir: Path, state: dict,
+                 show: Show | None = None) -> None:
     episodes = state.get("episodes") or {}
     state["episodes"] = dict(sorted(episodes.items())[-90:])
     try:
-        path = _state_path(data_dir)
+        path = _state_path(data_dir, show)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(state, indent=2), encoding="utf-8")
     except OSError as e:
-        log.warning(f"[{_TAG}] could not record state: {e}")
+        log.warning(f"[{_sh(show).tag}] could not record state: {e}")
 
 
 _COVERED_CAP = 9000      # characters of one earlier script
 
 
-def repeat_days(config: dict) -> int:
-    value = config.get("sams_podcast_repeat_days")
+def repeat_days(config: dict, show: Show | None = None) -> int:
+    value = config.get(_sh(show).key("repeat_days"))
     return 2 if value is None else int(value)
 
 
@@ -1440,7 +1584,7 @@ def audio_complete(words: int | None, hosts_seconds: float | None) -> bool:
 
 
 def earlier_scripts(episodes: dict, archive: Path, now: datetime, days: int,
-                    tags=None) -> list[tuple[str, str]]:
+                    tags=None, tag: str = _TAG) -> list[tuple[str, str]]:
     """[(day label, script)] for the last `days` days before today whose
     episode was made with full-length audio, oldest first. Anything else (no
     record, cut-off audio, a missing script file) is skipped and logged."""
@@ -1452,64 +1596,69 @@ def earlier_scripts(episodes: dict, archive: Path, now: datetime, days: int,
         if not record:
             continue
         if not record.get("audio_complete"):
-            log.info(f"[{_TAG}] {key}: not counted as covered (audio was not "
+            log.info(f"[{tag}] {key}: not counted as covered (audio was not "
                      f"full length, or not recorded)")
             continue
         try:
             text = (archive / f"{key} script.txt").read_text(encoding="utf-8")
         except OSError as e:
-            log.warning(f"[{_TAG}] {key}: script not readable ({e}); not "
+            log.warning(f"[{tag}] {key}: script not readable ({e}); not "
                         f"counted as covered")
             continue
         out.append((day_label(day), strip_tags(text, tags)[:_COVERED_CAP]))
     if out:
-        log.info(f"[{_TAG}] already covered: {', '.join(d for d, _ in out)}")
+        log.info(f"[{tag}] already covered: {', '.join(d for d, _ in out)}")
     return out
 
 
-def covered_text(covered: list[tuple[str, str]] | None) -> str:
+def covered_text(covered: list[tuple[str, str]] | None,
+                 audience: str = "Sam") -> str:
     if not covered:
         return ""
     blocks = [f"--- {day} ---\n{text.strip()}" for day, text in covered]
-    return ("ALREADY COVERED (earlier episodes Sam heard; context only, not a "
-            "source):\n\n" + "\n\n".join(blocks) + "\n\n")
+    return (f"ALREADY COVERED (earlier episodes {audience} heard; context "
+            f"only, not a source):\n\n" + "\n\n".join(blocks) + "\n\n")
 
 
 def day_label(now: datetime) -> str:
     return f"{now.strftime('%A, %B')} {now.day}, {now.year}"
 
 
-def _feed_cli(config: dict, args: list[str]) -> None:
+def _feed_cli(config: dict, args: list[str], show: Show | None = None) -> None:
+    s = _sh(show)
     key = config.get("transistor_api_key")
     if not key:
-        log.error(f"[{_TAG}] transistor_api_key is not set in config.json")
+        log.error(f"[{s.tag}] transistor_api_key is not set in config.json")
         return
     if "--shows" in args:
-        for show in list_shows(key):
-            attrs = show.get("attributes") or {}
-            log.info(f"[{_TAG}] show id {show.get('id')}: {attrs.get('title')!r}"
-                     f" (private: {attrs.get('private_show', attrs.get('private'))})")
+        for found in list_shows(key):
+            attrs = found.get("attributes") or {}
+            log.info(f"[{s.tag}] show id {found.get('id')}: "
+                     f"{attrs.get('title')!r} (private: "
+                     f"{attrs.get('private_show', attrs.get('private'))})")
         return
     i = args.index("--subscribe")
     email = args[i + 1] if i + 1 < len(args) else ""
-    show_id = config.get("sams_podcast_show_id")
+    show_id = config.get(s.key("show_id"))
     if "@" not in email or not show_id:
-        log.error(f"[{_TAG}] usage: --sams-podcast --subscribe EMAIL "
-                  f"(and sams_podcast_show_id set)")
+        log.error(f"[{s.tag}] usage: {s.flag} --subscribe EMAIL "
+                  f"(and {s.key('show_id')} set)")
         return
     url = subscribe(key, show_id, email) or "(see the Transistor dashboard)"
-    log.info(f"[{_TAG}] {email} subscribed. Private feed: {url}")
+    log.info(f"[{s.tag}] {email} subscribed. Private feed: {url}")
 
 
-def run_cli(config: dict, data_dir: Path) -> None:
+def run_cli(config: dict, data_dir: Path, show: Show | None = None) -> None:
     import rocky
 
+    s = _sh(show)
+    tag = s.tag
     args = sys.argv[1:]
     if "--shows" in args or "--subscribe" in args:
-        _feed_cli(config, args)
+        _feed_cli(config, args, s)
         return
-    if not enabled(config):
-        log.info(f"[{_TAG}] off (sams_podcast false)")
+    if not enabled(config, s):
+        log.info(f"[{tag}] off ({s.prefix} false)")
         return
     dry_run = "--dry-run" in args
     force = "--force" in args
@@ -1518,12 +1667,12 @@ def run_cli(config: dict, data_dir: Path) -> None:
 
     now = datetime.now()
     today = now.strftime("%Y-%m-%d")
-    state = _read_state(data_dir)
+    state = _read_state(data_dir, s)
     episodes = state.setdefault("episodes", {})
     mine = episodes.get(today) or {}
 
     log.info("=" * 60)
-    log.info(f"Rocky — {SHOW_NAME}, {day_label(now)}"
+    log.info(f"Rocky — {s.name}, {day_label(now)}"
              f"{' — DRY RUN' if dry_run else ''}")
     log.info("=" * 60)
 
@@ -1534,105 +1683,112 @@ def run_cli(config: dict, data_dir: Path) -> None:
         try:
             publish_episode(config["transistor_api_key"], mine["episode_id"])
             mine["published"] = True
-            _write_state(data_dir, state)
-            log.info(f"[{_TAG}] published episode {mine['episode_id']} "
+            _write_state(data_dir, state, s)
+            log.info(f"[{tag}] published episode {mine['episode_id']} "
                      f"(created on the earlier run)")
         except Exception as e:
-            log.warning(f"[{_TAG}] publish retry FAILED: {e}")
+            log.warning(f"[{tag}] publish retry FAILED: {e}")
         return
     if not dry_run and not force and mine.get("published"):
-        log.info(f"[{_TAG}] today's episode is already published; --force "
+        log.info(f"[{tag}] today's episode is already published; --force "
                  f"to make another")
         return
 
-    root = research_root(config)
+    root = research_root(config, show=s)
     # PODCAST_STYLE.md: its settings block wins over config.json, and its
     # card sections ride along for collect_cases.
-    style = load_style(config, root)
-    config = apply_settings(config, style["settings"])
-    config["_sams_case_style"] = style["case"]
+    style = load_style(config, root, s)
+    config = apply_settings(config, style["settings"], s)
+    config["_case_style"] = style["case"]
     if style["settings"]:
-        log.info(f"[{_TAG}] style file settings: "
+        log.info(f"[{tag}] style file settings: "
                  f"{', '.join(sorted(style['settings']))}")
 
     from anthropic import Anthropic
     client = Anthropic(api_key=config["anthropic_api_key"])
-    model = config.get("sams_podcast_model") or DEFAULT_MODEL
+    model = config.get(s.key("model")) or DEFAULT_MODEL
     today_s = now.strftime("%Y-%m-%d (%A)")
-    target, max_words = word_limits(config)
-    tags = audio_tags(config)
+    target, max_words = word_limits(config, s)
+    tags = audio_tags(config, s)
     used = {e.get("edition") for d, e in episodes.items()
             if e.get("edition") and not (force and d == today)}
     edition = None
-    if root is None:
-        log.warning(f"[{_TAG}] research folder not found (set "
-                    f"sams_podcast_root); cases only")
+    source = editions_root(config, root, s)
+    if source is None:
+        log.warning(f"[{tag}] {s.edition_word} folder not found (set "
+                    f"{s.key('reports') if s.editions else s.key('root')}); "
+                    f"cases only")
     else:
-        edition = pick_edition(root, now, used)
+        edition = pick_edition(source, now, used, tag)
         if edition is None:
-            log.warning(f"[{_TAG}] no complete, unused research edition for "
-                        f"today or yesterday under {root}; cases only")
+            log.warning(f"[{tag}] no complete, unused {s.edition_word} for "
+                        f"today or yesterday under {source}; cases only")
     topics = [topic_card(client, model, m, today_s, style["topic"],
-                         listener(config))
+                         listener(config, s), s)
               for m in (edition["memos"] if edition else [])]
     for c in topics:
         if c.get("error"):
-            log.warning(f"[{_TAG}] topic {c['title']}: {c['error']}")
+            log.warning(f"[{tag}] topic {c['title']}: {c['error']}")
 
-    cases, note = collect_cases(config, client, model, now, rrids)
+    cases, note = collect_cases(config, client, model, now, rrids, s)
     if note != "ok":
-        log.warning(f"[{_TAG}] no case segment: {note}")
+        log.warning(f"[{tag}] no case segment: {note}")
     active = [c for c in cases if not c.get("quiet") and not c.get("error")]
     good_topics = [c for c in topics if not c.get("error")]
     if not good_topics and not active:
-        log.warning(f"[{_TAG}] nothing to report today (no research cards, no "
-                    f"case activity); no episode")
+        log.warning(f"[{tag}] nothing to report today (no {s.edition_word} "
+                    f"cards, no case activity); no episode")
         return
 
-    title = f"{SHOW_NAME} — {day_label(now)}"
-    notes = render_notes(topics, cases)
-    voices, hosts = _settings(config)
-    archive = (root or data_dir / "sams_podcast") / EPISODES_DIRNAME
+    title = f"{s.name} — {day_label(now)}"
+    notes = render_notes(topics, cases, s)
+    voices, hosts = _settings(config, s)
+    opener = opener_index(config.get(s.key("opener")), now)
+    if config.get(s.key("opener")) == "alternate":
+        log.info(f"[{tag}] {hosts[opener]} opens today")
+    archive = (root or data_dir / s.prefix) / EPISODES_DIRNAME
     covered = earlier_scripts(episodes, archive, now,
-                              repeat_days(config), tags)
-    turns = write_script(client, model, cards_text(topics, cases),
-                         today_s, hosts, listener(config), style["script"],
-                         target, max_words, tags, covered)
+                              repeat_days(config, s), tags, tag)
+    turns = write_script(client, model,
+                         cards_text(topics, cases, s.topic_label),
+                         today_s, hosts, listener(config, s), style["script"],
+                         target, max_words, tags, covered, opener, s)
     if not turns:
-        log.warning(f"[{_TAG}] the script came back empty; no episode")
+        log.warning(f"[{tag}] the script came back empty; no episode")
         return
     import kirsten_podcast as kp
     script = kp.script_text(turns, hosts)
-    log.info(f"[{_TAG}] script: {len(turns)} turns, {kp.word_count(turns)} "
+    log.info(f"[{tag}] script: {len(turns)} turns, {kp.word_count(turns)} "
              f"words; {len(good_topics)} topic(s), {len(active)} active "
              f"case(s), {sum(1 for c in cases if c.get('quiet'))} quiet")
 
     if dry_run:
         out = data_dir / "state"
         out.mkdir(parents=True, exist_ok=True)
-        (out / "sams_podcast_preview.html").write_text(
-            notes_page(notes, title), encoding="utf-8")
-        (out / "sams_podcast_preview.txt").write_text(script, encoding="utf-8")
+        preview = out / f"{s.prefix}_preview"
+        preview.with_suffix(".html").write_text(notes_page(notes, title),
+                                                encoding="utf-8")
+        preview.with_suffix(".txt").write_text(script, encoding="utf-8")
         mp3 = None
         if "--audio" in args:
             if not config.get("elevenlabs_api_key"):
-                log.warning(f"[{_TAG}] --audio needs elevenlabs_api_key")
+                log.warning(f"[{tag}] --audio needs elevenlabs_api_key")
             else:
-                mp3 = out / "sams_podcast_preview.mp3"
+                mp3 = preview.with_suffix(".mp3")
                 parts: list[bytes] = []
                 kp.synthesize(config["elevenlabs_api_key"], turns, voices,
-                              mp3, int(max_words * 0.4) + 20, tag=_TAG,
-                              settings=voice_settings(config), parts=parts)
-                finish_audio(config, intro_path(config, root), mp3, parts,
-                             kp.word_count(turns))
-        log.info(f"[{_TAG}] DRY RUN — would publish {title!r}. Preview: "
-                 f"{out / 'sams_podcast_preview.html'}, script "
-                 f"{out / 'sams_podcast_preview.txt'}"
+                              mp3, int(max_words * 0.4) + 20, tag=tag,
+                              settings=voice_settings(config, s), parts=parts)
+                finish_audio(config, intro_path(config, root, s), mp3, parts,
+                             kp.word_count(turns), log_tag=tag, show=s)
+        log.info(f"[{tag}] DRY RUN — would publish {title!r}. Preview: "
+                 f"{preview.with_suffix('.html')}, script "
+                 f"{preview.with_suffix('.txt')}"
                  + (f", audio {mp3}" if mp3 else ""))
         return
 
     if not config.get("elevenlabs_api_key"):
-        log.warning(f"[{_TAG}] elevenlabs_api_key is not set; no audio, no "
+        log.warning(f"[{tag}] elevenlabs_api_key is not set; no audio, no "
                     f"episode")
         return
     archive.mkdir(parents=True, exist_ok=True)
@@ -1642,11 +1798,12 @@ def run_cli(config: dict, data_dir: Path) -> None:
     mp3 = archive / f"{today}.mp3"
     parts: list[bytes] = []
     kp.synthesize(config["elevenlabs_api_key"], turns, voices, mp3,
-                  int(max_words * 0.4) + 20, tag=_TAG,
-                  settings=voice_settings(config), parts=parts)
+                  int(max_words * 0.4) + 20, tag=tag,
+                  settings=voice_settings(config, s), parts=parts)
     stats: dict = {}
     words = kp.word_count(turns)
-    finish_audio(config, intro_path(config, root), mp3, parts, words, stats)
+    finish_audio(config, intro_path(config, root, s), mp3, parts, words,
+                 stats, log_tag=tag, show=s)
 
     record = {"edition": edition["date"] if edition else None,
               "title": title, "mp3": str(mp3),
@@ -1655,15 +1812,16 @@ def run_cli(config: dict, data_dir: Path) -> None:
               "hosts_seconds": stats.get("hosts"),
               "audio_complete": audio_complete(words, stats.get("hosts"))}
     episodes[today] = record
-    _write_state(data_dir, state)
+    _write_state(data_dir, state, s)
 
     key, show_id = config.get("transistor_api_key"), \
-        config.get("sams_podcast_show_id")
+        config.get(s.key("show_id"))
     if no_publish:
-        log.info(f"[{_TAG}] --no-publish: episode saved to {mp3}, not uploaded")
+        log.info(f"[{tag}] --no-publish: episode saved to {mp3}, not "
+                 f"uploaded")
         return
     if not key or not show_id:
-        log.warning(f"[{_TAG}] transistor_api_key / sams_podcast_show_id not "
+        log.warning(f"[{tag}] transistor_api_key / {s.key('show_id')} not "
                     f"set; episode saved to {mp3}, not published")
         return
     summary = "; ".join([c["title"] for c in good_topics]
@@ -1673,15 +1831,29 @@ def run_cli(config: dict, data_dir: Path) -> None:
         record["episode_id"] = create_episode(key, str(show_id), title,
                                               summary, notes, audio_url,
                                               strip_tags(script, tags))
-        _write_state(data_dir, state)
+        _write_state(data_dir, state, s)
         publish_episode(key, record["episode_id"])
     except Exception as e:
-        log.warning(f"[{_TAG}] publish FAILED: {e}. The episode is saved at "
+        log.warning(f"[{tag}] publish FAILED: {e}. The episode is saved at "
                     f"{mp3}"
                     + ("; rerun to publish the draft episode already created"
                        if record.get("episode_id") else ""))
         return
     record["published"] = True
-    _write_state(data_dir, state)
-    log.info(f"[{_TAG}] published {title!r} to Transistor (episode "
+    _write_state(data_dir, state, s)
+    log.info(f"[{tag}] published {title!r} to Transistor (episode "
              f"{record['episode_id']})")
+
+
+# ---------------------------------------------------------------------------
+# Sam's Podcast: the default show
+# ---------------------------------------------------------------------------
+
+SAMS = Show(
+    prefix="sams_podcast", name=SHOW_NAME, tag=_TAG, flag="--sams-podcast",
+    roots=tuple(_ROOT_CANDIDATES), intro_name=INTRO_NAME,
+    column_words=("sam", "podcast"), hosts=tuple(_DEFAULT_HOSTS),
+    voices=tuple(_DEFAULT_VOICES), listener=_LISTENER, audience="Sam",
+    topic_core=TOPIC_CORE, case_core=CASE_CORE, script_core=SCRIPT_CORE,
+    check_prompt=CHECK_PROMPT, default_style=DEFAULT_STYLE,
+    stability=DEFAULT_STABILITY, audio_tags=AUDIO_TAGS)

@@ -35,13 +35,18 @@
   "kirsten_podcast_voices": ["JBFqnCBsd6RMkjVDRZzb", "EXAVITQu4vr4xnSDxMaL"],
   "kirsten_podcast_hosts": ["George", "Sarah"],
 
-  "_sams_podcast_comment": "Sam's Podcast (--sams-podcast, 6 AM daily): the day's research edition from the Sam's Podcast OneDrive folder (probed under this profile's OneDrive as Podcasts\\Sam's Podcast, then Rocky's files - Sam's Podcast; set sams_podcast_root to pin it) plus yesterday's activity on cases marked yes in the case index's Sam's Podcast column, voiced by ElevenLabs (elevenlabs_api_key above) and published to a PRIVATE Transistor.fm show. transistor_api_key is in Transistor's Account area; --sams-podcast --shows lists show ids for sams_podcast_show_id; --sams-podcast --subscribe EMAIL gives Sam a private feed URL. sams_podcast false turns it off. Hosts, voices, listener, stability, intro timing, length, audio cues and model are set in the settings block at the top of PODCAST_STYLE.md in that folder (it wins over this file), so they change without a rebuild.",
+  "_sams_podcast_comment": "Sam's Podcast (--sams-podcast, 6 AM daily): the day's research edition from the Sam's Podcast OneDrive folder (probed under this profile's OneDrive as Podcasts\\Sam's Podcast, then Rocky's files - Podcasts\\Sam's Podcast, then Rocky's files - Sam's Podcast; set sams_podcast_root to pin it) plus yesterday's activity on cases marked yes in the case index's Sam's Podcast column, voiced by ElevenLabs (elevenlabs_api_key above) and published to a PRIVATE Transistor.fm show. transistor_api_key is in Transistor's Account area; --sams-podcast --shows lists show ids for sams_podcast_show_id; --sams-podcast --subscribe EMAIL gives Sam a private feed URL. sams_podcast false turns it off. Hosts, voices, listener, stability, intro timing, length, audio cues and model are set in the settings block at the top of PODCAST_STYLE.md in that folder (it wins over this file), so they change without a rebuild.",
   "transistor_api_key": "",
   "sams_podcast_show_id": "",
   "sams_podcast": true,
   "sams_podcast_root": "C:\\Users\\rocky\\OneDrive - gejlaw.com\\Podcasts\\Sam's Podcast",
   "sams_podcast_style": "C:\\Users\\rocky\\OneDrive - gejlaw.com\\Podcasts\\Sam's Podcast\\PODCAST_STYLE.md",
   "sams_podcast_intro": "C:\\Users\\rocky\\OneDrive - gejlaw.com\\Podcasts\\Sam's Podcast\\Sam's Soundtrack.wav",
+
+  "_multifamily_feud_comment": "Multifamily Feud (--multifamily-feud, 5 AM daily): Sam's Podcast's engine for an internal class action show. Sources: the day's edition in the Fee Class Action Tracker's Daily Reports folder (found under Rocky Cases by RRID-0045; multifamily_feud_reports pins it) and yesterday's activity on cases marked yes in the case index's Multifamily Feud? column. The show folder (style guide, intro, _Episodes) is probed as Podcasts\\Multifamily Feud, then Rocky's files - Podcasts\\Multifamily Feud; multifamily_feud_root pins it. Shares elevenlabs_api_key and transistor_api_key; multifamily_feud_show_id is its own private Transistor show (--multifamily-feud --shows lists ids; --multifamily-feud --subscribe EMAIL adds a private feed). multifamily_feud false turns it off. Hosts, voices, opener, intro timing, length, cues and model live in PODCAST_STYLE.md in the show folder.",
+  "multifamily_feud_show_id": "",
+  "multifamily_feud": true,
+  "multifamily_feud_root": "C:\\Users\\rocky\\OneDrive - gejlaw.com\\Podcasts\\Multifamily Feud",
 
   "_maple_updater_comment": "Path to the Maple updater's run-daily-update.ps1 (lives in the Maple OneDrive folder, not in Rocky). The dashboard's 'Maple Updater' button/schedule runs this script. Defaults IN CODE to the production path on the Rocky laptop (rocky profile); set this on machines where the Maple folder mounts elsewhere.",
   "maple_updater_script": "C:\\Users\\jbragdon\\OneDrive - gejlaw.com\\Program Files\\Maple\\Maple updater agent\\run-daily-update.ps1",

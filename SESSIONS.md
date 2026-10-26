@@ -24,6 +24,70 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-10-26 — Multifamily Feud (a second show on Sam's engine)
+
+James asked for a daily internal podcast on class action defense that
+tracks Sam's Podcast: grab the day's report, write the script, voice it on
+ElevenLabs with a custom prompt, upload to Transistor. Title "Multifamily
+Feud"; hosts Archie (male) and Frieda (female), taking turns opening; no
+"you"; 5 AM on the Rocky laptop.
+
+**What changed**
+
+- `sams_podcast.py` is now an engine with a `Show` profile; every function
+  takes `show=` and defaults to `SAMS`, so Sam's calls, config keys, state
+  file and tests are unchanged. New `opener` setting (`alternate` swaps
+  daily; Archie on 10/27/2026). Sam's root candidates gained
+  `Rocky's files - Podcasts\Sam's Podcast`.
+- New `multifamily_feud.py` (profile `FEUD`, prompts in the ElevenLabs
+  guide's section format, default style), `rocky.py --multifamily-feud`,
+  dashboard entry (Litigation, 05:00 daily, recommended), build_exe
+  add-data, config.example.json keys. BUILD_REFERENCE.md has the paragraph.
+- Files James and this session set up (outside the repo):
+  `Podcasts\Multifamily Feud` (shared as "Rocky's files - Podcasts" on
+  James's laptop) with `Vintage Swing Intro.wav`, `PROMPTING_GUIDE.md` and
+  the seeded `PODCAST_STYLE.md`; `Daily Reports\REPORT_WORKFLOW.md` in the
+  RRID-0045 folder (the report contract) and a Daily Reports row in its
+  CLAUDE.md folder table, both logged to its activity.jsonl. James added
+  the index column `Multifamily Feud?` (9 cases).
+- Tests: `tests/test_multifamily_feud.py` (14). The Sam's soundtrack test
+  looks under the new share path, so it runs again. Suite 208 pass, 0 skip.
+
+**Verified**
+
+- Real dry run on Opus 5.5: 9 flagged cases from the real index (5 active
+  on 10/25, 4 quiet) plus a sample report edition built from the tracker's
+  CASE_SPINE in the session scratchpad (the real Daily Reports folder is
+  still empty, and a test edition there would air). Frieda opened (10/26 is
+  her day), 58 turns, 1,255 words, every weekday right, work credited by
+  name (Sam Cowin, James Bragdon), no "you", no docket numbers. The fact
+  check made one fix (a proposed Hettinger call said as scheduled).
+- Not voiced (no ElevenLabs key on the dev laptop), not published.
+
+**Open items**
+
+- Voices: Archie = `WLKp2jV6nrS8aMkPPDRO` and Frieda =
+  `BIvP0GN1cAtSRTxNHnWS` is an assumption (James named them "Australian"
+  and "German"). `--dry-run --audio` on the Rocky laptop confirms; swap
+  voice1/voice2 in the style file if wrong.
+- Transistor: create a private "Multifamily Feud" show, put
+  `multifamily_feud_show_id` in `C:\Rocky\config.json`, then
+  `rocky.exe --multifamily-feud --subscribe EMAIL` per listener.
+- The daily report writer and its schedule aren't set; reports must land
+  before 5 AM or they air a day late.
+- Rebuild and deploy rocky.exe and dashboard.exe; schedule from the
+  dashboard.
+
+**Watch-outs**
+
+- James's laptop lost the "Rocky's files - Sam's Podcast" shortcut when
+  the Podcasts folder was shared (10/26 ~11:41). The Rocky laptop's 6 AM
+  run is unaffected.
+- This work is on `time-entries` again (shared with the Time Entries
+  session), so a deploy from its tip carries both.
+
+---
+
 ## Session 2026-10-25 (3) — Time Entries: aliases, then the tuned deploy
 
 **What changed**
