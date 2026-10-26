@@ -293,6 +293,21 @@ ATTACHMENT_TEXT_CAP_PER_FILE = 5000
 # Total text cap across all attachments in a single classification call.
 ATTACHMENT_TEXT_CAP_TOTAL = 20000
 
+# The daily run's own caps. It reads whole documents (a Courthouse News
+# brief runs past 5,000 characters, and its screen has to see all of it)
+# and can return reports, so it gets more room than the classifier.
+DAILY_RUN_TEXT_CAP_PER_FILE = 20000
+DAILY_RUN_TEXT_CAP_TOTAL = 60000
+DAILY_RUN_MAX_TOKENS = 8192
+# Files saved elsewhere in the case folder since the last daily run: listed
+# by name, with a short excerpt of the first few.
+CHANGED_FILES_MAX = 60
+CHANGED_TEXT_CAP_PER_FILE = 3000
+CHANGED_TEXT_CAP_TOTAL = 15000
+# Reports the daily run may write in one run, and their size.
+DAILY_RUN_REPORTS_MAX = 5
+DAILY_RUN_REPORT_CAP = 60000
+
 # Signature-image skip. Email-signature logos/banners/social icons arrive as
 # small image attachments; saving them buries real documents in junk. An image
 # is treated as a signature artifact when it is small AND either flagged inline
@@ -1652,11 +1667,20 @@ Follow the case-specific instructions. Return ONLY a JSON object:
     }
   ],
   "recommendations": ["<0-3 attorney action items for James>"],
-  "internal_suggestions": ["<0-3 case-file maintenance tasks>"]
+  "internal_suggestions": ["<0-3 case-file maintenance tasks>"],
+  "reports": [
+    {
+      "folder": "<existing folder path the instructions name, e.g. Courthouse News/Hit Reports>",
+      "name": "<file name WITHOUT extension, e.g. 2026-10-26 CNS Hit Report>",
+      "text": "<the complete report, in markdown>"
+    }
+  ]
 }
 
 RULES:
-- file_actions: only include entries for files the instructions ask you to classify/file. target_folder MUST be from the AVAILABLE SUBFOLDERS list (or "DISCARD", below). Empty [] if no filing needed or instructions don't request it.
+- file_actions: only include entries for files the instructions ask you to classify/file. target_folder MUST be from the AVAILABLE SUBFOLDERS list, or an existing nested folder path the case instructions name, written with forward slashes (e.g. "Courthouse News/Courthouse News Reports Daily Briefs"), or "DISCARD" (below). Empty [] if no filing needed or instructions don't request it.
+- reports: only when the case instructions ask for a report and say when. Rocky saves each text as "<name>.md" in that folder and never overwrites one. The folder must already exist; never Raw Documents. Write only what the files and activity you were given support. Empty [] when no report is due.
+- FILES ADDED OR CHANGED SINCE THE LAST DAILY RUN is context about the rest of the case folder (work saved by James or project sessions). Those files are not NEW UNPROCESSED FILES and cannot be filed with file_actions.
 - DISCARD: if a file is a non-substantive email artifact — an organizational or firm logo, signature graphic, award badge, banner, or social-media icon with no case content — set target_folder to "DISCARD". Rocky deletes it from Raw Documents. NEVER file such artifacts into a case subfolder, and do not mention them in analysis or recommendations. Only use DISCARD for decorative images/graphics; never for anything with substantive text (screenshots of messages or documents, photographed documents, evidence photos). Judge an image by what it actually shows, never by the surrounding email's topic — a logo attached to a wire-transfer email is still just a logo.
 - recommendations: ATTORNEY ACTIONS ONLY — steps James must take out in the world (court filings, deadlines, communications with opposing counsel/client/court, strategic or legal decisions, monitoring a docket). These surface in James's daily digest. Concrete, not vague. Empty [] if nothing needs his attention.
 - internal_suggestions: case-FILE maintenance you could perform on request — updating the Case Status Memorandum, refreshing the File / Searchable Text / Pleadings indexes, re-filing/renaming/moving documents within the case folder, updating the activity log. These are parked in the activity log for a Claude project session to offer James; they are NEVER surfaced in the daily digest. Do not duplicate an item across both lists. Empty [] if none.
@@ -1964,6 +1988,172 @@ def log_pleading_facts(
     return event
 
 
+# Top-level folders the daily run never files into, reports into or lists.
+DAILY_RUN_SYSTEM_FOLDERS = ("Raw Documents", "_project", "_archived",
+                            "Email Correspondence")
+# Bookkeeping files left out of the changed-files list (CLAUDE.md is in the
+# prompt already, as the instructions).
+_CHANGED_SKIP_NAMES = {"activity.jsonl", "master_file_index.json", "CLAUDE.md"}
+
+
+def case_subfolder(case_folder: Path, rel: str) -> Path | None:
+    """An existing folder inside the case folder, named by a relative path
+    ("Courthouse News/Hit Reports", either slash), or None. Never a system
+    folder (Raw Documents, _project, ...), a hidden folder, or anywhere
+    outside the case folder."""
+    rel = str(rel or "").strip().replace("\\", "/").strip("/")
+    parts = [p.strip() for p in rel.split("/")] if rel else []
+    if not parts or any(p in ("", ".", "..") for p in parts):
+        return None
+    if parts[0] in DAILY_RUN_SYSTEM_FOLDERS or any(p.startswith(".")
+                                                   for p in parts):
+        return None
+    path = case_folder.joinpath(*parts)
+    try:
+        if not path.is_dir():
+            return None
+        path.resolve().relative_to(case_folder.resolve())
+    except (OSError, ValueError):
+        return None
+    return path
+
+
+def _report_name(name) -> str:
+    """A report's file name: no extension, no characters Windows rejects,
+    and no leading . _ or ~ (the podcast skips those as temp files)."""
+    name = str(name or "").strip()
+    if name.lower().endswith(".md"):
+        name = name[:-3]
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "-", name)
+    name = re.sub(r"\s+", " ", name).strip(" .")
+    return name.lstrip("._~ ")[:120].strip(" .")
+
+
+def write_case_reports(case_folder: Path, rrid: str, reports) -> list[Path]:
+    """Write the daily run's reports: each text as "<name>.md" in an
+    existing folder inside the case folder, never over an existing file
+    (" (2)", " (3)" ... instead). Each is logged as report_written. Bad
+    entries are skipped with a warning. Returns the files written."""
+    written: list[Path] = []
+    if not isinstance(reports, list):
+        return written
+    if len(reports) > DAILY_RUN_REPORTS_MAX:
+        log.warning(f"[{rrid}] {len(reports)} reports requested; writing the "
+                    f"first {DAILY_RUN_REPORTS_MAX}")
+    for rep in reports[:DAILY_RUN_REPORTS_MAX]:
+        if not isinstance(rep, dict):
+            continue
+        folder = case_subfolder(case_folder, rep.get("folder"))
+        name = _report_name(rep.get("name"))
+        text = str(rep.get("text") or "").strip()
+        if folder is None or not name or not text:
+            log.warning(f"[{rrid}] report skipped: folder "
+                        f"{rep.get('folder')!r} must already exist in the "
+                        f"case folder, and name and text can't be empty")
+            continue
+        if len(text) > DAILY_RUN_REPORT_CAP:
+            text = text[:DAILY_RUN_REPORT_CAP] + "\n\n[...truncated...]"
+        path, n = folder / f"{name}.md", 2
+        while path.exists():
+            path, n = folder / f"{name} ({n}).md", n + 1
+        partial = path.with_name(path.name + ".partial")
+        try:
+            partial.write_text(text + "\n", encoding="utf-8")
+            os.replace(partial, path)
+        except OSError as e:
+            log.error(f"[{rrid}] could not write report {path}: {e}")
+            try:
+                partial.unlink()
+            except OSError:
+                pass
+            continue
+        rel = path.relative_to(case_folder).as_posix()
+        first = next((ln.strip("# ").strip() for ln in text.splitlines()
+                      if ln.strip()), name)
+        append_case_activity(case_folder, {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "actor": "rocky",
+            "event": "report_written",
+            "rrid": rrid,
+            "path": rel,
+            "summary": first[:200],
+        })
+        log.info(f"[{rrid}] wrote report {rel}")
+        written.append(path)
+    return written
+
+
+def last_daily_run_time(case_folder: Path) -> datetime | None:
+    """When Rocky's last daily run on this case was logged, or None."""
+    last = None
+    for ev in _read_jsonl(case_folder / "activity.jsonl"):
+        if ev.get("event") == "daily_run" and ev.get("actor") == "rocky":
+            ts = _parse_iso(ev.get("timestamp"))
+            if ts and (last is None or ts > last):
+                last = ts
+    return last
+
+
+def changed_files_since(case_folder: Path, since: datetime,
+                        skip: set[str] | None = None) -> list[Path]:
+    """Files saved anywhere in the case folder since `since`, newest first,
+    at most CHANGED_FILES_MAX: outside the system folders, hidden and
+    underscore folders (_archive, _spine_text, ...), the bookkeeping files,
+    temp files, and any relative path in skip (what Rocky filed or wrote
+    itself)."""
+    skip = skip or set()
+    cutoff = since.timestamp()
+    found: list[tuple[float, Path]] = []
+    for dirpath, dirnames, filenames in os.walk(case_folder):
+        here = Path(dirpath)
+        top = here == case_folder
+        dirnames[:] = [d for d in dirnames
+                       if not d.startswith((".", "_"))
+                       and not (top and d in DAILY_RUN_SYSTEM_FOLDERS)]
+        for name in filenames:
+            if name.startswith((".", "~$")) or name in _CHANGED_SKIP_NAMES \
+                    or name.endswith((".tmp", ".partial")):
+                continue
+            path = here / name
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                continue
+            if mtime < cutoff:
+                continue
+            if path.relative_to(case_folder).as_posix() in skip:
+                continue
+            found.append((mtime, path))
+    found.sort(key=lambda t: t[0], reverse=True)
+    return [p for _, p in found[:CHANGED_FILES_MAX]]
+
+
+def changed_files_block(case_folder: Path, files: list[Path]) -> str:
+    """The prompt's list of changed files: each path and save time, with a
+    short text excerpt for the first ones until the budget runs out."""
+    lines, budget = [], CHANGED_TEXT_CAP_TOTAL
+    for path in files:
+        rel = path.relative_to(case_folder).as_posix()
+        try:
+            saved = datetime.fromtimestamp(path.stat().st_mtime).strftime(
+                "%Y-%m-%d %H:%M")
+        except OSError:
+            continue                      # gone since the scan
+
+        lines.append(f"- **{rel}** (saved {saved})")
+        if budget <= 0:
+            continue
+        text = (extract_text_from_path(path) or "").strip()
+        if not text:
+            continue
+        excerpt = text[:min(CHANGED_TEXT_CAP_PER_FILE, budget)]
+        if len(text) > len(excerpt):
+            excerpt += "\n[...truncated...]"
+        lines.append(f"```\n{excerpt}\n```")
+        budget -= len(excerpt)
+    return "\n".join(lines)
+
+
 def process_case_folder(
     client: Anthropic,
     case_folder: Path,
@@ -2006,7 +2196,7 @@ def process_case_folder(
     available_folders = sorted(
         d.name for d in case_folder.iterdir()
         if d.is_dir()
-        and d.name not in ("Raw Documents", "_project", "_archived", "Email Correspondence")
+        and d.name not in DAILY_RUN_SYSTEM_FOLDERS
         and not d.name.startswith(".")
     )
 
@@ -2060,13 +2250,13 @@ def process_case_folder(
     for f, text in new_raws:
         block = f"- **{f.name}**"
         if text:
-            capped = text[:ATTACHMENT_TEXT_CAP_PER_FILE]
-            if len(text) > ATTACHMENT_TEXT_CAP_PER_FILE:
+            capped = text[:DAILY_RUN_TEXT_CAP_PER_FILE]
+            if len(text) > DAILY_RUN_TEXT_CAP_PER_FILE:
                 capped += "\n[...truncated...]"
             block += f"\n```\n{capped}\n```"
         file_blocks.append(block)
         total_chars += len(block)
-        if total_chars > ATTACHMENT_TEXT_CAP_TOTAL:
+        if total_chars > DAILY_RUN_TEXT_CAP_TOTAL:
             file_blocks.append(f"[{len(new_raws) - len(file_blocks)} more file(s) omitted — total cap reached]")
             break
 
@@ -2079,6 +2269,18 @@ def process_case_folder(
         for ev in recent_activity[-20:]:  # cap to last 20 events
             lines.append(f"- [{ev.get('timestamp', '?')}] {ev.get('event')}: {ev.get('summary') or ev.get('subject') or ''}")
         activity_summary = "\n".join(lines)
+
+    # Everything else saved in the case folder since the last daily run (a
+    # day back when there is none, a week at most), less what Rocky filed or
+    # wrote itself, so the run can see work added by James or a session.
+    now_utc = datetime.now(timezone.utc)
+    changed_since = last_daily_run_time(case_folder) or now_utc - timedelta(days=1)
+    changed_since = max(changed_since, now_utc - timedelta(days=7))
+    rocky_paths = {e["path"] for e in index.get("files", []) if e.get("path")}
+    rocky_paths |= {e["path"] for e in recent_activity
+                    if e.get("event") == "report_written" and e.get("path")}
+    changed = changed_files_since(case_folder, changed_since, rocky_paths)
+    changed_block = changed_files_block(case_folder, changed)
 
     user_prompt = f"""CASE-SPECIFIC INSTRUCTIONS (from _project/claude.md):
 {case_instructions}
@@ -2096,6 +2298,9 @@ NEW UNPROCESSED FILES IN Raw Documents/ ({len(new_raws)} file(s)):
 RECENT ACTIVITY (last 48h):
 {activity_summary if activity_summary else '(none)'}
 
+FILES ADDED OR CHANGED SINCE THE LAST DAILY RUN (outside Raw Documents; {len(changed)} file(s)):
+{changed_block if changed_block else '(none)'}
+
 {f'Global instructions from James:{chr(10)}{global_instructions}{chr(10)}---' if global_instructions else ''}
 
 Follow the case-specific instructions above. Return ONLY the JSON object."""
@@ -2104,7 +2309,7 @@ Follow the case-specific instructions above. Return ONLY the JSON object."""
     try:
         response = client.messages.create(
             model=CLAUDE_MODEL,
-            max_tokens=2048,
+            max_tokens=DAILY_RUN_MAX_TOKENS,
             system=DAILY_RUN_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_prompt}],
         )
@@ -2138,6 +2343,9 @@ Follow the case-specific instructions above. Return ONLY the JSON object."""
     file_actions = result.get("file_actions", [])
     recommendations = result.get("recommendations", [])
     internal_suggestions = result.get("internal_suggestions", [])
+    reports = result.get("reports") or []
+    if not isinstance(reports, list):
+        reports = []
     discards_requested = sum(
         1 for a in file_actions
         if str(a.get("target_folder", "")).strip().upper() == "DISCARD"
@@ -2155,7 +2363,13 @@ Follow the case-specific instructions above. Return ONLY the JSON object."""
         "file_actions_requested": len(file_actions),
         "discards_requested": discards_requested,
         "new_raw_files_seen": len(new_raws),
+        "changed_files_seen": len(changed),
+        "reports_requested": len(reports),
     })
+
+    # Reports the instructions asked for (the Multifamily Feud podcast's hit
+    # reports and tracked-case summaries, for one).
+    reports_written = write_case_reports(case_folder, rrid, reports)
 
     # Internal case-file maintenance is parked for a project session, not the
     # digest. Point CLAUDE.md at the activity log so it gets offered to James.
@@ -2276,7 +2490,17 @@ Follow the case-specific instructions above. Return ONLY the JSON object."""
             handled_names.add(raw_file.name)
             continue
 
-        if target_folder_name not in available_folders:
+        # A nested target ("Courthouse News/Hit Reports") must already exist
+        # inside the case folder; otherwise it falls back like any unknown
+        # folder.
+        nested_dir = None
+        if target_folder_name not in available_folders and \
+                re.search(r"[/\\]", str(target_folder_name)):
+            nested_dir = case_subfolder(case_folder, target_folder_name)
+            if nested_dir is not None:
+                target_folder_name = nested_dir.relative_to(case_folder).as_posix()
+
+        if target_folder_name not in available_folders and nested_dir is None:
             fallback = next(
                 (f for f in available_folders if f.lower() in ("miscellaneous", "misc")),
                 available_folders[0] if available_folders else None,
@@ -2342,7 +2566,10 @@ Follow the case-specific instructions above. Return ONLY the JSON object."""
 
         # A court filing's dated facts go into the case timeline. Uses the
         # full text, not the prompt-capped excerpt the filing call saw.
-        if _is_court_filing_folder(target_folder_name):
+        # Judged by the top-level folder, so a pleading filed under a tracked
+        # outside case ("Tracked Cases/.../Pleadings") stays out of this
+        # case's own timeline.
+        if _is_court_filing_folder(target_folder_name.split("/")[0]):
             full_text = extract_text_from_path(raw_file)
             if full_text:
                 log_pleading_facts(
@@ -2400,7 +2627,7 @@ Follow the case-specific instructions above. Return ONLY the JSON object."""
     save_master_index(index_path, index)
     return {"rrid": rrid, "processed": processed, "skipped": skipped,
             "discarded": discarded, "errors": errors,
-            "parked": len(parked_names)}
+            "parked": len(parked_names), "reports": len(reports_written)}
 
 
 def daily_run(
@@ -4401,6 +4628,7 @@ def run_daily_run_cli() -> None:
             f"  {r['rrid']}: processed {r.get('processed', 0)}, "
             f"skipped {r.get('skipped', 0)}, errors {r.get('errors', 0)}"
             + (f", parked {r.get('parked', 0)}" if r.get('parked') else "")
+            + (f", reports {r.get('reports', 0)}" if r.get('reports') else "")
             + (f" — {r.get('reason')}" if r.get('reason') else "")
         )
     log.info(f"Total: {total_processed} filed, {total_errors} error(s).")

@@ -7,8 +7,9 @@ prompts, and a dry run end to end with Claude stubbed out.
 """
 
 import json
+import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -20,8 +21,7 @@ import sams_podcast as sp  # noqa: E402
 FEUD = mf.FEUD
 
 MEMO = """---
-topic: "Court decisions"
-edition_date: "2026-10-27"
+topic: "Research"
 ---
 
 ## Lead
@@ -29,51 +29,113 @@ edition_date: "2026-10-27"
 Judge Chhabria dismissed the CLRA claim in McAdams v. Essex.
 """
 
-
-def _report(reports, day):
-    folder = reports / day
-    folder.mkdir(parents=True)
-    names = [("Court decisions", "01-decisions.md"),
-             ("Tracked cases", "02-tracked-cases.md"),
-             ("Bearing on our matters", "03-our-matters.md")]
-    for _, name in names:
-        (folder / name).write_text(MEMO, encoding="utf-8")
-    (folder / "manifest.json").write_text(json.dumps({
-        "schema_version": 1, "edition_date": day, "status": "complete",
-        "memos": [{"topic": t, "file": f} for t, f in names]}),
-        encoding="utf-8")
-    return folder
+FOLDERS = {"research": ("Daily ChatGPT research",),
+           "hits": ("Courthouse News", "Hit Reports"),
+           "summary": ("Tracked Cases", "Daily Summary of Tracked Cases")}
 
 
-def _cases_root(tmp_path):
+def _case_folder(tmp_path):
     cases = tmp_path / "Rocky Cases"
-    reports = cases / "Fee Class Action Tracker (RRID-0045)" / "Daily Reports"
-    reports.mkdir(parents=True)
-    return cases, reports
+    folder = cases / "Multifamily Feud (RRID-0045)"
+    for parts in FOLDERS.values():
+        folder.joinpath(*parts).mkdir(parents=True)
+    return cases, folder
 
 
-def test_reports_folder_found_by_rrid(tmp_path):
-    cases, reports = _cases_root(tmp_path)
-    assert mf.reports_root({"cases_root": str(cases)}) == reports
+def _put(folder, source, name, text=MEMO, mtime=None):
+    path = folder.joinpath(*FOLDERS[source], name)
+    path.write_text(text, encoding="utf-8")
+    if mtime is not None:
+        os.utime(path, (mtime, mtime))
+    return path
+
+
+def _old(days):
+    """A save time comfortably outside the settle window."""
+    return (datetime.now() - timedelta(days=days, minutes=10)).timestamp()
+
+
+def test_case_folder_found_by_rrid(tmp_path):
+    cases, folder = _case_folder(tmp_path)
+    assert mf.tracker_root({"cases_root": str(cases)}) == folder
     other = tmp_path / "elsewhere"
     other.mkdir()
-    assert mf.reports_root({"cases_root": str(cases),
-                            "multifamily_feud_reports": str(other)}) == other
-    assert sp.editions_root({"cases_root": str(cases)}, tmp_path,
-                            FEUD) == reports
-    # Sam's editions stay in its own folder.
-    assert sp.editions_root({}, tmp_path) == tmp_path
+    assert mf.tracker_root({"cases_root": str(cases),
+                            "multifamily_feud_folder": str(other)}) == other
 
 
-def test_report_edition_loads_with_the_shared_contract(tmp_path):
-    _, reports = _cases_root(tmp_path)
-    _report(reports, "2026-10-27")
-    edition = sp.pick_edition(reports, datetime(2026, 10, 27), set(),
-                              mf._TAG)
-    assert edition["date"] == "2026-10-27"
-    assert [m["file"] for m in edition["memos"]] == [
-        "01-decisions.md", "02-tracked-cases.md", "03-our-matters.md"]
-    assert edition["memos"][0]["text"].startswith("## Lead")
+def test_gather_reads_the_three_folders_and_skips_the_rest(tmp_path):
+    cases, folder = _case_folder(tmp_path)
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    two_ago = (now - timedelta(days=2)).strftime("%Y-%m-%d")
+    _put(folder, "research", f"{today}_Research_Memo.md", mtime=_old(0))
+    _put(folder, "research", f"{two_ago}_Research_Memo.md", mtime=_old(0))
+    _put(folder, "hits", "CNS hit report.md", mtime=_old(1))     # by save day
+    _put(folder, "hits", "old hit.md", mtime=_old(3))
+    _put(folder, "summary", f"{yesterday} summary.txt", mtime=_old(0))
+    _put(folder, "summary", "~$draft.md", mtime=_old(0))
+    _put(folder, "summary", "notes.json", mtime=_old(0))
+    (folder / "Daily ChatGPT research" / ".research_work").mkdir()
+    _put(folder, "research", f".research_work/{today}_memo.pending.md",
+         mtime=_old(0))
+    edition = mf.gather({"cases_root": str(cases)}, now, set())
+    assert [(m["topic"], m["file"]) for m in edition["memos"]] == [
+        ("Daily research memo", f"{today}_Research_Memo.md"),
+        ("Courthouse News hits", "CNS hit report.md"),
+        ("Tracked cases summary", f"{yesterday} summary.txt")]
+    assert edition["memos"][0]["text"].startswith("## Lead")  # front matter off
+    assert len(edition["inputs"]) == 3
+    assert edition["inputs"][0].startswith(
+        f"Daily ChatGPT research/{today}_Research_Memo.md@")
+
+
+def test_gather_uses_each_file_once_unless_saved_again(tmp_path):
+    cases, folder = _case_folder(tmp_path)
+    now = datetime.now()
+    path = _put(folder, "hits", "CNS hit report.md", mtime=_old(0))
+    config = {"cases_root": str(cases)}
+    first = mf.gather(config, now, set())
+    assert mf.gather(config, now, set(first["inputs"])) is None
+    os.utime(path, (_old(0) + 60, _old(0) + 60))               # saved again
+    assert mf.gather(config, now, set(first["inputs"]))["memos"]
+
+
+def test_gather_waits_for_a_file_still_being_saved(tmp_path):
+    cases, folder = _case_folder(tmp_path)
+    _put(folder, "summary", "summary.md")                       # saved just now
+    assert mf.gather({"cases_root": str(cases)}, datetime.now(), set()) is None
+
+
+def test_gather_survives_a_missing_folder_and_empty_files(tmp_path):
+    cases, folder = _case_folder(tmp_path)
+    (folder / "Courthouse News" / "Hit Reports").rmdir()
+    _put(folder, "summary", "summary.md", text="   ", mtime=_old(0))
+    _put(folder, "research", "memo.md", mtime=_old(0))
+    edition = mf.gather({"cases_root": str(cases)}, datetime.now(), set())
+    assert [m["topic"] for m in edition["memos"]] == ["Daily research memo"]
+
+
+def test_long_report_split_at_headings():
+    text = ("# Title\nintro\n## A\n" + "a" * 30 + "\n## B\n" + "b" * 30
+            + "\n## C\n" + "c" * 90 + "\n")
+    pieces = mf.split_report(text, cap=60)
+    assert pieces[0].startswith("# Title") and "## A" in pieces[0]
+    assert pieces[1].startswith("## B")
+    assert all(len(p) <= 60 for p in pieces)
+    assert "".join(pieces).count("c") == 90
+    assert mf.split_report("short") == ["short"]
+
+
+def test_split_pieces_become_numbered_cards(tmp_path):
+    cases, folder = _case_folder(tmp_path)
+    big = "".join(f"## Part {i}\n" + "x" * 5000 + "\n" for i in range(4))
+    _put(folder, "research", "memo.md", text=big, mtime=_old(0))
+    edition = mf.gather({"cases_root": str(cases)}, datetime.now(), set())
+    assert [m["topic"] for m in edition["memos"]] == [
+        "Daily research memo (1 of 2)", "Daily research memo (2 of 2)"]
+    assert len(edition["inputs"]) == 1
 
 
 def test_show_folder_probes_both_onedrive_names(tmp_path):
@@ -130,8 +192,24 @@ def test_style_file_seeded_with_the_show_settings(tmp_path):
     assert config["multifamily_feud_voices"] == ["WLKp2jV6nrS8aMkPPDRO",
                                                  "BIvP0GN1cAtSRTxNHnWS"]
     assert sp.word_limits(config, FEUD) == (1400, 1600)
-    assert sp.voice_settings(config, FEUD) == {"stability": 0.5}
+    assert sp.voice_settings(config, FEUD) == {"stability": 0.0}
     assert "sams_podcast_hosts" not in config
+
+
+def test_style_tags_and_joes_preferences_reach_the_script():
+    style = sp.load_style({}, None, FEUD)
+    tags = style["settings"]["multifamily_feud_audio_tags"]
+    assert tags == list(mf.AUDIO_TAGS) and "jumping in" in tags
+    # The two-word cue survives cleaning; a cue not on the list doesn't.
+    assert sp.clean_text("[jumping in] With prejudice? [shouts] Damn.",
+                         tags) == "[jumping in] With prejudice? Damn."
+    prompt = sp.script_prompt(style["script"], ["Archie", "Frieda"], "", 1400,
+                              1600, tags, opener=0, show=FEUD)
+    assert "## Joe's preferences" in prompt and "the bullet wins" in prompt
+    assert "## Voice cues" in prompt and "[interrupting]" in prompt
+    assert "HOW THE SCRIPT IS ANNOTATED" not in prompt        # comment stripped
+    assert "That's the Feud. Back tomorrow." in prompt
+    assert "See you" not in prompt
 
 
 def test_opener_setting_is_checked():
@@ -178,7 +256,7 @@ def test_notes_headings_and_cards_label():
                "upcoming": [], "angles": []}]
     cases = [{"kind": "case", "quiet": True, "title": "Hettinger"}]
     notes = sp.render_notes(topics, cases, FEUD)
-    assert "<h2>The report</h2>" in notes and "<h2>Our docket</h2>" in notes
+    assert "<h2>Outside news</h2>" in notes and "<h2>Our docket</h2>" in notes
     assert "Sports" not in notes
     assert sp.cards_text(topics, cases, FEUD.topic_label).startswith(
         "REPORT: Court decisions")
@@ -192,18 +270,21 @@ def test_dashboard_entry_daily_5am():
 
 
 def test_dry_run_end_to_end(monkeypatch, tmp_path):
-    """Report edition -> cards -> script -> fact check -> preview files, with
-    Claude stubbed. The opener and the show's own prompts reach the calls."""
-    cases_root, reports = _cases_root(tmp_path)
+    """The three report folders -> cards -> script -> fact check -> preview
+    files, with Claude stubbed. The opener and the show's own prompts reach
+    the calls; files an earlier episode used are skipped."""
+    cases_root, folder = _case_folder(tmp_path)
     today = datetime.now().strftime("%Y-%m-%d")
-    _report(reports, today)
+    _put(folder, "research", f"{today}_Research_Memo.md", mtime=_old(0))
+    _put(folder, "hits", f"{today} CNS hits.md", mtime=_old(0))
+    _put(folder, "summary", f"{today} tracked cases.md", mtime=_old(0))
     show_root = tmp_path / "Multifamily Feud"
     show_root.mkdir()
     systems = []
 
     def fake_ask(client, model, system, messages, **kw):
         systems.append(system)
-        if system.startswith("# Goal\n\nTurn one section"):
+        if system.startswith("# Goal\n\nTurn one of today's reports"):
             return json.dumps({"headline": "McAdams v. Essex dismissed.",
                                "developments": ["Judge Chhabria dismissed "
                                                 "the CLRA claim."],
@@ -226,8 +307,9 @@ def test_dry_run_end_to_end(monkeypatch, tmp_path):
                                            "title": "Hettinger"}], "ok"))
     monkeypatch.setattr(sys, "argv", ["rocky.py", "--multifamily-feud",
                                       "--dry-run"])
-    mf.run_cli({"anthropic_api_key": "K", "cases_root": str(cases_root),
-                "multifamily_feud_root": str(show_root)}, tmp_path)
+    config = {"anthropic_api_key": "K", "cases_root": str(cases_root),
+              "multifamily_feud_root": str(show_root)}
+    mf.run_cli(dict(config), tmp_path)
 
     state = tmp_path / "state"
     script = (state / "multifamily_feud_preview.txt").read_text(
@@ -236,12 +318,24 @@ def test_dry_run_end_to_end(monkeypatch, tmp_path):
         encoding="utf-8")
     assert script.startswith("ARCHIE: Welcome") or \
         script.startswith("FRIEDA: Welcome")
-    assert "Multifamily Feud" in notes and "Court decisions" in notes
+    assert "Multifamily Feud" in notes and "<h2>Outside news</h2>" in notes
+    assert "Courthouse News hits" in notes and "Tracked cases summary" in notes
     assert (show_root / "PODCAST_STYLE.md").is_file()         # seeded
     assert not (state / "sams_podcast_preview.txt").exists()
     # Three report cards, one script call, one fact check, all the show's own.
-    assert sum(s.startswith("# Goal\n\nTurn one section") for s in systems) == 3
+    card = "# Goal\n\nTurn one of today's reports"
+    assert sum(s.startswith(card) for s in systems) == 3
     script_system = next(s for s in systems if "Write the script" in s)
     opener = ["Archie", "Frieda"][sp.opener_index("alternate", datetime.now())]
     assert f"{opener} opens today's show" in script_system
     assert systems[-1] == mf.CHECK_PROMPT
+
+    # An episode yesterday already used two of the files: only the third
+    # makes a card.
+    keys = mf.gather(config, datetime.now(), set())["inputs"]
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    (state / "multifamily_feud.json").write_text(json.dumps(
+        {"episodes": {yesterday: {"inputs": keys[:2]}}}), encoding="utf-8")
+    systems.clear()
+    mf.run_cli(dict(config), tmp_path)
+    assert sum(s.startswith(card) for s in systems) == 1

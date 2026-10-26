@@ -137,9 +137,12 @@ class Show:
     topics_heading: str = "Sports"
     cases_heading: str = "Cases"
     edition_word: str = "research edition"
-    # Where the dated editions live, given (config, show folder). None = in
-    # the show folder itself (Sam's research automation writes there).
-    editions: Callable | None = None
+    # A show that doesn't read dated research editions from its folder
+    # gathers its own material: (config, now, used inputs, tag) -> an
+    # edition {"date", "memos", "inputs"} or None. "inputs" names what it
+    # used, recorded on the episode so the next run skips it. None = Sam's
+    # dated editions in the show folder.
+    gather: Callable | None = None
     stability: float | None = 0.0
     audio_tags: tuple = ("excited", "cheerfully", "laughs", "chuckles")
 
@@ -919,15 +922,6 @@ def research_root(config: dict, home: Path | None = None,
                          f"using {home / rel}")
             return home / rel
     return None
-
-
-def editions_root(config: dict, root: Path | None,
-                  show: Show | None = None) -> Path | None:
-    """Where the dated editions are: the show folder itself, unless the show
-    reads them from somewhere else (Multifamily Feud: the tracker's Daily
-    Reports folder in Rocky Cases)."""
-    s = _sh(show)
-    return s.editions(config, root) if s.editions else root
 
 
 # ---------------------------------------------------------------------------
@@ -1713,16 +1707,21 @@ def run_cli(config: dict, data_dir: Path, show: Show | None = None) -> None:
     used = {e.get("edition") for d, e in episodes.items()
             if e.get("edition") and not (force and d == today)}
     edition = None
-    source = editions_root(config, root, s)
-    if source is None:
+    if s.gather:
+        used_inputs = {i for d, e in episodes.items()
+                       if not (force and d == today)
+                       for i in e.get("inputs") or []}
+        edition = s.gather(config, now, used_inputs, tag)
+        if edition is None:
+            log.info(f"[{tag}] no new {s.edition_word} today; cases only")
+    elif root is None:
         log.warning(f"[{tag}] {s.edition_word} folder not found (set "
-                    f"{s.key('reports') if s.editions else s.key('root')}); "
-                    f"cases only")
+                    f"{s.key('root')}); cases only")
     else:
-        edition = pick_edition(source, now, used, tag)
+        edition = pick_edition(root, now, used, tag)
         if edition is None:
             log.warning(f"[{tag}] no complete, unused {s.edition_word} for "
-                        f"today or yesterday under {source}; cases only")
+                        f"today or yesterday under {root}; cases only")
     topics = [topic_card(client, model, m, today_s, style["topic"],
                          listener(config, s), s)
               for m in (edition["memos"] if edition else [])]
@@ -1806,6 +1805,8 @@ def run_cli(config: dict, data_dir: Path, show: Show | None = None) -> None:
                  stats, log_tag=tag, show=s)
 
     record = {"edition": edition["date"] if edition else None,
+              **({"inputs": edition["inputs"]}
+                 if edition and edition.get("inputs") else {}),
               "title": title, "mp3": str(mp3),
               "cases": [c["title"] for c in cases if not c.get("quiet")],
               "published": False, "words": words,

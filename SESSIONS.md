@@ -24,6 +24,113 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-10-26 (2) — Multifamily Feud: Joe's style, four sources
+
+After the deploy, James set the show's tone and replaced its source.
+
+**What changed**
+
+- Style (`PODCAST_STYLE.md` live copy and `DEFAULT_STYLE`, identical):
+  - Joe is the main listener, with the class action group later. He isn't
+    named or addressed on air.
+  - Quick and quippy, with light profanity (damn, hell, crap, ass, at most
+    a couple of "shit") aimed at rulings and never at a named person.
+  - Real interplay between the hosts. Technical, with terms of art left
+    undefined.
+  - New sections: Audience, Interplay, Voice cues, and `## Joe's
+    preferences`, whose dated bullets win over the rest.
+  - A comment block on annotating for Eleven v3, from ElevenLabs' best
+    practices page and its v3 audio tags post: tags right before the words
+    they color; cut-ins as a dash plus [jumping in] or [interrupting]; CAPS
+    for stress; ellipses only before a punchline; light tagging.
+  - Stability 0.0 (Sam's "peppy" setting) and 10 cues. Sign-off is now
+    "That's the Feud. Back tomorrow." (no "you").
+  - Segment labels are never read aloud. The first dry run said "Close.".
+- Sources: James renamed the case folder `Multifamily Feud (RRID-0045)`,
+  deleted `Daily Reports` and `REPORT_WORKFLOW.md`, and named four sources:
+  - case activity on the flagged cases;
+  - `Daily ChatGPT research\`;
+  - `Courthouse News\Hit Reports\`;
+  - `Tracked Cases\Daily Summary of Tracked Cases\`.
+- Engine: the `Show.editions` hook and `editions_root` are replaced by
+  `Show.gather`. Sam's path is unchanged. A gathered edition carries
+  `inputs`, and each episode records them.
+- `multifamily_feud.gather` reads the three folders. It takes readable
+  files dated today or yesterday, used once by `path@mtime`, and skips
+  anything saved in the last 2 minutes. `split_report` splits a long file
+  at its `## ` headings, at most 12,000 characters a card.
+- Card and script prompts now name the three report types, and they never
+  mention ChatGPT, the memos or the hit reports.
+- `multifamily_feud_reports` is replaced by `multifamily_feud_folder`.
+  Notes are now headed "Outside news".
+- The case folder got `PROMPT - Update CLAUDE.md for the Multifamily Feud
+  reports.md`, logged to its activity.jsonl. It brings CLAUDE.md's paths
+  up to date after the move. It adds CNS brief filing to `Courthouse
+  News\Courthouse News Reports Daily Briefs`, a hit report when the screen
+  finds an item, a tracked-cases summary when tracked cases have activity,
+  both report formats, and the podcast-sources rules.
+- Tests: 214 pass. The collector tests replace the edition-contract
+  tests, and the dry-run test checks that used inputs are skipped.
+
+**Verified**
+
+- Dry run, sample edition and new style: 68 turns and 1,371 words. It
+  quipped, swore lightly, used one cut-in, stayed technical, and read
+  "Close." aloud, which the next fix stopped. The rerun ran 57 turns with
+  no label and no "you".
+- Dry run on the real case folder (read only): two research memos (10/25
+  and 10/26, because it was the first run), split into 7 cards. "Nothing
+  new" in the other two folders. 70 turns, 1,240 words, no
+  ChatGPT/memo/report leaks.
+- The case index raised a PermissionError on that run, likely because it
+  was open in Excel, so it had no docket segment.
+
+**Then, approved by James: the daily run writes reports**
+
+- Before this, Rocky's daily run returned analysis, recommendations,
+  suggestions and `file_actions` to top-level folders only. It saw 5,000
+  characters of each new file (20,000 total) and replied within 2,048
+  tokens. It still runs on `claude-sonnet-4-5`.
+- `rocky.py` changes:
+  - a `reports` output, written by `write_case_reports` and gated by
+    `case_subfolder`;
+  - nested `file_actions` targets;
+  - FILES ADDED OR CHANGED SINCE THE LAST DAILY RUN in the prompt
+    (`changed_files_since` / `changed_files_block`);
+  - the daily run's own caps: 20,000 characters per file, 60,000 total,
+    8,192 tokens;
+  - pleading facts judged by the top-level folder.
+- BUILD_REFERENCE Stage 2, item 9 has the details. Tests:
+  `tests/test_daily_run.py` (8); the suite passes 222.
+- A read-only preview on RRID-0045 shows 4 changed files since the 10/25
+  run (the prompt file and the ChatGPT research files), a 6.4 KB block.
+- No live daily run here: it would file and log into the real case
+  folder. The Rocky laptop's 4:30 PM run is the first real one.
+- The prompt file's header now says the build is in, and it describes
+  the report limits.
+
+**Open items**
+
+- Run `PROMPT - Update CLAUDE.md for the Multifamily Feud reports.md` in
+  a project session on the case folder. Until then RRID-0045's CLAUDE.md
+  still files CNS briefs to `Source Materials`, which is gone. They fall
+  back to the first top-level folder, `Courthouse News`.
+- The first real hit report and tracked-case summary: check the 4:30 PM
+  run's `report_written` events after the CLAUDE.md update.
+
+**Watch-outs**
+
+- Another session has uncommitted edits in the same checkout: the
+  `Daily Digests` to `_Daily Digests` rename in rocky.py,
+  tests/test_daily_digest.py, ROCKY_LAPTOP_SETUP.md, Rocky_Overview.html
+  and line 453 of BUILD_REFERENCE.md. Stage only this session's hunks.
+  This session's build came from a clean export of its own commit, so
+  the deployed exe doesn't carry that rename.
+- In this environment's Bash tool, heredocs lose backslashes. Write
+  Python patch scripts to a file instead.
+
+---
+
 ## Session 2026-10-26 — Multifamily Feud (a second show on Sam's engine)
 
 James asked for a daily internal podcast on class action defense that
