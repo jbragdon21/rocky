@@ -192,7 +192,7 @@ def test_style_file_seeded_with_the_show_settings(tmp_path):
     assert config["multifamily_feud_voices"] == ["WLKp2jV6nrS8aMkPPDRO",
                                                  "BIvP0GN1cAtSRTxNHnWS"]
     assert sp.word_limits(config, FEUD) == (1400, 1600)
-    assert sp.voice_settings(config, FEUD) == {"stability": 0.0}
+    assert sp.voice_settings(config, FEUD) == {"stability": 0.5}
     assert "sams_podcast_hosts" not in config
 
 

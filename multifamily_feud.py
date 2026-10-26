@@ -337,7 +337,7 @@ Check every turn, one claim at a time, including the opening preview and the clo
 Find every turn that states something the cards do not support: a holding, ruling, date, court, judge, party, amount or name not in the cards; a fact moved to the wrong case (one case's ruling credited to another, or an outside decision presented as one of our own cases); a past date presented as upcoming; something pending, reported or unconfirmed presented as decided; a prediction of how a case will come out; or anyone's work described as "you". A weekday is wrong only if the CALENDAR says so: never change one from your own reckoning. A brief callback to an earlier episode ("again", "as we said yesterday") is fine when ALREADY COVERED says it; anything else must be on today's cards. The hosts' discussion of a card's angles, given as their view, is fine. Delivery cues in brackets ([curious], [chuckles], ...) are not claims: leave them. Wording and style are not your concern.
 
 Return ONLY a JSON object:
-{"fixes": [{"turn": <number>, "problem": "<short reason>", "text": "<the whole turn rewritten to say only what the cards support, same speaker voice, or empty to drop the turn>"}]}
+{"fixes": [{"turn": <number>, "problem": "<short reason>", "text": "<the whole turn rewritten to say only what the cards support, same speaker voice and tone, swearing included, or empty to drop the turn>"}]}
 
 Return {"fixes": []} if every turn is supported. Output the JSON object and nothing else."""
 
@@ -347,7 +347,7 @@ voice1: WLKp2jV6nrS8aMkPPDRO
 host2: Frieda
 voice2: BIvP0GN1cAtSRTxNHnWS
 opener: alternate
-stability: 0.0
+stability: 0.5
 intro_file: Vintage Swing Intro.wav
 intro_seconds: 18
 intro_fade_seconds: 4
@@ -379,8 +379,10 @@ over config.json.
                           host always opens
   stability               0 = most expressive and most responsive to the
                           delivery cues, 1 = steadiest; ElevenLabs' own
-                          default is 0.5; "default" sends none. 0.0 is what
-                          Sam's Podcast uses for its peppy pace
+                          default is 0.5; "default" sends none. 0.5
+                          (Natural) keeps each voice closest to its
+                          sample; 0.0 (Creative) let both voices drift
+                          away from theirs on 10/26/2026
   intro_file              the intro music: a .wav, .flac or .mp3 in this
                           folder (or a full path); none = no intro
   intro_seconds           how much of it plays; 18 ends on the swing track's
@@ -484,7 +486,8 @@ About {target} words in total (about ten minutes spoken). Budget roughly 60 word
 ## Tone
 
 - Quick and quippy: dry wit, fast reactions, and a running joke when the day hands them one.
-- Light profanity is welcome a few times an episode: damn, hell, crap, ass, and once or twice "shit". Nothing stronger, and no slurs.
+- Light profanity is welcome a few times an episode: damn, hell, crap, ass, and once or twice "shit".
+- Every episode gets at least one "fuck" (or "fucking"), and two at most, where a host reacts to something that earns it: a brutal ruling, a nine-figure verdict, an argument that had no business surviving a motion to dismiss. Never in the opening turn or the sign-off, and no slurs.
 - Aim the humor and the swearing at rulings, arguments, statutes and deadlines. Never at a named person: judges, clients, opposing counsel and colleagues are off limits.
 - The hosts enjoy a good ruling for the defense side and wince at a bad one.
 - Our own cases stay precise. Quick is fine; jokes at a client's expense are not.
@@ -564,7 +567,7 @@ FEUD = sp.Show(
                     "decisions or tracked cases at all.)"),
     topics_heading="Outside news", cases_heading="Our docket",
     edition_word="report", gather=gather,
-    stability=0.0, audio_tags=AUDIO_TAGS)
+    stability=0.5, audio_tags=AUDIO_TAGS)
 
 
 def run_cli(config: dict, data_dir: Path) -> None:
