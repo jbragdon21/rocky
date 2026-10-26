@@ -108,6 +108,14 @@ After the deploy, James set the show's tone and replaced its source.
   folder. The Rocky laptop's 4:30 PM run is the first real one.
 - The prompt file's header now says the build is in, and it describes
   the report limits.
+- Deployed 10/26 about 15:03 from `ad0760d`, built from a `git archive`
+  export of that commit:
+  - rocky.exe (52.1 MB) and dashboard.exe (16.3 MB) in OneDrive
+    `Program Files\Rocky`, with hashes equal to the build output;
+  - the bundled Feud and engine sources identical to HEAD, with miniaudio
+    and lameenc in the bundle;
+  - `--multifamily-feud` dispatches; on the dev laptop it stops at the
+    missing `C:\Rocky\config.json`, as expected.
 
 **Open items**
 
