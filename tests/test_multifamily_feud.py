@@ -193,6 +193,7 @@ def test_style_file_seeded_with_the_show_settings(tmp_path):
                                                  "BIvP0GN1cAtSRTxNHnWS"]
     assert sp.word_limits(config, FEUD) == (1400, 1600)
     assert sp.voice_settings(config, FEUD) == {"stability": 0.5}
+    assert sp.repeat_days(config, FEUD) == 3
     assert "sams_podcast_hosts" not in config
 
 

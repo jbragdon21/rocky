@@ -356,7 +356,7 @@ target_words: 1400
 max_words: 1600
 audio_tags: excited, curious, sarcastic, mischievously, surprised, chuckles, laughs, sighs, jumping in, interrupting
 model: claude-opus-5-5
-repeat_lookback_days: 2
+repeat_lookback_days: 3
 ---
 
 # Multifamily Feud style guide
