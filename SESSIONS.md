@@ -116,6 +116,17 @@ After the deploy, James set the show's tone and replaced its source.
     and lameenc in the bundle;
   - `--multifamily-feud` dispatches; on the dev laptop it stops at the
     missing `C:\Rocky\config.json`, as expected.
+- The first episode ran on the Rocky laptop at 16:09 (11.3 minutes) and
+  James uploaded it by hand. Both hosts sounded off their voices. A trace
+  showed Rocky sends the selected IDs, so the cause was stability 0.0
+  (Creative), which lets v3 drift from the sample.
+- `21d09e1`: stability back to 0.5 (Natural); at least one "fuck" an
+  episode, two at most; and the fact-check keeps a turn's swearing when
+  it rewrites one. The live PODCAST_STYLE.md got the same two style
+  changes, so they apply without the build. Deployed 10/26 about 18:07
+  from a `git archive` export: rocky.exe (52.1 MB) and dashboard.exe
+  (16.3 MB). The bundle holds all three changes and not the other
+  session's rename.
 
 **Open items**
 
