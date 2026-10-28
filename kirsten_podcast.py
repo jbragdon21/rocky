@@ -279,42 +279,68 @@ def synthesize(api_key: str, turns: list[dict], voices: list[str],
                out_path: Path, max_seconds: int = MAX_SECONDS,
                tag: str = "kirsten podcast",
                settings: dict | None = None,
-               parts: list | None = None) -> float:
+               parts: list | None = None, model: str = ELEVEN_MODEL,
+               seed: int | None = None, stitch: bool = False) -> float:
     """Voice the script into out_path. Returns the length in seconds.
-    settings is the dialogue request's "settings" (e.g. stability); if
-    ElevenLabs rejects it, that part is retried once without it."""
+    settings is the dialogue request's "settings" (e.g. stability); seed
+    asks every part to sample the same way; stitch sends each part the
+    request IDs of the parts before it, so the voices carry over. If
+    ElevenLabs rejects any of those, they are dropped for the rest of the
+    episode; if it then rejects the model, the rest goes on ELEVEN_MODEL."""
     inputs = [{"text": t["text"], "voice_id": voices[t["speaker"] - 1]}
               for t in turns]
     audio = b""
     batches = chunk(inputs)
+    extras: dict = {}
+    if settings:
+        extras["settings"] = settings
+    if seed is not None:
+        extras["seed"] = seed
+    request_ids: list[str] = []
     for i, batch in enumerate(batches, 1):
-        body = {"inputs": batch, "model_id": ELEVEN_MODEL}
-        if settings:
-            body["settings"] = settings
-        for attempt in range(2):
+        body = {"inputs": batch, "model_id": model, **extras}
+        if stitch and request_ids:
+            body["previous_request_ids"] = request_ids[-3:]
+        for attempt in range(3):
             resp = requests.post(
                 ELEVEN_URL, params={"output_format": OUTPUT_FORMAT},
                 headers={"xi-api-key": api_key,
                          "Content-Type": "application/json",
                          "Accept": "audio/mpeg"},
                 json=body, timeout=300)
-            if resp.status_code in (400, 422) and "settings" in body:
-                log.warning(f"[{tag}] ElevenLabs rejected settings "
-                            f"{settings} (HTTP {resp.status_code}: "
+            if resp.status_code not in (400, 422):
+                break
+            optional = [k for k in ("settings", "seed", "previous_request_ids")
+                        if k in body]
+            if optional:
+                log.warning(f"[{tag}] ElevenLabs rejected "
+                            f"{', '.join(optional)} (HTTP {resp.status_code}: "
                             f"{resp.text[:200]}); retrying without them")
-                body.pop("settings")
+                for k in optional:
+                    body.pop(k)
+                extras.clear()
+                stitch = False
+                continue
+            if model != ELEVEN_MODEL:
+                log.warning(f"[{tag}] ElevenLabs rejected model {model} "
+                            f"(HTTP {resp.status_code}: {resp.text[:200]}); "
+                            f"retrying on {ELEVEN_MODEL}")
+                model = body["model_id"] = ELEVEN_MODEL
                 continue
             break
         if resp.status_code != 200:
             raise RuntimeError(f"ElevenLabs HTTP {resp.status_code} on part "
                                f"{i}/{len(batches)}: {resp.text[:300]}")
+        request_id = (getattr(resp, "headers", None) or {}).get("request-id")
+        if request_id:
+            request_ids.append(request_id)
         audio += resp.content
         if parts is not None:
             parts.append(resp.content)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_bytes(audio)
     seconds = len(audio) * 8 / _BITRATE
-    log.info(f"[{tag}] {out_path.name}: {len(batches)} part(s), "
+    log.info(f"[{tag}] {out_path.name}: {len(batches)} part(s) on {model}, "
              f"{len(audio) / 1_048_576:.1f} MB, about {seconds / 60:.1f} min")
     if seconds > max_seconds + 20:
         log.warning(f"[{tag}] audio runs {seconds:.0f}s, over the "

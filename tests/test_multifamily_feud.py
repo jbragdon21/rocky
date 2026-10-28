@@ -194,6 +194,11 @@ def test_style_file_seeded_with_the_show_settings(tmp_path):
     assert sp.word_limits(config, FEUD) == (1400, 1600)
     assert sp.voice_settings(config, FEUD) == {"stability": 0.5}
     assert sp.repeat_days(config, FEUD) == 3
+    assert sp.voice_model(config, FEUD) == "eleven_v4"
+    assert sp.voice_seed(config, FEUD) == 1027
+    assert sp.voice_model({}) == "eleven_v3" and sp.voice_seed({}) is None
+    assert sp.parse_settings({"voice_model": "v4", "seed": "none"}, FEUD) == \
+        {"multifamily_feud_seed": None}
     assert "sams_podcast_hosts" not in config
 
 
@@ -239,7 +244,11 @@ def test_script_prompt_names_todays_opener_and_has_no_you():
     assert "Nobody's work is \"you\"" in prompt
     assert "This step is important" in prompt
     assert "{" + "opener}" not in prompt and "{other}" not in prompt
-    assert "[curious]" in prompt and "sports" not in prompt.lower()
+    assert "[sarcastic]" in prompt and "sports" not in prompt.lower()
+    assert "[curious]" not in prompt
+    assert "No feeder questions" in prompt and "On what ground?" not in prompt
+    assert 'Never "James Bragdon"' in prompt
+    assert "never name Joe on air" not in prompt
     # Sam's prompt is unchanged by the opener values.
     sams = sp.script_prompt("x", ["Al", "Sophia"], "Sam Cowin")
     assert "Al is speaker 1" in sams and "opens today's show" not in sams

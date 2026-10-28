@@ -697,6 +697,49 @@ def test_finish_audio_keeps_hosts_when_the_intro_fails(tmp_path, monkeypatch):
     assert abs(total - 2) < 0.3                    # hosts only, no crash
 
 
+def test_synthesize_seeds_stitches_and_falls_back(monkeypatch, tmp_path):
+    import kirsten_podcast as kp
+    bodies = []
+
+    class R:
+        def __init__(self, code, n):
+            self.status_code, self.content, self.text = code, b"MP3", ""
+            self.headers = {"request-id": f"req{n}"}
+
+    def fake_post(url, **kw):
+        bodies.append(dict(kw["json"]))
+        return R(200, len(bodies))
+
+    monkeypatch.setattr(kp.requests, "post", fake_post)
+    turns = [{"speaker": 1, "text": "x" * 1500}, {"speaker": 2, "text": "y" * 1500},
+             {"speaker": 1, "text": "z" * 1500}]
+    kp.synthesize("K", turns, ["a", "b"], tmp_path / "o.mp3", model="eleven_v4",
+                  seed=7, stitch=True, settings={"stability": 0.5})
+    assert [b["model_id"] for b in bodies] == ["eleven_v4"] * 3
+    assert all(b["seed"] == 7 and b["settings"] == {"stability": 0.5}
+               for b in bodies)
+    assert "previous_request_ids" not in bodies[0]
+    assert bodies[1]["previous_request_ids"] == ["req1"]
+    assert bodies[2]["previous_request_ids"] == ["req1", "req2"]
+
+    # A rejected extra is dropped for the rest of the episode; a rejected
+    # model then falls back to v3.
+    bodies.clear()
+
+    def picky(url, **kw):
+        body = dict(kw["json"])
+        bodies.append(body)
+        bad = "seed" in body or body["model_id"] == "eleven_v9"
+        return R(422 if bad else 200, len(bodies))
+
+    monkeypatch.setattr(kp.requests, "post", picky)
+    kp.synthesize("K", turns, ["a", "b"], tmp_path / "p.mp3",
+                  model="eleven_v9", seed=7)
+    assert [("seed" in b, b["model_id"]) for b in bodies] == [
+        (True, "eleven_v9"), (False, "eleven_v9"), (False, "eleven_v3"),
+        (False, "eleven_v3"), (False, "eleven_v3")]
+
+
 def test_synthesize_hands_back_each_part(monkeypatch, tmp_path):
     import kirsten_podcast as kp
 

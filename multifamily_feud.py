@@ -74,7 +74,7 @@ _ROOTS = (
 # Swap voice1/voice2 in PODCAST_STYLE.md if that's backwards.
 _HOSTS = ("Archie", "Frieda")
 _VOICES = ("WLKp2jV6nrS8aMkPPDRO", "BIvP0GN1cAtSRTxNHnWS")
-AUDIO_TAGS = ("excited", "curious", "sarcastic", "mischievously", "surprised",
+AUDIO_TAGS = ("excited", "sarcastic", "mischievously", "surprised",
               "chuckles", "laughs", "sighs", "jumping in", "interrupting")
 
 
@@ -354,9 +354,11 @@ intro_fade_seconds: 4
 intro_overlap_seconds: 2
 target_words: 1400
 max_words: 1600
-audio_tags: excited, curious, sarcastic, mischievously, surprised, chuckles, laughs, sighs, jumping in, interrupting
+audio_tags: excited, sarcastic, mischievously, surprised, chuckles, laughs, sighs, jumping in, interrupting
 model: claude-opus-5-5
 repeat_lookback_days: 3
+voice_model: eleven_v4
+seed: 1027
 ---
 
 # Multifamily Feud style guide
@@ -391,12 +393,20 @@ over config.json.
   intro_overlap_seconds   how early the hosts start before the music ends
   target_words            the length to aim for (about 150 words a minute)
   max_words               hard cap; anything longer is cut
-  audio_tags              Eleven v3 delivery cues the script may use, comma
+  audio_tags              ElevenLabs delivery cues the script may use, comma
                           separated, at most 12 (see below), or none
   model                   the Claude model that writes cards and script
   repeat_lookback_days    how many earlier days' episodes the script sees as
                           already covered (only episodes whose audio came
                           out full length); 0 = off
+  voice_model             the ElevenLabs model that voices the script.
+                          eleven_v4 keeps Professional Voice Clones (Archie's
+                          voice is likely one) close to their samples; on
+                          eleven_v3 both hosts drifted off their voices on
+                          10/26 and 10/27/2026
+  seed                    a whole number that has every part of the episode
+                          sampled the same way, so the voices hold steady
+                          from part to part; none = off
 
 THE SECTIONS. "## Report cards" and "## Case cards" style the show notes
 (one card per report, or per part of a long one, and one per active case).
@@ -465,7 +475,7 @@ Joe, a class action defense lawyer, is the main listener. Over time the whole cl
 - Keep it technical. Use terms of art without defining them, and keep each card's legal detail: the procedural posture, the rule or standard applied, the ground the ruling turned on, what survived and what didn't, with or without prejudice, leave to amend.
 - Never explain basics: no defining a motion to dismiss, class certification, predominance or standing.
 - The technical depth comes from the cards. Never add a doctrine, a standard or a case that isn't on one.
-- The hosts talk to each other. Never address the listener, and never name Joe on air.
+- The hosts talk to each other and never address the listener. When Joe turns up in a case's activity, he's a colleague like any other.
 
 ## Goal
 
@@ -494,7 +504,8 @@ About {target} words in total (about ten minutes spoken). Budget roughly 60 word
 
 ## Interplay
 
-- Every item gets a real exchange. One host gives the news; the other reacts, pushes back, or asks what a defense lawyer would ask next ("On what ground?" "With prejudice?").
+- Every item gets a real exchange. The host with the news gives all of it unprompted: the ruling, the ground and the terms. The other host reacts, pushes back, or says what it means for the defense side.
+- No feeder questions. A host never asks something just so the other can answer it ("What did the order say?" "Conditioned on what?" "Settlement?" "What else?"). Move on with a line of comment or a handoff instead.
 - Short reaction turns keep it moving: "Oof." "Damn." "Ha."
 - Now and then a host cuts in: the cut-off turn stops mid-sentence on a dash (—), and the next turn opens with [jumping in] or [interrupting]. Two to four a show, and never in the middle of a fact.
 - The hosts can weigh a card's angles differently, one finding it bigger than the other does. Both stay on the card's facts, and neither predicts an outcome.
@@ -510,7 +521,7 @@ About {target} words in total (about ten minutes spoken). Budget roughly 60 word
 
 - A cue goes in square brackets right before the words it colors: "[sarcastic] Bold theory."
 - Open the show with one, then about one every three or four turns where a real reaction fits. A cue on every turn sounds forced.
-- [sarcastic] and [mischievously] carry the quips. [laughs] and [chuckles] go on the funny moments, [sighs] on a bad ruling, [surprised] on a real surprise, [curious] on a real question and [excited] on a big defense win. [jumping in] and [interrupting] only open a turn that cuts in.
+- [sarcastic] and [mischievously] carry the quips. [laughs] and [chuckles] go on the funny moments, [sighs] on a bad ruling, [surprised] on a real surprise and [excited] on a big defense win. [jumping in] and [interrupting] only open a turn that cuts in.
 - CAPS on a single word for stress, a couple per segment at most: "dismissed WITH prejudice."
 - Exclamation marks only for real excitement.
 - On our own docket, a light cue at most ([chuckles], [sighs], [excited]), and no sarcasm about our clients or their cases.
@@ -527,6 +538,7 @@ ALREADY COVERED holds the last few episodes the team heard.
 ## Delivery
 
 - Speaker turns alternate.
+- Our own lawyers go by first name only: James, Joe, Sam. Never "James Bragdon" or "Joe Dugan".
 - Say case names the way lawyers do in conversation ("Hettinger", "the Bulgin case") and courts in words ("the Eastern District of Virginia", "the D.C. Circuit").
 - Say rules the way lawyers say them aloud ("Rule twelve b six", "twenty-three b three").
 - Name a statute in full the first time ("the Virginia Consumer Protection Act"), then by its short name.
@@ -567,7 +579,8 @@ FEUD = sp.Show(
                     "decisions or tracked cases at all.)"),
     topics_heading="Outside news", cases_heading="Our docket",
     edition_word="report", gather=gather,
-    stability=0.5, audio_tags=AUDIO_TAGS)
+    stability=0.5, audio_tags=AUDIO_TAGS,
+    voice_model="eleven_v4", seed=1027, stitch=True)
 
 
 def run_cli(config: dict, data_dir: Path) -> None:

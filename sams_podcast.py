@@ -145,6 +145,9 @@ class Show:
     gather: Callable | None = None
     stability: float | None = 0.0
     audio_tags: tuple = ("excited", "cheerfully", "laughs", "chuckles")
+    voice_model: str = "eleven_v3"      # the ElevenLabs model
+    seed: int | None = None             # ElevenLabs sampling seed
+    stitch: bool = False                # each part gets the earlier parts' IDs
 
     def key(self, name: str) -> str:
         return f"{self.prefix}_{name}"
@@ -444,6 +447,17 @@ def voice_settings(config: dict, show: Show | None = None) -> dict | None:
     return None if value is None else {"stability": float(value)}
 
 
+def voice_model(config: dict, show: Show | None = None) -> str:
+    s = _sh(show)
+    return config.get(s.key("voice_model")) or s.voice_model
+
+
+def voice_seed(config: dict, show: Show | None = None) -> int | None:
+    s = _sh(show)
+    value = config.get(s.key("seed"), s.seed)
+    return None if value is None else int(value)
+
+
 def _protect(text: str, tags=None) -> str:
     return _tag_re(tags).sub(
         lambda m: "\u27e6" + m.group(1).lower() + "\u27e7", text)
@@ -716,6 +730,18 @@ def _model(value: str) -> str:
     return value
 
 
+def _voice_model(value: str) -> str:
+    if not re.fullmatch(r"eleven_[a-z0-9_]{1,30}", value):
+        raise ValueError("must be an ElevenLabs model id like eleven_v4")
+    return value
+
+
+def _seed(value: str):
+    if value.lower() in ("none", "off"):
+        return None
+    return int(_num(value, 0, 4294967295))
+
+
 def _stability(value: str):
     if value.lower() in ("default", "none"):
         return None
@@ -760,6 +786,8 @@ def _settings_map(show: Show | None = None) -> dict:
         "max_words": (k("max_words"), lambda v: int(_num(v, 250, 3500))),
         "audio_tags": (k("audio_tags"), _tags),
         "model": (k("model"), _model),
+        "voice_model": (k("voice_model"), _voice_model),
+        "seed": (k("seed"), _seed),
         "repeat_lookback_days": (k("repeat_days"),
                                  lambda v: int(_num(v, 0, 7))),
         "intro_file": (k("intro_file"), _intro_file),
@@ -1777,7 +1805,9 @@ def run_cli(config: dict, data_dir: Path, show: Show | None = None) -> None:
                 parts: list[bytes] = []
                 kp.synthesize(config["elevenlabs_api_key"], turns, voices,
                               mp3, int(max_words * 0.4) + 20, tag=tag,
-                              settings=voice_settings(config, s), parts=parts)
+                              settings=voice_settings(config, s), parts=parts,
+                              model=voice_model(config, s),
+                              seed=voice_seed(config, s), stitch=s.stitch)
                 finish_audio(config, intro_path(config, root, s), mp3, parts,
                              kp.word_count(turns), log_tag=tag, show=s)
         log.info(f"[{tag}] DRY RUN — would publish {title!r}. Preview: "
@@ -1798,7 +1828,9 @@ def run_cli(config: dict, data_dir: Path, show: Show | None = None) -> None:
     parts: list[bytes] = []
     kp.synthesize(config["elevenlabs_api_key"], turns, voices, mp3,
                   int(max_words * 0.4) + 20, tag=tag,
-                  settings=voice_settings(config, s), parts=parts)
+                  settings=voice_settings(config, s), parts=parts,
+                  model=voice_model(config, s), seed=voice_seed(config, s),
+                  stitch=s.stitch)
     stats: dict = {}
     words = kp.word_count(turns)
     finish_audio(config, intro_path(config, root, s), mp3, parts, words,
