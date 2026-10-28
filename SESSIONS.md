@@ -127,6 +127,31 @@ After the deploy, James set the show's tone and replaced its source.
   from a `git archive` export: rocky.exe (52.1 MB) and dashboard.exe
   (16.3 MB). The bundle holds all three changes and not the other
   session's rename.
+- `bd78989`: `repeat_lookback_days` 3, so a Monday on a weekday schedule
+  still sees Friday's script. It's a style-file setting, so no deploy.
+- The 10/27 episode still drifted at 0.5, and the male accent shifted
+  mid-episode, so stability alone was not the cause. Two causes:
+  - Archie's ID is listed as "Paul - Australian Professional Presenter",
+    likely a Professional Voice Clone, and ElevenLabs says those aren't
+    fully optimized for v3.
+  - Each episode goes out as five or six dialogue requests (under 2,000
+    characters each, as ElevenLabs recommends), each one rendered fresh.
+- `af3f756`: the Feud voices on `eleven_v4` (style setting
+  `voice_model`) with one `seed` on every part (setting `seed`, 1027),
+  and each part sends `previous_request_ids` from the parts before it.
+  - ElevenLabs rejecting an extra drops it for the rest of the episode,
+    and rejecting the model falls back to `eleven_v3`.
+  - The log line names the model: "N part(s) on eleven_v4".
+  - Sam's and Kirsten's shows are unchanged.
+  - Style changes, per James: our lawyers go by first name only (James,
+    Joe, Sam); Joe can come up like any colleague; no feeder questions
+    ("What did the order say?"); `[curious]` is off the tags.
+  - Tests pass 223.
+  - Deployed 10/28 at 07:20 from a `git archive` export. The bundle holds
+    the v4, seed and stitching code and not the other session's rename.
+- Still open: v4's credit cost is unverified. The 10/29 5 AM episode is
+  the first on v4, unless James runs `--dry-run --audio --force` first.
+  Check its log for "on eleven_v4".
 
 **Open items**
 
