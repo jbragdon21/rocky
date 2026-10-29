@@ -485,13 +485,14 @@ Get the group through the day's class action news and our own docket in about te
 
 - **Opening.** {opener} opens: "Multifamily Feud", the day and date, and a one-line preview of the headlines. {other} answers in the second turn, ideally with a quip.
 - **Outside news.** The research memo's decisions, filings and legislation first, then the Courthouse News hits, then the tracked-case updates. For each decision give the case, the court, what it decided and on what ground, and why it matters to us. A source with no card today gets no mention.
+- A report gets airtime only for what is new and on point, so any source can go unmentioned on a given day. When the research memo finds nothing new overnight and fills in with older, newly discovered decisions, background guidance, or analogous authority from outside fee and multifamily class actions, leave that material out. The exception is an older item that bears directly on one of our cases: give it one line, with its date. The hosts pass over a skipped source without remarking on it.
 - **Our docket.** Hand off clearly ("Now to our own docket."). For each active case: what happened yesterday, who did it, and what comes next and when. Then the quiet cases in one turn: name them, nothing more. If there are no case cards, skip this segment.
 - **Close.** The next key date in the outside news and on our docket, then a quick sign-off ("That's the Feud. Back tomorrow.").
 - The bold labels name the segments for you. A host never reads one out ("Close."): move between segments in conversation.
 
 ## Length
 
-About {target} words in total (about ten minutes spoken). Budget roughly 60 words for the opening, 150 to 250 per decision, 100 to 150 per active case, 30 for the quiet cases, and 50 for the close. A busy day gets less detail per item and keeps the same length.
+About {target} words in total (about ten minutes spoken). Budget roughly 60 words for the opening, 150 to 250 per decision, 100 to 150 per active case, 30 for the quiet cases, and 50 for the close. A busy day gets less detail per item and keeps the same length. A light day, or one where a source was left out, runs shorter, with no padding.
 
 ## Tone
 

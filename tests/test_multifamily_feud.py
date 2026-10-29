@@ -249,6 +249,8 @@ def test_script_prompt_names_todays_opener_and_has_no_you():
     assert "No feeder questions" in prompt and "On what ground?" not in prompt
     assert 'Never "James Bragdon"' in prompt
     assert "never name Joe on air" not in prompt
+    assert "any source can go unmentioned on a given day" in prompt
+    assert "runs shorter, with no padding" in prompt
     # Sam's prompt is unchanged by the opener values.
     sams = sp.script_prompt("x", ["Al", "Sophia"], "Sam Cowin")
     assert "Al is speaker 1" in sams and "opens today's show" not in sams
