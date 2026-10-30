@@ -141,10 +141,10 @@ import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import claude_call
 
 log = logging.getLogger("rocky.affidavits")
 
-CLAUDE_MODEL = "claude-sonnet-4-5"
 EXTRACT_MAX_TOKENS = 2000
 
 # Extraction below this and the approval email is flagged "please check
@@ -413,12 +413,12 @@ def extract_fields(client, proof_text: str, mailing: dict) -> dict | None:
     )
     for attempt in (1, 2):
         try:
-            response = client.messages.create(
-                model=CLAUDE_MODEL,
+            response = claude_call.create(
+                client,
                 max_tokens=EXTRACT_MAX_TOKENS,
                 messages=[{"role": "user", "content": prompt}],
             )
-            return _extract_json_object(response.content[0].text)
+            return _extract_json_object(claude_call.text(response))
         except Exception as e:
             log.warning(f"[affidavits] extraction attempt {attempt} failed: {e}")
     return None
@@ -836,11 +836,11 @@ def extract_mail_request(client, doc_text: str, body_text: str) -> dict | None:
     )
     for attempt in (1, 2):
         try:
-            response = client.messages.create(
-                model=CLAUDE_MODEL, max_tokens=1000,
+            response = claude_call.create(
+                client, max_tokens=1000,
                 messages=[{"role": "user", "content": prompt}],
             )
-            return _extract_json_object(response.content[0].text)
+            return _extract_json_object(claude_call.text(response))
         except Exception as e:
             log.warning(f"[affidavits] mail-request extraction attempt "
                         f"{attempt} failed: {e}")

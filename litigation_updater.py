@@ -146,10 +146,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
+import claude_call
 
 log = logging.getLogger("rocky.litigation")
 
-CLAUDE_MODEL = "claude-sonnet-4-5"
 
 SS_BASE = "https://api.smartsheet.com/2.0"
 
@@ -785,14 +785,14 @@ def _claude_text(client, prompt: str, max_tokens: int = 3000,
         content = [{"type": "text", "text": prompt}, *attachments]
     for attempt in (1, 2):
         try:
-            response = client.messages.create(
-                model=CLAUDE_MODEL, max_tokens=max_tokens,
+            response = claude_call.create(
+                client, max_tokens=max_tokens,
                 messages=[{"role": "user", "content": content}],
             )
             if getattr(response, "stop_reason", None) == "max_tokens":
                 log.warning(f"[litigation] Claude response hit the "
                             f"{max_tokens}-token cap — output truncated")
-            return response.content[0].text
+            return claude_call.text(response)
         except Exception as e:
             log.warning(f"[litigation] Claude call attempt {attempt} failed: {e}")
     return None

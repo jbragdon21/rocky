@@ -287,7 +287,7 @@ def thoughts_html(config: dict, summary: dict, cases: dict) -> str:
     """The 'thoughts' James asked for. One Claude call per day."""
     try:
         from anthropic import Anthropic
-        from rocky import CLAUDE_MODEL
+        import claude_call
         client = Anthropic(api_key=config["anthropic_api_key"])
         facts = {
             "_glossary": "A CASE is one resident at one unit. A matter "
@@ -316,12 +316,11 @@ def thoughts_html(config: dict, summary: dict, cases: dict) -> str:
             "unresolved_folders": summary.get("unresolved_folders"),
             "by_matter_type": summary.get("by_type"),
         }
-        resp = client.messages.create(
-            model=CLAUDE_MODEL, max_tokens=700, system=_THOUGHTS_SYSTEM,
+        resp = claude_call.create(
+            client, max_tokens=700, system=_THOUGHTS_SYSTEM,
             messages=[{"role": "user",
                        "content": json.dumps(facts, indent=1)}])
-        text = "".join(b.text for b in resp.content
-                       if getattr(b, "type", "") == "text").strip()
+        text = claude_call.text(resp).strip()
     except Exception as e:
         log.warning(f"[mf-digest] thoughts failed ({e}) — section omitted")
         return ""

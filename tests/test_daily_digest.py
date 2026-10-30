@@ -26,6 +26,7 @@ class FakeClient:
         self.reply = reply
         self.prompts = []
         self.messages = self
+        self.beta = self
 
     def create(self, **kw):
         self.prompts.append((kw.get("system", ""), kw["messages"][0]["content"]))
@@ -229,7 +230,7 @@ def test_digest_skips_borrowed_rrid_flags_alerts_and_scheduling(tmp_path, monkey
                     "summary": "Revised the opposition."}) + "\n"
         + json.dumps(_facts_event("us", [("2026-10-05", "Bozzuto cancelled the depositions.")])),
         encoding="utf-8")
-    monkeypatch.setattr(rocky, "DAILY_DIGESTS_DIR", root / "Daily Digests")
+    monkeypatch.setattr(rocky, "DAILY_DIGESTS_DIR", root / "_Daily Digests")
     monkeypatch.setattr(rocky, "load_case_index", lambda: [
         {"RRID#": "RRID-0040", "File Name": "Wall, Jesse"},
         {"RRID#": "RRID-0004", "File Name": "Ricks, Sharday "},
@@ -245,7 +246,7 @@ def test_digest_skips_borrowed_rrid_flags_alerts_and_scheduling(tmp_path, monkey
 
     client = FakeClient(reply)
     result = rocky.daily_digest(client, "")
-    md = (root / "Daily Digests" / "2026-10-19.md").read_text(encoding="utf-8")
+    md = (root / "_Daily Digests" / "2026-10-19.md").read_text(encoding="utf-8")
 
     assert md.count("**RRID-0040 — Wall, Jesse** — No new activity") == 1
     assert "Board, Bianca" in md.split("## Rocky Needs Attention")[1].split("---")[0]
@@ -315,6 +316,7 @@ class BatchClient:
         self.fail_part = fail_part
         self.stop_reason = stop_reason
         self.messages = self
+        self.beta = self
 
     def create(self, **kw):
         self.calls += 1

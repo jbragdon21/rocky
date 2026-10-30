@@ -94,7 +94,7 @@ OneDrive - gejlaw.com\Rocky Cases\
 
 **Key constants in `rocky.py`:**
 - `GRAPH_SCOPES = ["Mail.Read"]` — explicitly read-only, no Mail.ReadWrite, no Mail.Send
-- `CLAUDE_MODEL = "claude-sonnet-4-5"`
+- Claude calls go through `claude_call.py` (`CLAUDE_MODEL = "claude-opus-5-5"` since 10/30/26): `claude_call.create(client, max_tokens=..., ...)` and `claude_call.text(response)`, never `content[0].text`
 
 **Authentication setup (Setup B):**
 
@@ -452,7 +452,7 @@ Rolling N-hour window (default 24h). For each case with `activity.jsonl` events 
 2. Globs for the most-recent `*Case Status*.docx`, extracts text (capped at 8000 chars)
 3. One Claude call per case → markdown section with three subsections (What happened / Recommended next steps / Upcoming dates)
 
-Consolidated output: `Rocky Cases/Daily Digests/YYYY-MM-DD.md`. Skips writing entirely when no case had activity in the window and there is no alert.
+Consolidated output: `Rocky Cases/_Daily Digests/YYYY-MM-DD.md`. Skips writing entirely when no case had activity in the window and there is no alert.
 
 **Sources beyond the memo (2026-10-19):** each case's prompt also gets the open and upcoming rows of `CASE_SPINE.md`'s Deadlines table and every `pleading_facts` fact on file; the no-activity batch gets the deadlines table and facts ahead of the memo (4000-char cap). `.docx` extraction now includes tables in document order (`_docx_body_lines`); the Master Case Summaries keep their dates in tables, and paragraphs alone dropped ~90% of Ricks's. A no-activity "next deadline" that leads with a past date is replaced with "None on file" in code.
 
@@ -509,7 +509,7 @@ The current build plan tacitly assumes option 1. Cowork users updating shared fo
 - **CourtListener REST API v4** (RECAP archive + RECAP Fetch) and the **PACER Case Locator API** for federal court records
 - **Microsoft Graph API** for M365 access
 - **MSAL (Microsoft Authentication Library)** for auth
-- **Anthropic Claude API** (model: claude-sonnet-4-5) for classification and drafting
+- **Anthropic Claude API** (model: claude-opus-5-5, via `claude_call.py`) for classification and drafting
 - **OneDrive** for backup and shared file access (Phase A+)
 - **Tailscale** for remote access (Phase A+)
 - **Healthchecks.io** for liveness monitoring (Phase A+)

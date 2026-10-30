@@ -69,11 +69,9 @@ from pathlib import Path
 import requests
 
 from outbound import send_mail_guarded
+import claude_call
 
 log = logging.getLogger("rocky.remy_digest")
-
-# Same model rocky.py uses for its other digest writing.
-CLAUDE_MODEL = "claude-sonnet-4-5"
 
 GITHUB_API_BASE = "https://api.github.com"
 DEFAULT_REPO = "jbragdon21/remy"
@@ -365,13 +363,13 @@ SESSION NOTES ({len(material['session_notes'])}) — your primary source:
 
 Write the digest."""
 
-    response = client.messages.create(
-        model=CLAUDE_MODEL,
+    response = claude_call.create(
+        client,
         max_tokens=2000,
         system=DIGEST_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_prompt}],
     )
-    text = response.content[0].text.strip()
+    text = claude_call.text(response).strip()
     # Claude occasionally wraps markdown in a fence despite the instruction.
     if text.startswith("```"):
         text = re.sub(r"^```[a-z]*\n|\n```$", "", text)

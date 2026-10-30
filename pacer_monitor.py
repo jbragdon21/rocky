@@ -83,10 +83,10 @@ from pathlib import Path
 
 import courtlistener as cl
 import pacer_api
+import claude_call
 
 log = logging.getLogger("rocky.pacer")
 
-CLAUDE_MODEL = "claude-sonnet-4-5"
 
 # PACER's per-document fee ceiling. Used as the assumed cost of any
 # purchase, because nothing in the API reports the actual charge.
@@ -1566,10 +1566,10 @@ def _classify_mail(client, subject: str, sender: str, body: str) -> dict:
     prompt = MAIL_INTENT_PROMPT.format(subject=subject, sender=sender,
                                        body=body)
     try:
-        resp = client.messages.create(
-            model=CLAUDE_MODEL, max_tokens=800,
+        resp = claude_call.create(
+            client, max_tokens=800,
             messages=[{"role": "user", "content": prompt}])
-        text = "".join(b.text for b in resp.content if b.type == "text")
+        text = claude_call.text(resp)
     except Exception as e:
         log.error(f"[pacer] intent classification failed: {e}")
         return {"intent": "unknown", "confidence": 0.0,

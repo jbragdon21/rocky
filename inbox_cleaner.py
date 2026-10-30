@@ -91,13 +91,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
+import claude_call
 
 log = logging.getLogger("rocky.inbox_cleaner")
 
 GRAPH_API_BASE = "https://graph.microsoft.com/v1.0"
 GRAPH_PAGE_SIZE = 100
 
-CLAUDE_MODEL = "claude-sonnet-4-5"
 RULES_MAX_TOKENS = 4096
 
 INTERNAL_DOMAINS = {"gallagherllp.com", "gejlaw.com"}
@@ -1751,10 +1751,10 @@ def rules_update(config: dict, ucfg: dict, paths: dict, hours: int = 24) -> dict
     from anthropic import Anthropic
     client = Anthropic(api_key=config["anthropic_api_key"])
     try:
-        resp = client.messages.create(
-            model=CLAUDE_MODEL, max_tokens=RULES_MAX_TOKENS,
+        resp = claude_call.create(
+            client, max_tokens=RULES_MAX_TOKENS,
             messages=[{"role": "user", "content": prompt}])
-        updated = resp.content[0].text.strip()
+        updated = claude_call.text(resp).strip()
     except Exception as e:
         log_event(paths, "rules_update_failed", detail=str(e)[:300])
         return {"error": str(e)}
@@ -1909,10 +1909,10 @@ def _tune_matters(config: dict, ucfg: dict, paths: dict,
     try:
         from anthropic import Anthropic
         client = Anthropic(api_key=config["anthropic_api_key"])
-        resp = client.messages.create(
-            model=CLAUDE_MODEL, max_tokens=2000,
+        resp = claude_call.create(
+            client, max_tokens=2000,
             messages=[{"role": "user", "content": prompt}])
-        raw = resp.content[0].text.strip()
+        raw = claude_call.text(resp).strip()
         if raw.startswith("```"):
             raw = re.sub(r"^```[a-z]*\n?|\n?```$", "", raw).strip()
         ops = (json.loads(raw).get("ops") or [])
@@ -2104,10 +2104,10 @@ def _digest_summary_md(config: dict, ucfg: dict, facts: dict,
     try:
         from anthropic import Anthropic
         client = Anthropic(api_key=config["anthropic_api_key"])
-        resp = client.messages.create(
-            model=CLAUDE_MODEL, max_tokens=1500,
+        resp = claude_call.create(
+            client, max_tokens=1500,
             messages=[{"role": "user", "content": prompt}])
-        md = resp.content[0].text.strip()
+        md = claude_call.text(resp).strip()
         if md.startswith("```"):
             md = re.sub(r"^```[a-z]*\n?|\n?```$", "", md).strip()
         if md:

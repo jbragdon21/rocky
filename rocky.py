@@ -220,6 +220,7 @@ import requests
 from anthropic import Anthropic
 
 from permissions import audit_token_scopes
+import claude_call
 
 # =============================================================================
 # Configuration
@@ -244,8 +245,7 @@ LOG_PATH = DATA_DIR / "rocky.log"
 GRAPH_SCOPES = ["Mail.Read", "Mail.Send", "Sites.Read.All"]
 GRAPH_API_BASE = "https://graph.microsoft.com/v1.0"
 
-# Claude model and parameters.
-CLAUDE_MODEL = "claude-sonnet-4-5"
+# Claude parameters (the model is set in claude_call.py).
 CLAUDE_MAX_TOKENS = 1024
 
 # Case index and cases root — resolved after config is loaded.
@@ -283,7 +283,7 @@ def _init_cases_paths(config: dict) -> None:
     global CASE_INDEX_PATH, ROCKY_CASES_ROOT, DAILY_DIGESTS_DIR
     ROCKY_CASES_ROOT = resolve_cases_root(config)
     CASE_INDEX_PATH = ROCKY_CASES_ROOT / "Rocky Case Index.xlsx"
-    DAILY_DIGESTS_DIR = ROCKY_CASES_ROOT / "Daily Digests"
+    DAILY_DIGESTS_DIR = ROCKY_CASES_ROOT / "_Daily Digests"
 
 # Attachment handling caps.
 # Skip downloading attachments larger than this (16 MB). Most leases/ledgers are <2 MB.
@@ -1217,8 +1217,8 @@ def extract_image_text_via_vision(
     img_bytes, media_type = prepared
     try:
         b64 = base64.standard_b64encode(img_bytes).decode("ascii")
-        response = client.messages.create(
-            model=CLAUDE_MODEL,
+        response = claude_call.create(
+            client,
             max_tokens=2048,
             system=IMAGE_VISION_SYSTEM_PROMPT,
             messages=[{
@@ -1239,7 +1239,7 @@ def extract_image_text_via_vision(
                 ],
             }],
         )
-        text = response.content[0].text.strip()
+        text = claude_call.text(response).strip()
         if not text:
             return None
         return f"[Transcribed from image {name} via Claude vision]\n{text}"
@@ -1934,13 +1934,13 @@ def extract_pleading_facts(
         f"TEXT:\n{body}\n\nReturn ONLY the JSON object."
     )
     try:
-        response = client.messages.create(
-            model=CLAUDE_MODEL,
+        response = claude_call.create(
+            client,
             max_tokens=3000,
             system=PLEADING_FACTS_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_prompt}],
         )
-        result = _extract_json_from_response(response.content[0].text.strip())
+        result = _extract_json_from_response(claude_call.text(response).strip())
     except Exception as e:
         log.warning(f"Pleading-fact extraction failed for {document_name!r}: {e}")
         return None
@@ -2307,13 +2307,13 @@ Follow the case-specific instructions above. Return ONLY the JSON object."""
 
     # One Claude call for the entire case.
     try:
-        response = client.messages.create(
-            model=CLAUDE_MODEL,
+        response = claude_call.create(
+            client,
             max_tokens=DAILY_RUN_MAX_TOKENS,
             system=DAILY_RUN_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_prompt}],
         )
-        text_out = response.content[0].text.strip()
+        text_out = claude_call.text(response).strip()
         result = _extract_json_from_response(text_out)
     except json.JSONDecodeError as e:
         log.error(f"[{rrid}] Could not parse daily-run response as JSON: {e}")
@@ -2685,13 +2685,13 @@ def daily_run(
 # =============================================================================
 # Walks all case folders, finds activity in the last N hours (default 24),
 # asks Claude to write a per-case markdown section, consolidates into one file
-# at Rocky Cases/Daily Digests/YYYY-MM-DD.md.
+# at Rocky Cases/_Daily Digests/YYYY-MM-DD.md.
 #
 # Eventually (when Mail.Send is granted on Rocky's account) the same content
 # will be emailed to James. For now, file output stands in. Skips writing
 # entirely if no case had activity in the window.
 
-DAILY_DIGESTS_DIR = ROCKY_CASES_ROOT / "Daily Digests"
+DAILY_DIGESTS_DIR = ROCKY_CASES_ROOT / "_Daily Digests"
 
 DIGEST_SYSTEM_PROMPT = """You are Rocky, drafting the daily update section for one litigation case in James Bragdon's case digest.
 
@@ -3185,13 +3185,13 @@ CASE STATUS MEMORANDUM (current text, may be long):
 Write the four markdown subsections (What happened / Recommended next steps / Internal filing follow-ups / Upcoming dates) for this case. No heading."""
 
     try:
-        response = client.messages.create(
-            model=CLAUDE_MODEL,
+        response = claude_call.create(
+            client,
             max_tokens=1500,
             system=DIGEST_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_prompt}],
         )
-        return _normalize_section_labels(response.content[0].text.strip())
+        return _normalize_section_labels(claude_call.text(response).strip())
     except Exception as e:
         log.error(f"Digest generation failed for {case_meta.get('RRID#')}: {e}")
         return f"**Error generating digest section:** {e}"
@@ -3253,13 +3253,13 @@ def build_no_activity_next_events(
     user_prompt = f"TODAY: {today_str}\n\n" + "\n---\n".join(blocks)
 
     try:
-        response = client.messages.create(
-            model=CLAUDE_MODEL,
+        response = claude_call.create(
+            client,
             max_tokens=1200,
             system=NO_ACTIVITY_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_prompt}],
         )
-        text = response.content[0].text.strip()
+        text = claude_call.text(response).strip()
     except Exception as e:
         log.error(f"No-activity next-event summary failed: {e}")
         return fallback
@@ -3636,7 +3636,7 @@ def daily_digest(
 ) -> dict:
     """
     Generate a consolidated daily digest. Writes to
-    Rocky Cases/Daily Digests/YYYY-MM-DD.md. If token and rocky_email are
+    Rocky Cases/_Daily Digests/YYYY-MM-DD.md. If token and rocky_email are
     provided, also emails the digest to James and per-case digests to any
     co-counsel lawyers listed in the case index.
     """
@@ -4039,13 +4039,13 @@ Attachments: {attachment_summary}
 Classify this email. Return ONLY the JSON object."""
 
     try:
-        response = client.messages.create(
-            model=CLAUDE_MODEL,
+        response = claude_call.create(
+            client,
             max_tokens=CLAUDE_MAX_TOKENS,
             system=CLASSIFIER_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_prompt}],
         )
-        text = response.content[0].text.strip()
+        text = claude_call.text(response).strip()
         result = _extract_json_from_response(text)
         return result
     except json.JSONDecodeError as e:
@@ -4245,13 +4245,13 @@ Summarize these emails. Return ONLY the JSON object."""
 
     text_out = ""
     try:
-        response = client.messages.create(
-            model=CLAUDE_MODEL,
+        response = claude_call.create(
+            client,
             max_tokens=8192,
             system=CASE_EMAIL_SUMMARY_PROMPT,
             messages=[{"role": "user", "content": user_prompt}],
         )
-        text_out = response.content[0].text.strip()
+        text_out = claude_call.text(response).strip()
         if response.stop_reason == "max_tokens":
             log.warning(f"[{rrid}] Email summary part {n}/{of} hit max_tokens "
                         f"({len(email_blocks)} emails); output truncated.")
@@ -4996,8 +4996,8 @@ def daily_todo(
         )
 
     log.info(f"Sending {len(emails)} emails to Claude for to-do extraction...")
-    response = client.messages.create(
-        model=CLAUDE_MODEL,
+    response = claude_call.create(
+        client,
         max_tokens=2048,
         system=build_todo_prompt(name, person.get("focus", "")),
         messages=[
@@ -5012,7 +5012,7 @@ def daily_todo(
             }
         ],
     )
-    todo_md = response.content[0].text
+    todo_md = claude_call.text(response)
     log.info("Claude to-do extraction complete.")
 
     html_body = _build_todo_html(todo_md, len(emails), now, name)
@@ -5438,13 +5438,13 @@ def _build_ella_case_section(
     )
 
     try:
-        response = client.messages.create(
-            model=CLAUDE_MODEL,
+        response = claude_call.create(
+            client,
             max_tokens=1500,
             system=ELLA_DIGEST_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_prompt}],
         )
-        result = response.content[0].text.strip()
+        result = claude_call.text(response).strip()
         if swap_map:
             result = _swap_names_back(result, swap_map)
         return result

@@ -104,8 +104,9 @@ class FakeAnthropic:
 
     def __init__(self, api_key=None):
         self.messages = self
+        self.beta = self
 
-    def create(self, model, max_tokens, messages):
+    def create(self, messages, **kw):
         prompt = messages[0]["content"]
         FakeAnthropic.prompts.append(prompt)
         if "Condense it." in prompt:
@@ -311,7 +312,7 @@ def test_rewrite_that_drops_facts_is_not_queued(env):
 
 def test_full_cleanup_drops_compliance_fix_on_length_flagged_cell(env,
                                                                 monkeypatch):
-    def create(self, model, max_tokens, messages):
+    def create(self, messages, **kw):
         prompt = messages[0]["content"]
         if "Review these entries" in prompt:
             return _Resp(json.dumps({"fixes": [

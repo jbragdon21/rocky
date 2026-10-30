@@ -889,7 +889,7 @@ def scan_inbox(config: dict, paths: dict, cases: dict, folder_map: dict,
     questions: list[dict] = []
     if by_folder and not dry_run:
         from anthropic import Anthropic
-        from rocky import CLAUDE_MODEL
+        import claude_call
         client = Anthropic(api_key=config["anthropic_api_key"])
         for fid, group in by_folder.items():
             cid = folder_map[fid]
@@ -901,13 +901,12 @@ def scan_inbox(config: dict, paths: dict, cases: dict, folder_map: dict,
                 f"{(m.get('bodyPreview') or '')[:700]}"
                 for m in group[:25])
             try:
-                resp = client.messages.create(
-                    model=CLAUDE_MODEL, max_tokens=900,
+                resp = claude_call.create(
+                    client, max_tokens=900,
                     system=_MAIL_SYSTEM,
                     messages=[{"role": "user",
                                "content": f"Matter: {label}\n\n{digest}"}])
-                text = "".join(b.text for b in resp.content
-                               if getattr(b, "type", "") == "text")
+                text = claude_call.text(resp)
                 data = json.loads(re.search(r"\{.*\}", text, re.S).group(0))
             except Exception as e:
                 log.warning(f"[mf-brain] (c) {label}: {e}")

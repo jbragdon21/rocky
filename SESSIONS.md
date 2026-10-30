@@ -24,6 +24,39 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-10-30 — Rocky's Claude calls move to Opus 5.5
+
+James asked to move everything still on Sonnet 4.5 to Opus 5.5.
+
+**What changed**
+
+- New `claude_call.py` holds `CLAUDE_MODEL = "claude-opus-5-5"`,
+  `create()` and `text()`. `create()` adds `THINKING_ROOM` (8,000)
+  to each caller's `max_tokens`, sets effort `medium`, and turns on
+  `fallbacks="default"` (beta `server-side-fallback-2026-07-01`). `text()`
+  joins the reply's text blocks and raises if the model declined.
+- The 20 Sonnet 4.5 call sites now use it. They're in rocky.py,
+  inbox_cleaner, litigation_updater, mailing_affidavits, pacer_monitor,
+  remy_digest, vault, mf_digest and mf_brain. The per-module
+  `CLAUDE_MODEL` constants are gone.
+- Not touched: the podcasts and Kirsten's digest (already on Opus 5.5 via
+  `sams_podcast._ask`) and the research agent (Opus 4.8).
+
+**Watch-outs**
+
+- Opus 5.5 always thinks, so a reply's first block is a thinking block.
+  `content[0].text` raises AttributeError on it. Read replies with
+  `claude_call.text()`.
+- Thinking counts against `max_tokens`. That is why `THINKING_ROOM`
+  exists. The largest caller (8,192) plus the room stays under the SDK's
+  non-streaming cap.
+- Cost goes up. Opus 5.5 is $4/$20 per MTok against Sonnet 4.5's $3/$15,
+  and the thinking tokens are billed on top.
+- Takes effect on the Rocky laptop only after a rebuild. Check that the
+  dashboard header shows the new build time.
+
+---
+
 ## Session 2026-10-26 (2) — Multifamily Feud: Joe's style, four sources
 
 After the deploy, James set the show's tone and replaced its source.

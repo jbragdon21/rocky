@@ -25,6 +25,7 @@ class FakeClient:
         self.reply = reply
         self.calls = []
         self.messages = self
+        self.beta = self
 
     def create(self, **kw):
         self.calls.append(kw)
@@ -83,7 +84,8 @@ def test_brief_filed_into_nested_folder_and_hit_report_written(tmp_path):
 
     # The brief's text past 5,000 characters reached the screen.
     assert "Cordeiro v. GREP Atlantic certified." in client.prompt
-    assert client.calls[-1]["max_tokens"] == rocky.DAILY_RUN_MAX_TOKENS
+    assert client.calls[-1]["max_tokens"] == (rocky.DAILY_RUN_MAX_TOKENS
+                                              + rocky.claude_call.THINKING_ROOM)
     filed = (case / "Courthouse News" / "Courthouse News Reports Daily Briefs"
              / "CNS Daily Brief 2026-10-26.txt")
     assert filed.read_text(encoding="utf-8") == brief

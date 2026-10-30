@@ -186,7 +186,7 @@ The script is safe to run when nothing is running — `taskkill` no-ops and it j
 1. Reboot the laptop and wait 2 minutes for OneDrive to sync
 2. Run `rocky.exe --daily-cases` manually. Check `C:\Rocky\rocky.log` for successful token acquisition and email fetch from case folders.
 3. Run `rocky.exe --daily-run` manually. Check that case folders with `_project/instructions.md` get processed.
-4. Run `rocky.exe --daily-digest` manually. Check `Rocky Cases\Daily Digests\` for the day's file.
+4. Run `rocky.exe --daily-digest` manually. Check `Rocky Cases\_Daily Digests\` for the day's file.
 5. Open the dashboard and read the build stamp in the header (`build · dash <date> · rocky <date>`). Those are the build times of the two exes in `<PROGRAM>` — compare them against the last rebuild on the dev laptop to confirm the sync arrived.
 
 ---

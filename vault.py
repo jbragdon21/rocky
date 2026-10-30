@@ -95,10 +95,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
+import claude_call
 
 log = logging.getLogger("rocky.vault")
 
-CLAUDE_MODEL = "claude-sonnet-4-5"
 CLASSIFY_MAX_TOKENS = 8000
 # Never classify more documents than this in one Claude call — a response
 # describing dozens of attachments overruns max_tokens and truncates the
@@ -955,12 +955,12 @@ def classify_documents(
     for attempt in (1, 2):
         response_text = None
         try:
-            response = client.messages.create(
-                model=CLAUDE_MODEL,
+            response = claude_call.create(
+                client,
                 max_tokens=CLASSIFY_MAX_TOKENS,
                 messages=[{"role": "user", "content": content}],
             )
-            response_text = response.content[0].text
+            response_text = claude_call.text(response)
             results = _extract_json_array(response_text)
             break
         except Exception as e:  # API error or bad JSON — one retry
