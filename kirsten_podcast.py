@@ -1,12 +1,17 @@
 """
-Kirsten Podcast — the Kirsten Digest as a two-host audio week update
-====================================================================
+Kirsten Podcast — the Kirsten Digest as a two-host audio update
+================================================================
 
 Runs inside --kirsten-digest (see kirsten_digest.run_cli). After the case
-cards are written, one Claude call rewrites them as a news-style "week
-update" between two hosts, at most about five minutes of speech. ElevenLabs
-Text to Dialogue (eleven_v3) voices it, and the MP3 is attached to the same
-draft. James hears it before he sends, just as he reads the cards.
+cards are written, one Claude call rewrites them as a news-style update
+between two hosts, at most about five minutes of speech. ElevenLabs Text to
+Dialogue (eleven_v3) voices it, and the episode is published to the
+Gallagher-Bozzuto podcast, a PRIVATE Transistor.fm show of its own that
+Kirsten subscribes to (James, 10/31: it was attached to the draft as an MP3
+until then). The email then says the audio version is live in her feed.
+
+Every episode opens with PRIVILEGE, read by the first host before the
+script, so no model call can drop or reword it.
 
 The script works only from the finished cards (status, week in review, next
 steps), never the raw activity, so it inherits the client-safe filtering the
@@ -15,11 +20,16 @@ saying this is an audio summary of the written report, and the written
 report controls.
 
 ElevenLabs takes at most about 2,000 characters per dialogue request, so the
-script goes out in chunks of whole turns and the MP3s are joined (same
-format, so plain concatenation plays as one file).
+script goes out in chunks of whole turns and the parts are rebuilt as one
+MP3 stream (sams_podcast.finish_audio).
 
-Config (all optional except the key):
+Config (all optional except the keys):
     elevenlabs_api_key        no key = no podcast, digest drafts as before
+    transistor_api_key        shared with Sam's Podcast and the Feud
+    kirsten_podcast_show_id   the private Transistor show (--kirsten-digest
+                              --shows lists ids; --subscribe EMAIL adds a
+                              private feed). Unset = the MP3 is saved but not
+                              published, and the email says nothing of it.
     kirsten_podcast           false turns the podcast off
     kirsten_podcast_voices    two ElevenLabs voice IDs [host 1, host 2]
     kirsten_podcast_hosts     the two hosts' first names
@@ -44,8 +54,7 @@ log = logging.getLogger("rocky.kirsten")
 
 ELEVEN_URL = "https://api.elevenlabs.io/v1/text-to-dialogue"
 ELEVEN_MODEL = "eleven_v3"
-# 64 kbps keeps five minutes near 2.4 MB, under Graph's 3 MB simple-attach
-# limit. Bigger files still attach, through an upload session.
+# 64 kbps, the rate finish_audio re-encodes at.
 OUTPUT_FORMAT = "mp3_44100_64"
 _BITRATE = 64_000
 
@@ -58,10 +67,12 @@ MAX_WORDS = 700          # about 4.7 minutes at 150 words a minute
 MAX_SECONDS = 300
 _CHUNK_CHARS = 1900      # ElevenLabs asks for <= 2,000 per request
 
-_GRAPH = "https://graph.microsoft.com/v1.0"
-_SIMPLE_ATTACH_MAX = 3 * 1024 * 1024
+# James's wording, 10/31. The email opens with the same sentence
+# (kirsten_digest.PRIVILEGE_EMAIL).
+PRIVILEGE = ("This podcast is a private attorney-client communication and is "
+             "protected by the attorney-client and work product privileges.")
 
-SYSTEM_PROMPT = """You write the script for a short audio companion to the Weekly Gallagher-Bozzuto Litigation Report, a weekly report from Gallagher LLP (outside litigation counsel) to Kirsten Woelper at Bozzuto, the client. Two hosts, {host1} and {host2}, deliver it as a brisk news-style "week update". Kirsten listens to it; the written report goes with it.
+SYSTEM_PROMPT = """You write the script for a short audio companion to the Weekly Gallagher-Bozzuto Litigation Report, a weekly report from Gallagher LLP (outside litigation counsel) to Kirsten Woelper at Bozzuto, the client. Two hosts, {host1} and {host2}, deliver it as a brisk news-style "week update". Kirsten listens to it in a private podcast feed; the written report is emailed to her with it.
 
 You receive the report's cards: for each case, a status line, the week's developments, and next steps. Those cards are your only source.
 
@@ -69,6 +80,7 @@ Return ONLY a JSON object:
 {{"turns": [{{"speaker": 1 or 2, "text": "<what that host says>"}}, ...]}}
 
 SHAPE
+- A privilege notice is read before your first turn: do not repeat it or mention privilege.
 - {host1} opens: the show name ("the Gallagher-Bozzuto week update"), the week, and one sentence saying this is an audio summary of this week's written report, which has the full detail. Then a one-line preview of the week's headlines.
 - Cover the cases with developments this week first, one at a time, each a short exchange between the hosts: what happened, then what comes next and when. Hand off naturally ("Over in Bulgin..."). Speaker turns alternate; most turns are one to three sentences.
 - Then the quiet cases together in one or two turns: name them and give only an upcoming date that matters, if a card states one.
@@ -105,9 +117,11 @@ def enabled(config: dict) -> bool:
 # Script
 # ---------------------------------------------------------------------------
 
-def cards_text(cards: list[tuple[str, str, dict]]) -> str:
+def cards_text(cards: list[tuple[str, str, dict]],
+               quiet: str = "No significant developments this week.") -> str:
     """The finished cards, plain, for the script prompt. Failed cards are
-    left out: there is nothing reliable to say about them."""
+    left out: there is nothing reliable to say about them. quiet is what a
+    card with no developments says (kirsten_digest.Period.quiet)."""
     blocks = []
     for title, subtitle, section in cards:
         if section.get("error"):
@@ -116,7 +130,7 @@ def cards_text(cards: list[tuple[str, str, dict]]) -> str:
         lines = [f"CASE: {title}" + (f" — {subtitle}" if subtitle else ""),
                  f"Status: {section.get('status') or '(none)'}",
                  "Week in review:"]
-        lines += [f"- {b}" for b in week] or ["- No significant developments this week."]
+        lines += [f"- {b}" for b in week] or [f"- {quiet}"]
         lines.append("Next steps:")
         lines += [f"- {b}" for b in section.get("next_steps") or []]
         blocks.append("\n".join(lines))
@@ -173,9 +187,10 @@ def fit(turns: list[dict], max_words: int = MAX_WORDS,
 
 
 def write_script(client, model: str, cards, week_label: str,
-                 hosts: list[str]) -> list[dict]:
-    """One Claude call (plus one shorten retry if it runs long)."""
-    material = cards_text(cards)
+                 hosts: list[str], quiet: str | None = None) -> list[dict]:
+    """One Claude call (plus one shorten retry if it runs long), the fact
+    check, then PRIVILEGE as the first turn."""
+    material = cards_text(cards, quiet) if quiet else cards_text(cards)
     if not material:
         return []
     # The model runs long, so the prompt asks for less than the hard cap.
@@ -204,7 +219,10 @@ def write_script(client, model: str, cards, week_label: str,
                       f"That is {words} words. Cut it to at most "
                       f"{MAX_WORDS - 50} words: less detail per case, same "
                       f"shape. Return the JSON only."}]
-    return check(client, model, material, fit(turns), today)
+    turns = check(client, model, material,
+                  fit(turns, MAX_WORDS - len(PRIVILEGE.split())), today)
+    # After the check, which would drop it: it is on no card.
+    return [{"speaker": 1, "text": PRIVILEGE}] + turns if turns else []
 
 
 CHECK_PROMPT = """You fact-check the script of a short two-host audio summary of the Weekly Gallagher-Bozzuto Litigation Report, sent by Gallagher LLP (outside counsel) to its client. The report cards are the only source of truth.
@@ -349,9 +367,10 @@ def synthesize(api_key: str, turns: list[dict], voices: list[str],
 
 
 def make(config: dict, cards, week_label: str, mp3_path: Path,
-         script_path: Path, audio: bool = True) -> Path | None:
+         script_path: Path, audio: bool = True,
+         quiet: str | None = None) -> Path | None:
     """Script (always saved) and, if audio, the MP3. Returns the MP3 path,
-    or None when there is nothing to attach. Never raises: the written
+    or None when there is nothing to publish. Never raises: the written
     report drafts either way."""
     from anthropic import Anthropic
     try:
@@ -359,7 +378,7 @@ def make(config: dict, cards, week_label: str, mp3_path: Path,
         client = Anthropic(api_key=config["anthropic_api_key"])
         from sams_podcast import DEFAULT_MODEL
         model = config.get("kirsten_podcast_model") or DEFAULT_MODEL
-        turns = write_script(client, model, cards, week_label, hosts)
+        turns = write_script(client, model, cards, week_label, hosts, quiet)
         if not turns:
             log.info("[kirsten podcast] no summarized cards; no podcast")
             return None
@@ -387,45 +406,90 @@ def make(config: dict, cards, week_label: str, mp3_path: Path,
 
 
 # ---------------------------------------------------------------------------
-# Attach to the draft
+# Transistor (the private Gallagher-Bozzuto show)
 # ---------------------------------------------------------------------------
 
-def attach(token: str, mailbox: str, message_id: str, path: Path) -> bool:
-    """Add the MP3 to an existing draft. Under 3 MB in one POST; larger
-    through a Graph upload session. Mail.ReadWrite covers both."""
-    data = path.read_bytes()
-    base = f"{_GRAPH}/users/{mailbox}/messages/{message_id}/attachments"
-    auth = {"Authorization": f"Bearer {token}"}
+def show_id(config: dict) -> str:
+    return str(config.get("kirsten_podcast_show_id") or "").strip()
+
+
+def can_publish(config: dict) -> bool:
+    return bool(config.get("transistor_api_key")) and bool(show_id(config))
+
+
+def show_notes(cards, week_label: str,
+               quiet: str = "No significant developments this week.") -> str:
+    """The episode description: the privilege notice, then each case's
+    status, developments and next steps (failed cards left out)."""
+    from html import escape
+
+    def ul(items):
+        return "<ul>" + "".join(f"<li>{escape(i)}</li>" for i in items) + "</ul>"
+
+    parts = [f"<p><em>{escape(PRIVILEGE)}</em></p>",
+             f"<p>{escape(week_label)}. The written report, emailed with "
+             f"this episode, has the full detail.</p>"]
+    for title, subtitle, section in cards:
+        if section.get("error"):
+            continue
+        head = title + (f" — {subtitle}" if subtitle else "")
+        parts.append(f"<h3>{escape(head)}</h3>")
+        if section.get("status"):
+            parts.append(f"<p>{escape(section['status'])}</p>")
+        parts.append(ul(section.get("week") or [quiet]))
+        parts.append(ul(section.get("next_steps") or []))
+    return "\n".join(parts)
+
+
+def publish(config: dict, mp3: Path, title: str, notes: str,
+            transcript: str, record: dict) -> bool:
+    """Upload, create and publish the episode. record gets episode_id as
+    soon as the episode exists, so a failed publish is retried without a
+    second upload. Returns True once it is live."""
+    import sams_podcast as sp
+    key = config["transistor_api_key"]
     try:
-        if len(data) < _SIMPLE_ATTACH_MAX:
-            import base64
-            resp = requests.post(base, headers=auth, timeout=120, json={
-                "@odata.type": "#microsoft.graph.fileAttachment",
-                "name": path.name, "contentType": "audio/mpeg",
-                "contentBytes": base64.b64encode(data).decode("ascii")})
-            ok = resp.status_code == 201
-        else:
-            resp = requests.post(f"{base}/createUploadSession", headers=auth,
-                                 timeout=60, json={"AttachmentItem": {
-                                     "attachmentType": "file",
-                                     "name": path.name, "size": len(data),
-                                     "contentType": "audio/mpeg"}})
-            ok = resp.status_code == 201
-            if ok:
-                url, step = resp.json()["uploadUrl"], 3 * 1024 * 1024
-                for start in range(0, len(data), step):
-                    part = data[start:start + step]
-                    end = start + len(part) - 1
-                    resp = requests.put(url, data=part, timeout=120, headers={
-                        "Content-Length": str(len(part)),
-                        "Content-Range": f"bytes {start}-{end}/{len(data)}"})
-                    if resp.status_code not in (200, 201):
-                        ok = False
-                        break
-    except requests.RequestException as e:
-        log.warning(f"[kirsten podcast] attach network error: {e}")
+        if not record.get("episode_id"):
+            audio_url = sp.upload_audio(key, mp3)
+            record["episode_id"] = sp.create_episode(
+                key, show_id(config), title,
+                "Audio summary of the Gallagher-Bozzuto litigation report. "
+                + PRIVILEGE, notes, audio_url, transcript)
+        sp.publish_episode(key, record["episode_id"])
+    except Exception as e:
+        log.warning(f"[kirsten podcast] publish FAILED: {e}. The episode is "
+                    f"saved at {mp3}"
+                    + (f"; Transistor has it as draft episode "
+                       f"{record['episode_id']}" if record.get("episode_id")
+                       else ""))
         return False
-    if not ok:
-        log.warning(f"[kirsten podcast] attach failed HTTP "
-                    f"{resp.status_code}: {resp.text[:300]}")
-    return ok
+    record["published"] = True
+    log.info(f"[kirsten podcast] published {title!r} to Transistor "
+             f"(episode {record['episode_id']})")
+    return True
+
+
+def feed_cli(config: dict, args: list[str]) -> None:
+    """--kirsten-digest --shows | --subscribe EMAIL."""
+    import sams_podcast as sp
+    key = config.get("transistor_api_key")
+    if not key:
+        log.error("[kirsten podcast] transistor_api_key is not set in "
+                  "config.json")
+        return
+    if "--shows" in args:
+        for found in sp.list_shows(key):
+            attrs = found.get("attributes") or {}
+            log.info(f"[kirsten podcast] show id {found.get('id')}: "
+                     f"{attrs.get('title')!r} (private: "
+                     f"{attrs.get('private_show', attrs.get('private'))})")
+        return
+    i = args.index("--subscribe")
+    email = args[i + 1] if i + 1 < len(args) else ""
+    if "@" not in email or not show_id(config):
+        log.error("[kirsten podcast] usage: --kirsten-digest --subscribe "
+                  "EMAIL (and kirsten_podcast_show_id set)")
+        return
+    url = sp.subscribe(key, show_id(config), email) or \
+        "(see the Transistor dashboard)"
+    log.info(f"[kirsten podcast] {email} subscribed. Private feed: {url}")

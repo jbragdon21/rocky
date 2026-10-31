@@ -3,8 +3,9 @@ Kirsten Digest — the weekly Gallagher-Bozzuto litigation report
 ===============================================================
 
     python rocky.py --kirsten-digest [--days N] [--dry-run] [--force]
-                                     [--no-podcast] [--audio]
-                                     [RRID-XXXX ...]          (Sunday 6:00 PM)
+                                     [--no-podcast] [--audio] [--no-publish]
+                                     [RRID-XXXX ...]      (on demand, dashboard)
+    python rocky.py --kirsten-digest --shows | --subscribe EMAIL
 
 Internally "the Kirsten Digest"; externally (the email itself) "the Weekly
 Gallagher-Bozzuto Litigation Report". Kirsten Woelper at Bozzuto is the
@@ -17,9 +18,16 @@ column (any header containing "kirsten") says yes. Rows on the Closed
 sheet are skipped. Bare RRIDs on the command line restrict the run to those
 cases (still only flagged ones), for testing one card.
 
-What each case card says, from that case folder's activity.jsonl over the
-last N days (default 7), with the Case Status Memorandum and CLAUDE.md
-overview as background for posture and dates:
+Run on demand from the dashboard (James, 10/31; it was Sunday 6 PM
+weekly). Each run covers everything since the last report was drafted
+(state\\kirsten_digest.json last_issued), so a skipped week is never lost;
+--days N covers the last N days instead, and with no earlier report on
+record it covers 7. A period longer than 8 days is worded "since our last
+report" rather than "this week".
+
+What each case card says, from that case folder's activity.jsonl over that
+period, with the Case Status Memorandum and CLAUDE.md overview as
+background for posture and dates:
 
     STATUS          one line on where the case stands
     WEEK IN REVIEW  the substantive developments (none = "No significant
@@ -31,18 +39,22 @@ out internal case-file housekeeping, Rocky, and the activity log itself.
 A case whose call fails still gets a card, with a red fill-in-before-
 sending note, so James can't miss it.
 
-Layout follows the Maple digest (header bar, title, summary strip, one card
-per case, footer). Colors live in THEME below.
+Layout follows the Maple digest (header bar, title, privilege notice,
+summary strip, one card per case, footer). Colors live in THEME below.
 
 A copy of each report is saved to <cases_root>\\_Kirsten Digests\\
-YYYY-MM-DD.html. state\\kirsten_digest.json records the last drafted date,
-so a second run the same day drafts nothing unless --force.
+YYYY-MM-DD.html. state\\kirsten_digest.json records the last drafted date
+and time, so a second run the same day drafts nothing unless --force.
 
 The podcast (kirsten_podcast.py): the finished cards rewritten as a two-host
-audio week update of five minutes at most, voiced by ElevenLabs and attached
-to the draft as YYYY-MM-DD.mp3. Needs elevenlabs_api_key; --no-podcast skips
-it. A dry run writes the script only; add --audio to voice it too (spends
-ElevenLabs credits). If the podcast fails, the report drafts without it.
+audio update of five minutes at most, voiced by ElevenLabs and published to
+the private Gallagher-Bozzuto show on Transistor (kirsten_podcast_show_id)
+that Kirsten subscribes to. Once it is live, the email's header says so; it
+is no longer attached. Needs elevenlabs_api_key; --no-podcast skips it,
+--no-publish makes it without uploading. A dry run writes the script only;
+add --audio to voice it too (spends ElevenLabs credits). If the podcast or
+its publish fails, the report drafts without the header. A second run the
+same day reuses an episode already published rather than posting another.
 """
 
 from __future__ import annotations
@@ -66,6 +78,12 @@ _DEFAULT_CC = ["scowin@gallagherllp.com", "jdugan@gallagherllp.com"]
 _DEFAULT_MAILBOX = "jbragdon@gallagherllp.com"
 
 REPORT_NAME = "Weekly Gallagher-Bozzuto Litigation Report"
+# James's wording, 10/31; the podcast opens with the same sentence.
+PRIVILEGE_EMAIL = ("This email is a private attorney-client communication "
+                   "and is protected by the attorney-client and work product "
+                   "privileges.")
+AUDIO_LIVE = ("The audio version of this report is now live in your private "
+              "podcast feed.")
 ARCHIVE_DIRNAME = "_Kirsten Digests"
 _YES = {"yes", "y", "true", "x", "1"}
 
@@ -90,7 +108,7 @@ _FONT = "Segoe UI,Helvetica,Arial,sans-serif"
 
 SYSTEM_PROMPT = """You are drafting one case's section of the Weekly Gallagher-Bozzuto Litigation Report, a weekly email from Gallagher LLP (outside litigation counsel) to Kirsten Woelper, the in-house contact at Bozzuto who oversees these cases. James Bragdon, the Gallagher attorney, reviews it and sends it from his own account.
 
-You receive the case's identity, the activity recorded on the case over the past week, and background: the case's status memorandum and case overview, when they exist. Activity may include emails received (with summaries), documents received or filed, drafting, research, calls, and the firm's own notes. A line ending [by NAME] was logged by that person: work by a Gallagher person is "we" or "Gallagher" (never by name), work by Kirsten Woelper is "you", and anyone else's stays theirs as the line describes. A line with no [by NAME] is not Kirsten's own action unless it says so.
+You receive the case's identity, the activity recorded on the case since the last report (the REPORTING PERIOD, usually about a week), and background: the case's status memorandum and case overview, when they exist. Activity may include emails received (with summaries), documents received or filed, drafting, research, calls, and the firm's own notes. A line ending [by NAME] was logged by that person: work by a Gallagher person is "we" or "Gallagher" (never by name), work by Kirsten Woelper is "you", and anyone else's stays theirs as the line describes. A line with no [by NAME] is not Kirsten's own action unless it says so.
 
 Return ONLY a JSON object with these keys:
 {
@@ -100,8 +118,8 @@ Return ONLY a JSON object with these keys:
 }
 
 "week" — WEEK IN REVIEW
-- The substantive developments of the past week only: filings and orders, hearings held, discovery served or received, settlement communications, deadlines set or moved, significant correspondence with opposing counsel, the court, or an agency, and significant work Gallagher completed (a motion drafted, research on a dispositive issue).
-- Only developments that happened on or after WEEK START. Activity lines carry the day they were recorded, not the day the event happened: a line recorded this week can describe a filing, hearing, or email from before WEEK START (for example, the filed copy of an earlier motion reaching the file). Check the event's own date in the text. Anything dated before WEEK START is not week-in-review; mention it in "status" if it matters.
+- The substantive developments of the reporting period only: filings and orders, hearings held, discovery served or received, settlement communications, deadlines set or moved, significant correspondence with opposing counsel, the court, or an agency, and significant work Gallagher completed (a motion drafted, research on a dispositive issue).
+- Only developments that happened on or after PERIOD START. Activity lines carry the day they were recorded, not the day the event happened: a line recorded in the period can describe a filing, hearing, or email from before PERIOD START (for example, the filed copy of an earlier motion reaching the file). Check the event's own date in the text. Anything dated before PERIOD START is not week-in-review; mention it in "status" if it matters.
 - 0 to 5 bullets, one development per bullet, one or two sentences each, about 40 words at most. Give the facts that matter (dates, parties, amounts). Group related items. No bullet that only elaborates or restates the one before it.
 - If nothing substantive happened, return an empty list. Do not pad a quiet week.
 
@@ -364,8 +382,8 @@ def summarize_case(client, model: str, case: dict, lines: list[str],
     """One Claude call. Returns {status, week, next_steps} or {error}."""
     today = datetime.now().strftime("%Y-%m-%d (%A)")
     prompt = f"""TODAY: {today}
-REPORTING WEEK: {window}
-WEEK START: {week_start}
+REPORTING PERIOD: {window}
+PERIOD START: {week_start}
 
 CASE
 Name: {case.get('File Name')}
@@ -374,8 +392,8 @@ Description: {case.get('Description') or '(none)'}
 
 GALLAGHER PEOPLE ON THIS CASE (refer to their work as "we"; never name them): {', '.join(firm or []) or '(none recorded)'}
 
-ACTIVITY THIS WEEK ({len(lines)} items):
-{chr(10).join(lines) if lines else '(no recorded activity this week)'}
+ACTIVITY IN THE PERIOD ({len(lines)} items):
+{chr(10).join(lines) if lines else '(no recorded activity in the period)'}
 
 CASE OVERVIEW (background):
 {background or '(none)'}
@@ -401,6 +419,68 @@ Write the JSON object for this case."""
 
 
 # ---------------------------------------------------------------------------
+# The reporting period
+# ---------------------------------------------------------------------------
+
+class Period:
+    """Since the last report went out. A week or so reads "this week"; a
+    longer gap (a report skipped) reads "since our last report"."""
+
+    def __init__(self, start: datetime, end: datetime):
+        self.start, self.end = start, end
+        self.weekly = end - start <= timedelta(days=8)
+
+    @property
+    def label(self) -> str:
+        return _week_label(self.start.astimezone(), self.end.astimezone(),
+                           self.weekly)
+
+    @property
+    def review(self) -> str:
+        return "Week in review" if self.weekly else "Since our last report"
+
+    @property
+    def when(self) -> str:
+        return "this week" if self.weekly else "since our last report"
+
+    @property
+    def quiet(self) -> str:
+        return f"No significant developments {self.when}."
+
+
+WEEKLY = Period(datetime(2026, 1, 4, tzinfo=timezone.utc),
+                datetime(2026, 1, 11, tzinfo=timezone.utc))
+
+
+def window_start(state: dict, end: datetime, days: int | None = None
+                 ) -> tuple[datetime, str]:
+    """Where this report starts, and why: --days, else the moment the last
+    report was drafted, else that day's midnight (state written before
+    10/31 kept only the date), else 7 days back."""
+    if days:
+        return end - timedelta(days=days), f"last {days} days (--days)"
+    issued = state.get("last_issued")
+    if issued:
+        try:
+            start = datetime.fromisoformat(issued)
+            if start.tzinfo is None:
+                start = start.astimezone()
+            local = start.astimezone()
+            return start, (f"since the last report "
+                           f"({local.strftime('%a %Y-%m-%d %H:%M')})")
+        except ValueError:
+            log.warning(f"[kirsten] unreadable last_issued {issued!r}")
+    drafted = str(state.get("last_drafted") or "")
+    try:
+        start = datetime.strptime(drafted, "%Y-%m-%d").astimezone()
+        return start, (f"since the last report ({drafted}; its time was not "
+                       f"recorded, so from midnight)")
+    except ValueError:
+        pass
+    return end - timedelta(days=7), "last 7 days (no earlier report on record)"
+
+
+# ---------------------------------------------------------------------------
 # Rendering (Maple digest layout)
 # ---------------------------------------------------------------------------
 
@@ -421,7 +501,8 @@ def _label(text: str) -> str:
             f'margin:0 0 6px;">{text}</div>')
 
 
-def render_card(title: str, subtitle: str, section: dict) -> str:
+def render_card(title: str, subtitle: str, section: dict,
+                period: Period = WEEKLY) -> str:
     t = THEME
     if section.get("error"):
         body = (f'<div style="font-size:14px;color:{t["warn"]};font-weight:600;">'
@@ -431,7 +512,7 @@ def render_card(title: str, subtitle: str, section: dict) -> str:
         week = section.get("week") or []
         week_html = (_bullets(week) if week else
                      f'<div style="font-size:14px;color:{t["muted"]};'
-                     f'margin:0 0 6px;">No significant developments this week.</div>')
+                     f'margin:0 0 6px;">{period.quiet}</div>')
         status = section.get("status") or ""
         status_html = (f'<div style="font-size:13px;color:{t["muted"]};'
                        f'margin:0 0 14px;line-height:1.45;">'
@@ -439,7 +520,7 @@ def render_card(title: str, subtitle: str, section: dict) -> str:
                        f'{escape(status)}</div>') if status else ""
         body = (status_html
                 + f'<div style="padding:0 0 0 12px;border-left:3px solid '
-                  f'{t["rule"]};margin:0 0 14px;">{_label("Week in review")}'
+                  f'{t["rule"]};margin:0 0 14px;">{_label(period.review)}'
                   f'{week_html}</div>'
                 + f'<div style="padding:0 0 0 12px;border-left:3px solid '
                   f'{t["rule"]};">{_label("Next steps")}'
@@ -456,14 +537,21 @@ def render_card(title: str, subtitle: str, section: dict) -> str:
 
 
 def render_report(cards: list[tuple[str, str, dict]], week_label: str,
-                  generated: datetime, audio: bool = False) -> str:
+                  generated: datetime, audio_live: bool = False,
+                  period: Period = WEEKLY) -> str:
+    """audio_live: the podcast is published, so the header says so."""
     t = THEME
     active = sum(1 for _, _, s in cards if s.get("week"))
     strip = (f'{len(cards)} case{"s" if len(cards) != 1 else ""} &nbsp;&middot;'
-             f'&nbsp; {active} with activity this week')
-    body = "".join(render_card(*c) for c in cards)
-    audio_note = ("<br>An audio summary of this report is attached."
-                  if audio else "")
+             f'&nbsp; {active} with activity {period.when}')
+    body = "".join(render_card(*c, period) for c in cards)
+    audio_banner = (f"""
+  <!-- audio -->
+  <tr><td style="padding:12px 28px 0;">
+    <div style="background:{t['strip_bg']};border-left:4px solid {t['label']};border-radius:6px;padding:10px 14px;font-size:14px;font-weight:600;color:{t['strip_text']};">
+      {AUDIO_LIVE}</div>
+  </td></tr>
+""" if audio_live else "")
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -490,8 +578,9 @@ def render_report(cards: list[tuple[str, str, dict]], week_label: str,
     <div style="font-size:20px;font-weight:700;color:{t['title']};margin:0;">Gallagher-Bozzuto Litigation Report</div>
     <div style="font-size:13px;color:{t['muted']};margin:4px 0 0;">{escape(week_label)}</div>
     <div style="font-size:11px;color:{t['muted']};margin:6px 0 0;font-weight:600;letter-spacing:.04em;">PRIVILEGED &amp; CONFIDENTIAL &mdash; ATTORNEY-CLIENT COMMUNICATION</div>
+    <div style="font-size:13px;color:{t['body']};margin:10px 0 0;line-height:1.5;font-style:italic;">{PRIVILEGE_EMAIL}</div>
   </td></tr>
-
+{audio_banner}
   <!-- summary strip -->
   <tr><td style="padding:10px 28px 4px;">
     <table role="presentation" cellpadding="0" cellspacing="0"
@@ -510,8 +599,8 @@ def render_report(cards: list[tuple[str, str, dict]], week_label: str,
   <tr><td style="padding:8px 28px 26px;border-top:1px solid {t['card_border']};">
     <div style="font-size:11px;color:{t['muted']};line-height:1.6;margin-top:14px;">
       Prepared by Gallagher LLP for Bozzuto, {generated.strftime('%B')} {generated.day}, {generated.year}.<br>
-      Each case shows where it stands, what happened this week, and what comes next.
-      Please reply with any questions.{audio_note}
+      Each case shows where it stands, what happened {period.when}, and what comes next.
+      Please reply with any questions.
     </div>
   </td></tr>
 
@@ -519,11 +608,12 @@ def render_report(cards: list[tuple[str, str, dict]], week_label: str,
 </body></html>"""
 
 
-def _week_label(start: datetime, end: datetime) -> str:
+def _week_label(start: datetime, end: datetime, weekly: bool = True) -> str:
+    lead = "Week of " if weekly else ""
     if start.year == end.year:
-        return (f"Week of {start.strftime('%B')} {start.day} – "
+        return (f"{lead}{start.strftime('%B')} {start.day} – "
                 f"{end.strftime('%B')} {end.day}, {end.year}")
-    return (f"Week of {start.strftime('%B')} {start.day}, {start.year} – "
+    return (f"{lead}{start.strftime('%B')} {start.day}, {start.year} – "
             f"{end.strftime('%B')} {end.day}, {end.year}")
 
 
@@ -536,19 +626,22 @@ def _card_title(case: dict) -> tuple[str, str]:
 # Run
 # ---------------------------------------------------------------------------
 
-def build(config: dict, days: int, rrids: list[str] | None = None
+def build(config: dict, since: int | datetime,
+          rrids: list[str] | None = None
           ) -> tuple[str | None, str, list[str]]:
     """Returns (html or None, reason, card names)."""
-    cards, reason, label = collect(config, days, rrids)
+    cards, reason, period = collect(config, since, rrids)
     if cards is None:
         return None, reason, []
-    return (render_report(cards, label, datetime.now()), reason,
-            [c[0] for c in cards])
+    return (render_report(cards, period.label, datetime.now(),
+                          period=period), reason, [c[0] for c in cards])
 
 
-def collect(config: dict, days: int, rrids: list[str] | None = None
-            ) -> tuple[list | None, str, str]:
-    """Returns (cards or None, reason, week label)."""
+def collect(config: dict, since: int | datetime,
+            rrids: list[str] | None = None
+            ) -> tuple[list | None, str, Period | None]:
+    """since: a number of days back, or the aware datetime the period
+    starts. Returns (cards or None, reason, period)."""
     import rocky
     from anthropic import Anthropic
 
@@ -560,16 +653,17 @@ def collect(config: dict, days: int, rrids: list[str] | None = None
     rocky._init_cases_paths(config)
     cases = rocky.load_case_index()
     if not cases:
-        return None, "case index unreadable (see warning above)", ""
+        return None, "case index unreadable (see warning above)", None
     if not kirsten_column(cases):
         return None, ("no 'Kirsten Digest?' column in the Rocky Case Index "
-                      "(add it with yes/no per case)"), ""
+                      "(add it with yes/no per case)"), None
     selected = select_cases(cases, rrids)
     if not selected:
-        return None, "no open case is marked yes for the Kirsten Digest", ""
+        return None, "no open case is marked yes for the Kirsten Digest", None
 
     end = datetime.now(timezone.utc)
-    start = end - timedelta(days=days)
+    start = (since if isinstance(since, datetime)
+             else end - timedelta(days=since))
     local_start, local_end = start.astimezone(), end.astimezone()
     window = (f"{local_start.strftime('%a %Y-%m-%d %H:%M')} to "
               f"{local_end.strftime('%a %Y-%m-%d %H:%M')}")
@@ -607,7 +701,7 @@ def collect(config: dict, days: int, rrids: list[str] | None = None
     # Cases with something to report first, then the quiet ones.
     cards.sort(key=lambda c: (not c[2].get("week") and not c[2].get("error"),
                               c[0].lower()))
-    return cards, "ok", _week_label(local_start, local_end)
+    return cards, "ok", Period(start, end)
 
 
 def _state_path(data_dir: Path) -> Path:
@@ -621,13 +715,27 @@ def _read_state(data_dir: Path) -> dict:
         return {}
 
 
+def _write_state(data_dir: Path, state: dict) -> None:
+    try:
+        _state_path(data_dir).parent.mkdir(parents=True, exist_ok=True)
+        _state_path(data_dir).write_text(json.dumps(state, indent=2),
+                                         encoding="utf-8")
+    except OSError as e:
+        log.warning(f"[kirsten] could not record state: {e}")
+
+
 def run_cli(config: dict, data_dir: Path) -> None:
     import rocky
+    import kirsten_podcast
 
     args = sys.argv[1:]
+    if "--shows" in args or "--subscribe" in args:
+        kirsten_podcast.feed_cli(config, args)
+        return
     dry_run = "--dry-run" in args
     force = "--force" in args
-    days = 7
+    no_publish = "--no-publish" in args
+    days = None
     if "--days" in args:
         i = args.index("--days")
         try:
@@ -644,39 +752,75 @@ def run_cli(config: dict, data_dir: Path) -> None:
                  f"draft another")
         return
 
+    # The next report starts where this one ends: taken before collecting,
+    # so anything logged while the cards are written lands in the next one.
+    issued = datetime.now(timezone.utc)
+    start, since = window_start(state, issued, days)
     log.info("=" * 60)
-    log.info(f"Rocky — Kirsten Digest ({REPORT_NAME}), last {days} days"
+    log.info(f"Rocky — Kirsten Digest ({REPORT_NAME}), {since}"
              f"{' — DRY RUN' if dry_run else ''}")
     log.info("=" * 60)
-    cards, reason, week_label = collect(config, days, rrids)
+    cards, reason, period = collect(config, start, rrids)
     if cards is None:
         log.warning(f"[kirsten] no report: {reason}")
         return
     names = [c[0] for c in cards]
 
-    import kirsten_podcast
+    end = datetime.now()
+    dated = f"{end.strftime('%B')} {end.day}, {end.year}"
     archive_dir = rocky.ROCKY_CASES_ROOT / ARCHIVE_DIRNAME
-    mp3 = None
+    pod = state.get("podcast") or {}
+    if pod.get("date") != today or force:
+        pod = {}
+    live = False
     if "--no-podcast" in args:
         log.info("[kirsten] --no-podcast: no audio this run")
     elif not kirsten_podcast.enabled(config):
         log.info("[kirsten] podcast off (no elevenlabs_api_key, or "
                  "kirsten_podcast false)")
     elif dry_run:
-        mp3 = kirsten_podcast.make(
-            config, cards, week_label,
+        kirsten_podcast.make(
+            config, cards, period.label,
             data_dir / "state" / "kirsten_podcast_preview.mp3",
             data_dir / "state" / "kirsten_podcast_preview.txt",
-            audio="--audio" in args)
+            audio="--audio" in args, quiet=period.quiet)
+        # The preview shows the header a real run would add.
+        live = kirsten_podcast.can_publish(config) and not no_publish
+    elif pod.get("published"):
+        live = True
+        log.info(f"[kirsten] today's episode {pod.get('episode_id')} is "
+                 f"already live; not posting another (--force to)")
     else:
-        mp3 = kirsten_podcast.make(
-            config, cards, week_label, archive_dir / f"{today}.mp3",
-            archive_dir / f"{today} podcast.txt")
-    html = render_report(cards, week_label, datetime.now(), audio=bool(mp3))
+        pod = pod or {"date": today}
+        script = archive_dir / f"{today} podcast.txt"
+        mp3 = (Path(pod["mp3"]) if pod.get("episode_id") and pod.get("mp3")
+               else kirsten_podcast.make(
+                   config, cards, period.label, archive_dir / f"{today}.mp3",
+                   script, quiet=period.quiet))
+        if mp3 and no_publish:
+            log.info(f"[kirsten] --no-publish: episode saved to {mp3}, not "
+                     f"uploaded")
+        elif mp3 and not kirsten_podcast.can_publish(config):
+            log.warning(f"[kirsten] transistor_api_key / "
+                        f"kirsten_podcast_show_id not set; episode saved to "
+                        f"{mp3}, not published, and the email won't mention "
+                        f"it")
+        elif mp3:
+            pod["mp3"] = str(mp3)
+            try:
+                transcript = script.read_text(encoding="utf-8")
+            except OSError:
+                transcript = ""
+            live = kirsten_podcast.publish(
+                config, mp3, f"{REPORT_NAME} — {dated}",
+                kirsten_podcast.show_notes(cards, period.label, period.quiet),
+                transcript, pod)
+            state["podcast"] = pod
+            _write_state(data_dir, state)
+    html = render_report(cards, period.label, end, audio_live=live,
+                         period=period)
 
-    end = datetime.now()
-    subject = (f"{REPORT_NAME} — Week Ending "
-               f"{end.strftime('%B')} {end.day}, {end.year}")
+    subject = f"{REPORT_NAME} — Week Ending {dated}"
     to = config.get("kirsten_digest_to") or _DEFAULT_TO
     cc = config.get("kirsten_digest_cc")
     if cc is None:
@@ -689,8 +833,7 @@ def run_cli(config: dict, data_dir: Path) -> None:
         preview.write_text(html, encoding="utf-8")
         log.info(f"[kirsten] DRY RUN — would draft {subject!r} into "
                  f"{mailbox}'s Drafts, To {to}, Cc {cc}, {len(names)} "
-                 f"case(s): {names}. Preview: {preview}"
-                 + (f"; audio {mp3}" if mp3 else ""))
+                 f"case(s): {names}. Preview: {preview}")
         return
 
     archive = archive_dir / f"{today}.html"
@@ -709,18 +852,10 @@ def run_cli(config: dict, data_dir: Path) -> None:
     if not result.get("created"):
         log.warning(f"[kirsten] draft FAILED: {result.get('reason')}")
         return
-    if mp3 and not kirsten_podcast.attach(token, mailbox,
-                                          result["message_id"], mp3):
-        log.warning(f"[kirsten] the draft went in WITHOUT the audio, but its "
-                    f"footer says one is attached. Attach {mp3} by hand or "
-                    f"delete that line before sending.")
-    state.update(last_drafted=today, message_id=result.get("message_id"),
-                 cases=names)
-    try:
-        _state_path(data_dir).parent.mkdir(parents=True, exist_ok=True)
-        _state_path(data_dir).write_text(json.dumps(state, indent=2),
-                                         encoding="utf-8")
-    except OSError as e:
-        log.warning(f"[kirsten] could not record state: {e}")
+    state.update(last_drafted=today, last_issued=issued.isoformat(),
+                 message_id=result.get("message_id"), cases=names)
+    _write_state(data_dir, state)
     log.info(f"[kirsten] drafted {subject!r} into {mailbox}'s Drafts, To "
-             f"{to}, Cc {cc} ({len(names)} case(s)). James reviews and sends.")
+             f"{to}, Cc {cc} ({len(names)} case(s))"
+             + ("; the audio is live in the private feed" if live else "")
+             + ". James reviews and sends.")

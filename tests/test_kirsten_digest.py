@@ -1,11 +1,14 @@
 """Kirsten Digest: case selection off the index column, folder matching
-with shared RRIDs, housekeeping kept out of the prompt, rendering, and
-the weekly schedule's /d day.
+with shared RRIDs, housekeeping kept out of the prompt, rendering, the
+period since the last report, the on-demand run (publish, then draft),
+and the weekly schedule's /d day.
 
     python -m pytest tests/test_kirsten_digest.py -q
 """
 
+import json
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -113,6 +116,11 @@ def test_render_escapes_and_flags_errors():
 
 
 def test_weekly_task_gets_sunday(monkeypatch):
+    # The Kirsten Digest went on demand 10/31; the fallback to a command's
+    # sched_days is still how a WEEKLY task gets its day.
+    monkeypatch.setitem(dashboard._COMMANDS_BY_FLAG, "kirsten-digest",
+                        {**dashboard._COMMANDS_BY_FLAG["kirsten-digest"],
+                         "sched_days": "SUN"})
     seen = {}
     monkeypatch.setattr(dashboard, "_run_schtasks",
                         lambda args: (seen.setdefault("args", args), (True, "ok"))[1])
@@ -255,3 +263,145 @@ def test_summarize_case_uses_ask_and_explains_the_author_tags():
     assert "temperature" not in seen and seen["max_tokens"] == 8000
     assert 'A line ending [by NAME] was logged by that person' in seen["system"]
     assert "[by James Bragdon]" in seen["messages"][0]["content"]
+
+
+def test_dashboard_entry_is_on_demand():
+    cmd = dashboard._COMMANDS_BY_FLAG["kirsten-digest"]
+    assert not cmd.get("recommended")
+    assert not any(k.startswith("sched_") for k in cmd)
+    assert "podcast feed" in cmd["desc"]
+
+
+END = datetime(2026, 10, 31, 22, 0, tzinfo=timezone.utc)
+
+
+def test_window_starts_at_the_last_report():
+    start, why = kd.window_start({"last_issued": "2026-10-18T22:01:00+00:00",
+                                  "last_drafted": "2026-10-18"}, END)
+    assert start == datetime(2026, 10, 18, 22, 1, tzinfo=timezone.utc)
+    assert why.startswith("since the last report")
+
+
+def test_window_old_state_uses_midnight_of_the_drafted_day():
+    start, why = kd.window_start({"last_drafted": "2026-10-25"}, END)
+    local = start.astimezone()
+    assert (local.year, local.month, local.day, local.hour) == (2026, 10, 25, 0)
+    assert "from midnight" in why
+
+
+def test_window_days_wins_and_nothing_on_record_is_a_week():
+    assert kd.window_start({"last_issued": "2026-10-01T00:00:00+00:00"},
+                           END, days=3)[0] == END - timedelta(days=3)
+    assert kd.window_start({}, END)[0] == END - timedelta(days=7)
+    assert kd.window_start({"last_issued": "junk"}, END)[0] == END - timedelta(days=7)
+
+
+def test_a_longer_period_is_worded_since_our_last_report():
+    week = kd.Period(END - timedelta(days=7), END)
+    long = kd.Period(END - timedelta(days=20), END)
+    assert week.weekly and week.label.startswith("Week of ")
+    assert not long.weekly and not long.label.startswith("Week of")
+    assert long.label == "October 11 – October 31, 2026"
+    html = kd.render_report([("Hunt", "", {"status": "Stayed.", "week": [],
+                                           "next_steps": ["x"]})],
+                            long.label, datetime(2026, 10, 31), period=long)
+    assert "No significant developments since our last report." in html
+    assert "Since our last report" in html and "this week" not in html
+
+
+def _run(monkeypatch, tmp_path, argv, config=None, published=True):
+    """run_cli with the case reading, Claude, ElevenLabs, Transistor and
+    Graph all faked. Returns (drafts, published episodes)."""
+    import rocky
+    import kirsten_podcast as kp
+    import pending_llt
+    cards = [("Bulgin", "EDVA", {"status": "MTD pending.", "week": ["Filed."],
+                                 "next_steps": ["Nov. 19 — opposition due."]})]
+    starts = []
+
+    def fake_collect(cfg, since, rrids=None):
+        starts.append(since)
+        return cards, "ok", kd.Period(since, datetime.now(timezone.utc))
+
+    def fake_make(cfg, c, label, mp3, script, audio=True, quiet=None):
+        mp3.parent.mkdir(parents=True, exist_ok=True)
+        mp3.write_bytes(b"mp3")
+        script.write_text("GEORGE: hi\n", encoding="utf-8")
+        return mp3
+
+    pubs = []
+
+    def fake_publish(cfg, mp3, title, notes, transcript, record):
+        pubs.append((title, transcript))
+        record["episode_id"] = "77"
+        if published:
+            record["published"] = True
+        return published
+
+    drafts = []
+    monkeypatch.setattr(kd, "collect", fake_collect)
+    monkeypatch.setattr(kp, "make", fake_make)
+    monkeypatch.setattr(kp, "publish", fake_publish)
+    monkeypatch.setattr(rocky, "ROCKY_CASES_ROOT", tmp_path / "cases")
+    monkeypatch.setattr(rocky, "get_msal_app", lambda cfg: None)
+    monkeypatch.setattr(rocky, "acquire_token", lambda app: "tok")
+    monkeypatch.setattr(rocky, "audit_token_scopes", lambda tok: None)
+    monkeypatch.setattr(pending_llt, "create_draft_email",
+                        lambda **kw: (drafts.append(kw),
+                                      {"created": True, "message_id": "M1"})[1])
+    monkeypatch.setattr(sys, "argv", ["rocky.py", "--kirsten-digest"] + argv)
+    cfg = {"elevenlabs_api_key": "e", "transistor_api_key": "t",
+           "kirsten_podcast_show_id": "42", **(config or {})}
+    kd.run_cli(cfg, tmp_path)
+    return drafts, pubs, starts
+
+
+def test_run_publishes_then_drafts_with_the_live_header(monkeypatch, tmp_path):
+    state = tmp_path / "state" / "kirsten_digest.json"
+    state.parent.mkdir()
+    state.write_text(json.dumps({"last_drafted": "2026-10-25",
+                                 "last_issued": "2026-10-25T22:00:00+00:00"}))
+    drafts, pubs, starts = _run(monkeypatch, tmp_path, [])
+    assert starts == [datetime(2026, 10, 25, 22, tzinfo=timezone.utc)]
+    assert len(pubs) == 1 and pubs[0][1] == "GEORGE: hi\n"
+    assert pubs[0][0].startswith(kd.REPORT_NAME + " — ")
+    html = drafts[0]["html_body"]
+    assert kd.AUDIO_LIVE in html and kd.PRIVILEGE_EMAIL in html
+    assert drafts[0]["to_addresses"] == ["kwoelper@bozzuto.com"]
+    saved = json.loads(state.read_text())
+    assert saved["last_drafted"] == datetime.now().strftime("%Y-%m-%d")
+    assert datetime.fromisoformat(saved["last_issued"]) > starts[0]
+    assert saved["podcast"]["published"] and saved["podcast"]["episode_id"] == "77"
+
+
+def test_rerun_same_day_reuses_the_live_episode(monkeypatch, tmp_path):
+    today = datetime.now().strftime("%Y-%m-%d")
+    state = tmp_path / "state" / "kirsten_digest.json"
+    state.parent.mkdir()
+    # The draft failed after the episode went live: no last_drafted today.
+    state.write_text(json.dumps({"podcast": {"date": today, "episode_id": "77",
+                                             "published": True}}))
+    drafts, pubs, _ = _run(monkeypatch, tmp_path, [])
+    assert pubs == [] and kd.AUDIO_LIVE in drafts[0]["html_body"]
+
+
+def test_failed_publish_drafts_without_the_header(monkeypatch, tmp_path):
+    drafts, pubs, _ = _run(monkeypatch, tmp_path, [], published=False)
+    assert len(pubs) == 1
+    assert kd.AUDIO_LIVE not in drafts[0]["html_body"]
+    saved = json.loads((tmp_path / "state" / "kirsten_digest.json").read_text())
+    assert saved["podcast"]["episode_id"] == "77" and not saved["podcast"].get("published")
+
+
+def test_no_show_id_saves_the_mp3_but_says_nothing(monkeypatch, tmp_path):
+    drafts, pubs, _ = _run(monkeypatch, tmp_path, [],
+                           config={"kirsten_podcast_show_id": ""})
+    assert pubs == [] and kd.AUDIO_LIVE not in drafts[0]["html_body"]
+
+
+def test_dry_run_records_nothing(monkeypatch, tmp_path):
+    drafts, pubs, _ = _run(monkeypatch, tmp_path, ["--dry-run"])
+    assert drafts == [] and pubs == []
+    assert not (tmp_path / "state" / "kirsten_digest.json").exists()
+    preview = (tmp_path / "state" / "kirsten_digest_preview.html").read_text(encoding="utf-8")
+    assert kd.AUDIO_LIVE in preview

@@ -29,8 +29,9 @@
     "sstephey@gallagherllp.com"
   ],
 
-  "_kirsten_podcast_comment": "Kirsten Digest podcast (inside --kirsten-digest): the week's cards rewritten by Claude as a two-host audio week update (5 min max), voiced by ElevenLabs Text to Dialogue (eleven_v3), attached to the draft as an MP3 and saved beside the report in Rocky Cases\\_Kirsten Digests. No elevenlabs_api_key = no podcast. kirsten_podcast false turns it off. Voices default to ElevenLabs premade George and Sarah; hosts' names should match the voices.",
+  "_kirsten_podcast_comment": "Kirsten Digest podcast (inside --kirsten-digest, on demand): the report's cards rewritten by Claude as a two-host audio update (5 min max) that opens with the privilege notice, voiced by ElevenLabs Text to Dialogue (eleven_v3), saved beside the report in Rocky Cases\\_Kirsten Digests and published to its own PRIVATE Transistor show (kirsten_podcast_show_id; uses transistor_api_key below). Once it is live the email's header says so; it is no longer attached. --kirsten-digest --shows lists show ids; --kirsten-digest --subscribe EMAIL gives Kirsten a private feed. No show id = the MP3 is saved, not published, and the email doesn't mention it. No elevenlabs_api_key = no podcast. kirsten_podcast false turns it off. Voices default to ElevenLabs premade George and Sarah; hosts' names should match the voices.",
   "elevenlabs_api_key": "",
+  "kirsten_podcast_show_id": "",
   "kirsten_podcast": true,
   "kirsten_podcast_voices": ["JBFqnCBsd6RMkjVDRZzb", "EXAVITQu4vr4xnSDxMaL"],
   "kirsten_podcast_hosts": ["George", "Sarah"],

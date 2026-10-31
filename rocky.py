@@ -91,13 +91,16 @@ Rocky — Virtual Paralegal
       they are never drafted twice; stale (earlier-dated) outbox files are
       warned about, never drafted. No digest file = quiet day, exits quietly.
 
-  python rocky.py --kirsten-digest [--days N] [--dry-run] [--force] [--no-podcast] [--audio] [RRID-XXXX ...]  (Sunday 6:00 PM weekly)
+  python rocky.py --kirsten-digest [--days N] [--dry-run] [--force] [--no-podcast] [--audio] [--no-publish] [RRID-XXXX ...]  (on demand)
+  python rocky.py --kirsten-digest --shows | --subscribe EMAIL
       The Kirsten Digest, sent as the "Weekly Gallagher-Bozzuto Litigation
-      Report": a week in review and next steps for every case marked yes in
-      the case index's "Kirsten Digest?" column, from each case's
-      activity.jsonl. Drafted into James's Drafts To Kirsten Woelper, cc
-      scowin@ and jdugan@; James sends. With elevenlabs_api_key set, a
-      two-host audio week update (5 min max) is attached as an MP3
+      Report": what happened since the last report and next steps for
+      every case marked yes in the case index's "Kirsten Digest?" column,
+      from each case's activity.jsonl (--days N for a fixed window).
+      Drafted into James's Drafts To Kirsten Woelper, cc scowin@ and
+      jdugan@; James sends. With elevenlabs_api_key set, a two-host audio
+      update (5 min max) is published to its own private Transistor show
+      (kirsten_podcast_show_id) and the email says it is live there
       (--no-podcast skips it; a dry run writes the script, --audio voices
       it). See kirsten_digest.py and kirsten_podcast.py.
 
@@ -6476,10 +6479,11 @@ def main():
         print("                                          8 AM-7 PM); feeds the Multifamily Digest")
         print("  --maple-pma-activity [--dry-run] [--backfill-days N]  Export PMA emails folder to JSONL for the Maple updater (legacy alias: --pma-activity)")
         print("  --maple-digest [--date YYYY-MM-DD] [--yesterday] [--dry-run]  Draft the Maple PMA digest into James's Drafts (James sends)")
-        print("  --kirsten-digest [--days N] [--dry-run] [--force] [--no-podcast] [--audio] [RRID-XXXX ...]")
-        print("                                          Weekly Gallagher-Bozzuto Litigation Report (Sunday 6 PM): drafts")
-        print("                                          week in review + next steps for every case marked yes in the")
-        print("                                          case index's Kirsten Digest? column, To Kirsten, into James's Drafts")
+        print("  --kirsten-digest [--days N] [--dry-run] [--force] [--no-podcast] [--audio] [--no-publish] [RRID-XXXX ...] | --shows | --subscribe EMAIL")
+        print("                                          Gallagher-Bozzuto Litigation Report (on demand): drafts what happened")
+        print("                                          since the last report + next steps for every case marked yes in the")
+        print("                                          case index's Kirsten Digest? column, To Kirsten, into James's Drafts;")
+        print("                                          the audio version goes to its private Transistor feed")
         print("  --sams-podcast [--dry-run] [--audio] [--force] [--no-publish] [RRID-XXXX ...] | --shows | --subscribe EMAIL")
         print("                                          Sam's Podcast (6 AM daily): sports research + yesterday's case")
         print("                                          activity as a two-host episode on a private Transistor feed")

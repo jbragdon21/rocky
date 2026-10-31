@@ -1,6 +1,6 @@
 """Kirsten Podcast: script parsing and length guard, ElevenLabs request
-chunking, the cards the script is built from, the audio note in the
-report, and the draft attachment paths.
+chunking, the cards the script is built from, the privilege opener, the
+audio-live header in the report, and publishing to Transistor.
 
     python -m pytest tests/test_kirsten_podcast.py -q
 """
@@ -29,6 +29,8 @@ def test_cards_text_skips_failed_cards_and_marks_quiet_ones():
     assert "No significant developments this week." in text
     assert "HRI" not in text
     assert kp.cards_text([CARDS[2]]) == ""
+    later = kp.cards_text(CARDS, "No significant developments since our last report.")
+    assert "- No significant developments since our last report." in later
 
 
 def test_parse_turns_cleans_tags_and_speakers():
@@ -100,55 +102,83 @@ def test_enabled_needs_key_and_respects_off_switch():
     assert not kp.enabled({"elevenlabs_api_key": "k", "kirsten_podcast": False})
 
 
-def test_report_footer_mentions_audio_only_when_attached():
+def test_report_header_says_audio_is_live_only_when_published():
     args = (CARDS[:2], "Week of October 12 – 18, 2026", datetime(2026, 10, 18, 18))
-    assert "audio summary" not in kd.render_report(*args)
-    assert "An audio summary of this report is attached." in \
-        kd.render_report(*args, audio=True)
+    plain = kd.render_report(*args)
+    assert kd.AUDIO_LIVE not in plain and "attached" not in plain
+    live = kd.render_report(*args, audio_live=True)
+    assert "now live in your private podcast feed" in live
+    # The banner sits above the cards, not in the footer.
+    assert live.index(kd.AUDIO_LIVE) < live.index("Bulgin")
 
 
-def test_attach_small_file_posts_once(monkeypatch, tmp_path):
+def test_email_and_podcast_open_with_the_privilege_notice():
+    html = kd.render_report(CARDS[:2], "Week", datetime(2026, 10, 18, 18))
+    assert ("This email is a private attorney-client communication and is "
+            "protected by the attorney-client and work product privileges.") in html
+    assert html.index(kd.PRIVILEGE_EMAIL) < html.index("Bulgin")
+    assert kp.PRIVILEGE == ("This podcast is a private attorney-client "
+                            "communication and is protected by the "
+                            "attorney-client and work product privileges.")
+
+
+def test_show_notes_carry_privilege_and_cards():
+    notes = kp.show_notes(CARDS, "Week of October 12 – 18, 2026")
+    assert notes.startswith(f"<p><em>{kp.PRIVILEGE}</em></p>")
+    assert "<h3>Bulgin — EDVA</h3>" in notes and "<li>Filed the MTD.</li>" in notes
+    assert "No significant developments this week." in notes      # Hunt
+    assert "HRI" not in notes                                      # failed card
+
+
+def test_can_publish_needs_key_and_show():
+    assert not kp.can_publish({"transistor_api_key": "t"})
+    assert not kp.can_publish({"kirsten_podcast_show_id": "9"})
+    assert kp.can_publish({"transistor_api_key": "t", "kirsten_podcast_show_id": 9})
+
+
+def test_publish_uploads_creates_and_publishes(monkeypatch, tmp_path):
+    import sams_podcast as sp
     seen = []
+    monkeypatch.setattr(sp, "upload_audio",
+                        lambda key, path: (seen.append(("upload", key, path.name)), "https://a")[1])
+    monkeypatch.setattr(sp, "create_episode",
+                        lambda key, show, title, summary, notes, url, tr:
+                        (seen.append(("create", show, title, summary, url, tr)), "77")[1])
+    monkeypatch.setattr(sp, "publish_episode",
+                        lambda key, ep: seen.append(("publish", ep)))
+    mp3 = tmp_path / "2026-10-31.mp3"
+    mp3.write_bytes(b"x")
+    record = {}
+    cfg = {"transistor_api_key": "t", "kirsten_podcast_show_id": "42"}
+    assert kp.publish(cfg, mp3, "Report — October 31, 2026", "<p>n</p>",
+                      "GEORGE: hi", record)
+    assert record == {"episode_id": "77", "published": True}
+    assert seen[0] == ("upload", "t", "2026-10-31.mp3")
+    assert seen[1][1:3] == ("42", "Report — October 31, 2026")
+    assert kp.PRIVILEGE in seen[1][3] and seen[1][5] == "GEORGE: hi"
+    assert seen[2] == ("publish", "77")
 
-    class Resp:
-        status_code = 201
-        text = ""
 
-    monkeypatch.setattr(kp.requests, "post",
-                        lambda url, **kw: (seen.append((url, kw["json"])), Resp())[1])
-    mp3 = tmp_path / "2026-10-25.mp3"
-    mp3.write_bytes(b"\x00" * 1000)
-    assert kp.attach("tok", "j@x.com", "MSG", mp3)
-    url, body = seen[0]
-    assert url.endswith("/users/j@x.com/messages/MSG/attachments")
-    assert body["name"] == "2026-10-25.mp3" and body["contentType"] == "audio/mpeg"
+def test_publish_failure_keeps_the_episode_for_a_retry(monkeypatch, tmp_path):
+    import sams_podcast as sp
+    monkeypatch.setattr(sp, "upload_audio", lambda key, path: "https://a")
+    monkeypatch.setattr(sp, "create_episode", lambda *a: "77")
 
-
-def test_attach_large_file_uses_upload_session(monkeypatch, tmp_path):
-    puts = []
-
-    class Created:
-        status_code = 201
-        text = ""
-
-        @staticmethod
-        def json():
-            return {"uploadUrl": "https://upload"}
-
-    class Done:
-        status_code = 200
-        text = ""
-
-    monkeypatch.setattr(kp.requests, "post", lambda url, **kw: Created())
-    monkeypatch.setattr(kp.requests, "put",
-                        lambda url, data, timeout, headers: (puts.append(headers), Done())[1])
-    mp3 = tmp_path / "big.mp3"
-    size = 7 * 1024 * 1024
-    mp3.write_bytes(b"\x00" * size)
-    assert kp.attach("tok", "j@x.com", "MSG", mp3)
-    assert [h["Content-Range"] for h in puts] == [
-        f"bytes 0-3145727/{size}", f"bytes 3145728-6291455/{size}",
-        f"bytes 6291456-{size - 1}/{size}"]
+    def boom(key, ep):
+        raise RuntimeError("Transistor publish: HTTP 500")
+    monkeypatch.setattr(sp, "publish_episode", boom)
+    mp3 = tmp_path / "e.mp3"
+    mp3.write_bytes(b"x")
+    record = {}
+    cfg = {"transistor_api_key": "t", "kirsten_podcast_show_id": "42"}
+    assert not kp.publish(cfg, mp3, "T", "", "", record)
+    assert record == {"episode_id": "77"}
+    # The retry publishes that episode without a second upload.
+    uploads = []
+    monkeypatch.setattr(sp, "upload_audio", lambda *a: uploads.append(a))
+    monkeypatch.setattr(sp, "publish_episode", lambda key, ep: None)
+    assert kp.publish(cfg, mp3, "T", "", "", record)
+    assert not uploads and record["published"]
 
 
 class _Claude:
@@ -181,8 +211,11 @@ def test_write_script_uses_opus_calendar_and_a_client_fact_check():
     turns = kp.write_script(client, "claude-opus-5-5", CARDS, "Week of Oct 19",
                             ["George", "Sarah"])
     assert [t["text"] for t in turns] == [
+        kp.PRIVILEGE,
         "Welcome to the week update.", "The team filed the motion to dismiss.",
         "Questions? Reply to the report."]
+    assert turns[0]["speaker"] == 1
+    # The check never sees the notice, so it can't drop it.
     script_call, check_call = client.calls
     assert "temperature" not in script_call                 # Opus: effort
     assert script_call["output_config"]["effort"] == "medium"
@@ -192,6 +225,8 @@ def test_write_script_uses_opus_calendar_and_a_client_fact_check():
     assert check_call["system"] == kp.CHECK_PROMPT
     assert check_call["output_config"]["effort"] == "high"
     assert "names a Gallagher attorney or staff member" in kp.CHECK_PROMPT
+    assert kp.PRIVILEGE not in check_call["messages"][0]["content"]
+    assert "do not repeat it" in script_call["system"]
 
 
 def test_make_rebuilds_the_glued_audio_as_one_stream(monkeypatch, tmp_path):

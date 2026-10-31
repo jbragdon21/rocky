@@ -186,9 +186,12 @@ ROCKY_COMMANDS = [
     {"flag": "maple-digest",  "label": "Maple Digest",    "group": "Maple", "dry_run": True,  "desc": "Step 3 — put the client update in James's Drafts to send", "sched_time": "17:40", "recommended": True},
     {"flag": "litigation",    "label": "Litigation Updater", "group": "Litigation", "dry_run": True, "args": ["--poll"], "desc": "Check for Bozzuto legal notices & claim requests, propose over Teams", "sched_time": "10:00"},
     {"flag": "litigation-digest", "label": "Litigation Digest", "group": "Litigation", "dry_run": True, "desc": "Draft the day's claims activity into James's Drafts", "sched_time": "18:30"},
-    # Weekly, Sunday 6 PM: the Kirsten Digest, sent to the client as the
-    # "Weekly Gallagher-Bozzuto Litigation Report" (James's Drafts).
-    {"flag": "kirsten-digest", "label": "Kirsten Digest", "group": "Litigation", "dry_run": True, "desc": "Weekly Gallagher-Bozzuto Litigation Report — week in review and next steps for the cases marked for Kirsten, into James's Drafts", "sched_time": "18:00", "sched_freq": "WEEKLY", "sched_days": "SUN", "recommended": True},
+    # On demand (James, 10/31; it was Sunday 6 PM weekly): the Kirsten
+    # Digest, sent to the client as the "Weekly Gallagher-Bozzuto
+    # Litigation Report" (James's Drafts), covering everything since the
+    # last one. No schedule and not recommended, so auto-setup never
+    # re-creates the old Sunday task.
+    {"flag": "kirsten-digest", "label": "Kirsten Digest", "group": "Litigation", "dry_run": True, "desc": "Gallagher-Bozzuto Litigation Report — what happened since the last report and next steps for the cases marked for Kirsten, into James's Drafts; the audio version goes to Kirsten's private podcast feed"},
     # Daily, 6 AM: after the 1 AM research edition lands in the Sam's
     # Podcast folder. Publishes to a private Transistor feed.
     {"flag": "sams-podcast", "label": "Sam's Podcast", "group": "Litigation", "dry_run": True, "desc": "Daily two-host episode — the morning's sports research and yesterday's activity on the cases marked for Sam, published to Sam's private feed", "sched_time": "06:00", "recommended": True},

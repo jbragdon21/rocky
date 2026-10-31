@@ -24,6 +24,89 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-10-31 — Kirsten Digest: on demand, podcast to a Transistor feed
+
+James asked for the Kirsten Digest's podcast to publish to a Transistor
+feed, the way Sam's Podcast and the Feud do.
+
+**Decisions (James)**
+
+- Kirsten still gets the email. The MP3 is no longer attached. It goes to
+  its own new private Transistor show, and the email says the audio
+  version is live in her private feed.
+- The email and the podcast both open with: "This [email/podcast] is a
+  private attorney-client communication and is protected by the
+  attorney-client and work product privileges."
+- The tone stays client-safe.
+- It runs on demand from the dashboard, not on Sunday's schedule. Each
+  run covers everything since the last report went out.
+
+**What changed**
+
+- `kirsten_podcast.py`:
+  - `PRIVILEGE` becomes the first turn, added after the fact check. The
+    script prompt says not to repeat it.
+  - New `show_notes`, `can_publish`, `publish` (upload, create, publish;
+    records `episode_id` first so a failed publish can be retried) and
+    `feed_cli` (`--shows`, `--subscribe EMAIL`).
+  - `attach()` and the Graph upload code are gone.
+- `kirsten_digest.py`:
+  - `window_start` picks the period start: `last_issued`, else midnight
+    of `last_drafted`, else 7 days back; `--days` overrides.
+  - `Period` changes the wording from "this week" to "since our last
+    report" when a period runs past 8 days.
+  - `PRIVILEGE_EMAIL` sits under the title. The `AUDIO_LIVE` banner
+    appears only after a confirmed publish.
+  - `run_cli` order: cards, then podcast, then publish, then draft. It
+    records `last_issued` and `podcast` in state.
+  - New `--no-publish` flag. `collect()` takes days or a start datetime
+    and returns a `Period`.
+- Dashboard entry: no `sched_*`, not recommended, new description.
+  rocky.py help text and config.example.json (`kirsten_podcast_show_id`)
+  updated. BUILD_REFERENCE.md gained a Kirsten Digest paragraph (it had
+  none).
+- Tests: 260 pass. Attach tests replaced by publish, retry, show-notes,
+  privilege, period and `run_cli` tests (publish then draft, same-day
+  reuse, failed publish, no show id, dry run). The weekly-task test now
+  patches in its own `sched_days`.
+
+**Verified**
+
+- Dry run on Bulgin (RRID-0033) with placeholder ElevenLabs and Transistor
+  keys in memory only (a dry run without `--audio` calls neither): 82
+  activity lines and 5 bullets. The script ran 11 turns, 433 words, and
+  opened with the privilege sentence. The email showed the privilege line
+  and the live banner above the cards.
+- Not tested live: the Transistor upload for this show. It uses the same
+  functions Sam's Podcast publishes with.
+
+**Open**
+
+- James: create the private show in Transistor. Then run
+  `rocky.exe --kirsten-digest --shows` for its id, set
+  `kirsten_podcast_show_id` in `C:\Rocky\config.json`, and run
+  `--kirsten-digest --subscribe kwoelper@bozzuto.com`. Transistor emails
+  her the private feed link.
+- On the Rocky laptop, delete the existing `\Rocky\Kirsten Digest`
+  scheduled task (Sunday 6 PM) from the dashboard. Taking the schedule
+  out of the code doesn't remove a task that already exists.
+- Rebuild and deploy, then check the dashboard header time.
+
+**Watch-outs**
+
+- The episode goes live in Kirsten's feed when the run happens, before
+  James reviews and sends the email. Use `--dry-run --audio` to hear it
+  first.
+- The first real run on the Rocky laptop starts at midnight 10/25, because
+  its state only has `last_drafted`. Anything from the 10/25 daytime that
+  the 10/25 report already covered can show up again.
+- Another session was building the Vault Checklist in this same checkout
+  at the same time (vault_checklist.py, vault.py, llt_watch.py, and its
+  own hunks in dashboard.py, rocky.py and build_exe.py). Commit only this
+  work's hunks.
+
+---
+
 ## Session 2026-10-30 — Rocky's Claude calls move to Opus 5.5
 
 James asked to move everything still on Sonnet 4.5 to Opus 5.5.
