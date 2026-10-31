@@ -24,6 +24,67 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-10-31 (2) — Vault Checklist and the Vault archive
+
+James added four "The Vault" columns to PENDING LLT MATTERS and asked for
+a daily process that marks them from the Vault, plus an archive for
+closed matters.
+
+**What changed**
+
+- New `vault_checklist.py`, `rocky.py --vault-checklist` (dashboard
+  "Vault Checklist", 6:15 AM daily, recommended). VAULT.md has the full
+  rules; BUILD_REFERENCE has the summary.
+- `vault.load_catalog` now replays `_vault\moves.jsonl` (`apply_moves`).
+- `llt_watch.ROCKY_OWNED_COLUMNS` makes LLT Watch ignore the four columns.
+- `build_exe.py` bundles `vault_checklist.py`.
+- `tests/test_vault_checklist.py` has 24 tests.
+
+**Decisions (James, 10/31)**
+
+- Document rules: MD/VA breach and non-renewal need lease + notice;
+  MD/VA rent and non-rent add a current ledger (his answer: "lease,
+  notice, ledger"); DC as he listed. DC non-renewal is treated as DC
+  breach (my call, flagged here).
+- Archive: 14 days off the sheet, or never matched and idle 120 days.
+- My calls: ledger "current" = 30 days; notice/affidavit window = 150
+  days before the ripe date; blank (not No) when type or state is
+  unknown; no vault-wide name match (it produced a wrong Yes).
+
+**Verified**
+
+- Dry run against the live sheet (10.5.26, 1,180 matters) and the real
+  Vault (2,183 tenant folders): 1,095 matters marked, 1,534 Yes / 2,333 No
+  / 513 N/a, 38 fully documented, 4,380 cells to write. 15 rows have no
+  jurisdiction (Ivy City, 14; Silver Tree Marlborough, 1); 71 have no type
+  (mostly parking revocations and tenant-filed suits). No archive due yet.
+- The suite passes (260).
+
+**Open items**
+
+- **Sheet writes are blocked on permission.** rocky@'s token carries
+  `Sites.Read.All` only, and a silent request for `Sites.ReadWrite.All`
+  returned nothing. Run `rocky.exe --vault-checklist --consent` on the Rocky
+  laptop as rocky@; if the tenant refuses user consent, IT grants it, or
+  grants `Sites.Selected` and `SHEET_WRITE_SCOPES` changes.
+- Not deployed. Another session was editing the Kirsten Digest files in
+  this same checkout (rocky.py, dashboard.py, kirsten_*), so a build now
+  would ship that work half-done.
+- Teach `checklist_rules.json`: Ivy City and Marlborough jurisdictions,
+  and whether parking revocations should be marked as breach.
+- Classic at Modern on M rows matched documents in the Modern on M
+  folder: probably misfiled at ingest, worth moving by hand.
+
+**Watch-outs**
+
+- In this environment, bash heredocs collapse `\\` to `\`. A scripted
+  edit wrote raw backspace characters into a regex. Use the Edit/Write
+  tools for code that contains backslashes.
+- The header row is now row 2 because of the banner; every sheet parser
+  finds it by the Name+Property rule.
+
+---
+
 ## Session 2026-10-31 — Kirsten Digest: on demand, podcast to a Transistor feed
 
 James asked for the Kirsten Digest's podcast to publish to a Transistor

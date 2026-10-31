@@ -210,6 +210,9 @@ ROCKY_COMMANDS = [
     # --vault takes its own lock while writing the split tasks' state
     # files, so a click could race a monitor sweep. Both stay CLI flags.
     {"flag": "vault-dropbox", "label": "Vault Dropbox",   "group": "Vault", "dry_run": True,  "desc": "Pull new documents from the client Dropbox sources",        "sched_freq": "HOURLY", "sched_interval": 1},
+    # Daily, 6:15 AM: before the 7:00 MF Brain digest and before the
+    # team opens the sheet. Writes only the four Vault columns.
+    {"flag": "vault-checklist", "label": "Vault Checklist", "group": "Vault", "dry_run": True,  "desc": "Mark the LLT sheet's Vault columns (Lease / Final Notice / Affidavit / Ledger) Yes, No or N/a from the Vault, and archive closed matters' folders", "sched_time": "06:15", "recommended": True},
     {"flag": "multifamily-digest", "label": "Multifamily Digest", "group": "Vault", "dry_run": True,  "desc": "Draft the daily digest into James's Drafts to send: certified mail, affidavits, Vault additions, Remy development, and pending items", "sched_time": "17:45", "recommended": True},
     {"flag": "pacer",         "label": "PACER Sync",      "group": "PACER", "dry_run": True,  "desc": "Refresh every watched federal case and file new filings", "sched_time": "07:00", "recommended": True},
     # --pacer-sweep / --pacer-digest are aliases pacer_monitor.run_cli

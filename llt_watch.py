@@ -88,6 +88,12 @@ _DEFAULT_HOURS = (8, 19)
 # Override with config "llt_watch_ignore_columns".
 _DEFAULT_IGNORE_COLUMNS: tuple[str, ...] = ()
 
+# The four "The Vault" columns are written by Rocky itself each morning
+# (vault_checklist.py), so their changes are Rocky's marks, not hand
+# edits. Always ignored, whatever llt_watch_ignore_columns says.
+ROCKY_OWNED_COLUMNS: tuple[str, ...] = (
+    "Lease?", "Final Notice?", "Affidavit of Service?", "Ledger?")
+
 # Identity of a row on a sheet with no ID column. This groups by RESIDENT,
 # not by matter: 109 of the 1,060 rows on the 7.25.26 sheet are a second
 # matter for a resident who already has one (a rent case and a smoking
@@ -805,7 +811,7 @@ def run_watch(token: str | None, config: dict, paths: dict,
     alone, so the next run picks up the same edits rather than losing
     them."""
     ignore = tuple(config.get("llt_watch_ignore_columns")
-                   or _DEFAULT_IGNORE_COLUMNS)
+                   or _DEFAULT_IGNORE_COLUMNS) + ROCKY_OWNED_COLUMNS
     old = load_snapshot(paths)
 
     # --- get the file (and, when possible, skip getting it) ---

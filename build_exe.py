@@ -80,6 +80,7 @@ def build_rocky():
         "--add-data", f"{ROOT / 'inbox_cleaner.py'};.",
         "--add-data", f"{ROOT / 'teams.py'};.",
         "--add-data", f"{ROOT / 'vault.py'};.",
+        "--add-data", f"{ROOT / 'vault_checklist.py'};.",
         "--add-data", f"{ROOT / 'litigation_updater.py'};.",
         "--add-data", f"{ROOT / 'mailing_affidavits.py'};.",
         "--add-data", f"{ROOT / 'letterstream.py'};.",

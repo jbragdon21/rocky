@@ -179,6 +179,12 @@ Both are cases where the honest failure is to report *nothing*:
   their appearance in the header row is itself a layout change). An
   unnamed column that later gains a value is reported by its spreadsheet
   letter: "column AS added: ...".
+- **The four "The Vault" columns (Lease? / Final Notice? / Affidavit of
+  Service? / Ledger?) are always ignored** (`ROCKY_OWNED_COLUMNS`, on top
+  of any `llt_watch_ignore_columns`): Rocky's Vault Checklist writes them
+  every morning, so their changes are Rocky's own marks, not hand edits.
+  Their banner row (row 1, added 2026-10-31) pushed the header to row 2,
+  which the Name+Property header detection already handles.
 - **Column A is unlabeled and carries the client** ("Bozzuto MD",
   "Horning", "Towner"), written once above its block of rows. Diffing it
   as an ordinary column turns one inserted row into "column A cleared"

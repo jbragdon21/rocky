@@ -136,6 +136,14 @@ Rocky — Virtual Paralegal
       Dropbox accounts (incremental via cursors). --status, --reindex,
       and --dropbox-auth <account> subcommands. See VAULT.md.
 
+  python rocky.py --vault-checklist [--dry-run] [--no-write] [--no-archive] [--repaint]  (6:15 AM daily)
+      Vault Checklist: mark the four "The Vault" columns on PENDING LLT
+      MATTERS Yes / No / N/a for each matter from what its Vault tenant
+      folder holds, and move closed matters' folders to The Vault's
+      _Archive (14 days off the sheet, or never on it and idle 120
+      days). --consent records the one-time sheet-write consent. See
+      VAULT.md and vault_checklist.py.
+
   python rocky.py --monitor [--once]                (24/7, at boot)
       The fast loop: every monitor_interval_minutes (default 10) run the
       LetterStream sweep and the Vault mail sources as subprocesses, so
@@ -6411,6 +6419,10 @@ def main():
         import mf_brain
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         mf_brain.run_cli(load_config(), DATA_DIR)
+    elif "--vault-checklist" in sys.argv:
+        import vault_checklist
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        vault_checklist.run_cli(load_config(), DATA_DIR)
     elif "--vault-digest" in sys.argv:
         import vault
         vault.run_digest_cli(load_config(), DATA_DIR)
@@ -6498,6 +6510,8 @@ def main():
         print("  --vault-dropbox | --vault-mail | --vault-inbox   [same flags]")
         print("                                          One Vault source each (Dropbox / rocky@ submissions / James's inbox);")
         print("                                          independent locks + state, safe to schedule separately (e.g. hourly)")
+        print("  --vault-checklist [--dry-run] [--no-write] [--no-archive] [--repaint] [--local [PATH]] | --consent")
+        print("                                          Mark the LLT sheet's Vault columns Yes/No/N/a and archive closed matters' folders")
         print("  --multifamily-digest [--hours N] [--dry-run]")
         print("                                          One daily email: certified mail sent, affidavits drafted/filed, Vault")
         print("                                          additions, the day's Remy development digest, and everything still")

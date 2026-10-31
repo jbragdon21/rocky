@@ -275,6 +275,100 @@ I/II" vs "The Cloisters" and "Solstice I/II" vs the table's
 "Solstice - 3500/3534 E Capitol" (distinct phases — needs a human call,
 then alias lines).
 
+## Vault Checklist and the archive (built 2026-10-31)
+
+`rocky.exe --vault-checklist` (6:15 AM daily; code `vault_checklist.py`)
+does two jobs in one pass.
+
+**1. The Vault columns on PENDING LLT MATTERS.** James added four columns
+under a "The Vault" banner in row 1 (the header row is now row 2): **M
+Lease? · N Final Notice? · O Affidavit of Service? · P Ledger?** Rocky
+finds each matter's tenant folder and marks each cell **Yes** (light
+green `#E2EFDA`), **No** (light orange `#FCE4D6`) or **N/a** (light gray
+`#EDEDED`, when that kind of matter doesn't need the document):
+
+| Matter | Lease | Final Notice | Affidavit | Ledger |
+|---|---|---|---|---|
+| MD / VA breach, non-renewal | required | required | N/a | N/a |
+| MD / VA rent, non-rent | required | required | N/a | current |
+| DC breach (and the rare DC non-renewal) | required | RAD-stamped | required | N/a |
+| DC non-rent | required | RAD-stamped | required | current |
+| DC rent | required | any notice (not RAD-stamped) | required | current |
+
+- **Type** comes from Status (rent / non-rent incl. water and utilities /
+  non-renewal / breach keywords). Tenant-filed suits, squatters, parking
+  revocations and a bare "Term letter sent" are left blank, never guessed.
+- **Jurisdiction**, in order: `_vault\checklist_rules.json`, a state in the
+  client header ("Bozzuto MD", "Hanover on 8th (DC)"), Remy's property
+  table, the row's case number, the case numbers (and DC-only NTCV
+  statuses) the property has carried on every tab, then the client block
+  on the current tab when all its rows agree (Towner, Franklin Group, WPC).
+- **Matching** a row to folders: the property's own folder(s), then close
+  names ("Cloisters I" → "The Cloisters"), then folders sharing a
+  distinctive word ("Solstice I" → "Solstice - 3534 E Capitol"), always on
+  the same person (`vault._same_person`). Building numbers and roman
+  numerals must agree. Two different plausible people = no match. There
+  is deliberately **no vault-wide name search**: it tied "Smith, Michael"
+  at 101 Cross Street to a Solstice folder on the first run.
+- **Dates.** A notice or affidavit counts when dated within 150 days
+  before the ripe date (no ripe date: the last year; undated: counts). A
+  ledger is current when dated within 30 days. RAD-stamped = the file came
+  from the RAD CASES Dropbox / a RAD filing, or the classifier said so.
+  DC rent rows also read `_2026 - As Issued Rent Notices` (surname plus
+  unit or first name, plus a word of the property).
+- **Teaching file** `_vault\checklist_rules.json` (created on first run;
+  reread every run): `jurisdictions` {sheet property or client: DC/MD/VA},
+  `properties` {sheet property: Vault folder}, `case_types` {Status
+  phrase: rent/nonrent/nonrenewal/breach/skip}.
+- **Writes** use the Graph Excel API inside a workbook session (never
+  download-edit-upload), only cells whose value changes, only columns
+  M–P. A blank result leaves a cell alone, so a hand-entered mark on an
+  unclassifiable row survives. The run reads the LIVE grid through the
+  API, computes, re-reads the Name column, and aborts the write if any row
+  moved in between. `--repaint` refills every marked cell.
+- **Permission:** writing needs delegated `Sites.ReadWrite.All`
+  (`SHEET_WRITE_SCOPES`). rocky@ did not hold it on 2026-10-31. Until
+  `rocky.exe --vault-checklist --consent` succeeds (device-code sign-in as
+  rocky@; if the tenant blocks user consent, IT grants it, or grants
+  `Sites.Selected` on MultifamilyHousing and the scope list is edited), the
+  run computes, reports and archives, and leaves the sheet alone.
+- LLT Watch ignores the four columns (`llt_watch.ROCKY_OWNED_COLUMNS`), so
+  Rocky's marks never read as hand edits in the Multifamily Digest.
+
+**2. The archive.** Tenant folders for closed matters move to
+`The Vault\_Archive\<Property>\<Tenant>\`:
+
+- a folder that matched a sheet row and hasn't for **14 days** (James's
+  rule), or
+- a folder that never matched a current row and has had no new document
+  for **120 days** (the Vault began filling 8/17/26, so the first of these
+  come due mid-December 2026).
+
+A row that comes back restores its folder (merging file by file if a new
+live folder has started). Guards: nothing moves on a dry run, on a sheet
+that parses to fewer than 300 matters, when fewer than 100 live folders
+are visible, when matched folders fall by half from the last run, or
+while a Vault ingest is mid-run; at most 250 folders a run. Every move is
+appended to `_vault\moves.jsonl`; `vault.load_catalog` replays it, so the
+index keeps finding the files and `catalog.jsonl` is never rewritten.
+`--cleanup` skips `_Archive`. State is `_vault\checklist_state.json`
+(each folder's last-matched date).
+
+**Report:** `_vault\checklist\YYYY-MM-DD.md` (plus `latest.json`):
+counts, rows left blank and why, rows with no Vault folder, properties
+found under another Vault name (Franklin Commons → Franklin Square), and
+the archive moves.
+
+```
+rocky.exe --vault-checklist                 # the daily run
+rocky.exe --vault-checklist --dry-run       # compute + report; no writes, no moves
+rocky.exe --vault-checklist --no-write      # archive + report, sheet untouched
+rocky.exe --vault-checklist --no-archive    # sheet + report only
+rocky.exe --vault-checklist --repaint       # rewrite every marked cell + fill
+rocky.exe --vault-checklist --consent       # one-time sheet-write sign-in as rocky@
+         [--local [PATH]] [--sheet NAME] [--vault-root PATH] [--as-of YYYY-MM-DD]
+```
+
 ## Design notes / future
 
 - Classification confidence floor is a constant (`CONFIDENCE_FLOOR` =

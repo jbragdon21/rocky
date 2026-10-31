@@ -317,6 +317,45 @@ def load_catalog(paths: dict) -> list[dict]:
                 entries.append(json.loads(line))
             except ValueError:
                 continue
+    return apply_moves(paths, entries)
+
+
+def apply_moves(paths: dict, entries: list[dict]) -> list[dict]:
+    """Replay _vault\\moves.jsonl onto catalog paths. The Vault Checklist
+    archives and restores tenant folders by appending a {from, to} line
+    there rather than rewriting catalog.jsonl, which another machine may
+    be appending to (the 2026-08-29 OneDrive fork). A move names a whole
+    folder or one file; moves apply in order, so a restore undoes an
+    archive."""
+    moves_path = paths["meta"] / "moves.jsonl"
+    if not moves_path.exists():
+        return entries
+    moves: list[tuple[str, str]] = []
+    try:
+        with open(moves_path, "r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    m = json.loads(line)
+                except ValueError:
+                    continue
+                if m.get("from") and m.get("to"):
+                    moves.append((m["from"].replace("/", "\\"),
+                                  m["to"].replace("/", "\\")))
+    except OSError:
+        return entries
+    if not moves:
+        return entries
+    for e in entries:
+        p = (e.get("path") or "").replace("/", "\\")
+        if not p:
+            continue
+        for src, dst in moves:
+            sl, pl_ = src.casefold(), p.casefold()
+            if pl_ == sl:
+                p = dst
+            elif pl_.startswith(sl + "\\"):
+                p = dst + p[len(src):]
+        e["path"] = p
     return entries
 
 
