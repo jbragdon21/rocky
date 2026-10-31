@@ -1,12 +1,12 @@
 """
-Kirsten Podcast — the Kirsten Digest as a two-host audio update
-================================================================
+Kirsten Podcast — "GC Updates", the Kirsten Digest as a two-host audio update
+==============================================================================
 
 Runs inside --kirsten-digest (see kirsten_digest.run_cli). After the case
 cards are written, one Claude call rewrites them as a news-style update
 between two hosts, at most about five minutes of speech. ElevenLabs Text to
-Dialogue (eleven_v3) voices it, and the episode is published to the
-Gallagher-Bozzuto podcast, a PRIVATE Transistor.fm show of its own that
+Dialogue (eleven_v3) voices it, and the episode is published to GC
+Updates (James's name for the show, 10/31), a PRIVATE Transistor.fm show that
 Kirsten subscribes to (James, 10/31: it was attached to the draft as an MP3
 until then). The email then says the audio version is live in her feed.
 
@@ -35,9 +35,22 @@ Config (all optional except the keys):
     kirsten_podcast_hosts     the two hosts' first names
     kirsten_podcast_model     Claude model for the script and its fact check
                               (default claude-opus-5-5)
+    kirsten_podcast_root      the show folder, if not found on its own
+    kirsten_podcast_intro     the intro music, if not "Cello Awakening" there
+    kirsten_podcast_intro_seconds / _intro_fade / _intro_overlap
+                              how much intro plays (default 14 s: 10 at
+                              full volume, then the 4 s fade; 0 = the whole
+                              track), its fade, and how early the hosts
+                              come in (defaults 4 s and 2 s)
 
-Files sit next to the report: <cases_root>\\_Kirsten Digests\\YYYY-MM-DD.mp3
-and YYYY-MM-DD podcast.txt (the script, so James can check what was said).
+The show folder is laid out like Sam's Podcast's and the Feud's (James,
+10/31): Podcasts\\GC Updates on the Rocky laptop's OneDrive, "Rocky's
+files - Podcasts\\GC Updates" on James's. It holds the intro music
+(Cello Awakening.wav), PROMPTING_GUIDE.md (ElevenLabs' guide, James's
+reference) and _Episodes\\, where each episode is saved as YYYY-MM-DD.mp3,
+YYYY-MM-DD script.txt (so James can check what was said) and YYYY-MM-DD
+cards.html (the show notes). If the folder can't be found, the episode is
+saved in <cases_root>\\_Kirsten Digests beside the report, with no intro.
 """
 
 from __future__ import annotations
@@ -67,12 +80,40 @@ MAX_WORDS = 700          # about 4.7 minutes at 150 words a minute
 MAX_SECONDS = 300
 _CHUNK_CHARS = 1900      # ElevenLabs asks for <= 2,000 per request
 
+# The show folder, beside Sam's Podcast and the Feud. The candidates are
+# relative to the home folder, as in sams_podcast._ROOT_CANDIDATES.
+SHOW_NAME = "GC Updates"   # the show, its episodes and its folder
+SHOW_DIRNAME = SHOW_NAME
+EPISODES_DIRNAME = "_Episodes"
+_ONEDRIVE = "OneDrive - gejlaw.com"
+INTRO_NAME = "Cello Awakening"
+# The track runs 52.8 s. James, 10/31: fade out after 10 seconds, so 10 s
+# at full volume and then INTRO_FADE (4 s); the track takes a breath at 13 s.
+INTRO_SECONDS = 14
+
+
+class _Profile:
+    """The few Show fields that Sam's engine reads to find a show folder and
+    its intro music (research_root, intro_path, finish_audio). Kirsten's
+    podcast keeps its own script and run and borrows only those."""
+    prefix = "kirsten_podcast"
+    tag = "kirsten podcast"
+    intro_name = INTRO_NAME
+    roots = (Path(_ONEDRIVE) / "Podcasts" / SHOW_DIRNAME,
+             Path(_ONEDRIVE) / "Rocky's files - Podcasts" / SHOW_DIRNAME)
+
+    def key(self, name: str) -> str:
+        return f"{self.prefix}_{name}"
+
+
+PROFILE = _Profile()
+
 # James's wording, 10/31. The email opens with the same sentence
 # (kirsten_digest.PRIVILEGE_EMAIL).
 PRIVILEGE = ("This podcast is a private attorney-client communication and is "
              "protected by the attorney-client and work product privileges.")
 
-SYSTEM_PROMPT = """You write the script for a short audio companion to the Weekly Gallagher-Bozzuto Litigation Report, a weekly report from Gallagher LLP (outside litigation counsel) to Kirsten Woelper at Bozzuto, the client. Two hosts, {host1} and {host2}, deliver it as a brisk news-style "week update". Kirsten listens to it in a private podcast feed; the written report is emailed to her with it.
+SYSTEM_PROMPT = """You write the script for a short audio companion to the Weekly Gallagher-Bozzuto Litigation Report, a weekly report from Gallagher LLP (outside litigation counsel) to Kirsten Woelper at Bozzuto, the client. The show is called "GC Updates". Two hosts, {host1} and {host2}, deliver it as a brisk news-style update. Kirsten listens to it in a private podcast feed; the written report is emailed to her with it.
 
 You receive the report's cards: for each case, a status line, the week's developments, and next steps. Those cards are your only source.
 
@@ -81,7 +122,7 @@ Return ONLY a JSON object:
 
 SHAPE
 - A privilege notice is read before your first turn: do not repeat it or mention privilege.
-- {host1} opens: the show name ("the Gallagher-Bozzuto week update"), the week, and one sentence saying this is an audio summary of this week's written report, which has the full detail. Then a one-line preview of the week's headlines.
+- {host1} opens: the show name ("GC Updates"), the period the report covers, and one sentence saying this is an audio summary of this week's written report, which has the full detail. Then a one-line preview of the week's headlines.
 - Cover the cases with developments this week first, one at a time, each a short exchange between the hosts: what happened, then what comes next and when. Hand off naturally ("Over in Bulgin..."). Speaker turns alternate; most turns are one to three sentences.
 - Then the quiet cases together in one or two turns: name them and give only an upcoming date that matters, if a card states one.
 - Close with anything Gallagher needs from Bozzuto (only what the cards say), then a one-line sign-off pointing to the written report for questions.
@@ -366,6 +407,34 @@ def synthesize(api_key: str, turns: list[dict], voices: list[str],
     return seconds
 
 
+def show_root(config: dict, home: Path | None = None) -> Path | None:
+    """The show folder: kirsten_podcast_root, else the first candidate under
+    this profile's OneDrive that exists."""
+    from sams_podcast import research_root
+    return research_root(config, home, PROFILE)
+
+
+def episodes_dir(config: dict, fallback: Path,
+                 home: Path | None = None) -> Path:
+    root = show_root(config, home)
+    if root is None:
+        log.warning(f"[kirsten podcast] show folder {SHOW_DIRNAME!r} not "
+                    f"found (set kirsten_podcast_root); saving the episode "
+                    f"in {fallback}")
+        return fallback
+    return root / EPISODES_DIRNAME
+
+
+def intro_music(config: dict, home: Path | None = None) -> Path | None:
+    from sams_podcast import intro_path
+    return intro_path(config, show_root(config, home), PROFILE)
+
+
+def intro_timing(config: dict) -> dict:
+    """config with the intro cut at INTRO_SECONDS unless it sets its own."""
+    return {PROFILE.key("intro_seconds"): INTRO_SECONDS, **config}
+
+
 def make(config: dict, cards, week_label: str, mp3_path: Path,
          script_path: Path, audio: bool = True,
          quiet: str | None = None) -> Path | None:
@@ -396,9 +465,11 @@ def make(config: dict, cards, week_label: str, mp3_path: Path,
         # header-trusting players (10/19, 10/22, 10/25 all did). Rebuild it
         # as one stream; if that fails, the glued file still has all the
         # audio.
+        # The intro music goes in front in the same pass.
         from sams_podcast import finish_audio
-        finish_audio({}, None, mp3_path, parts, word_count(turns),
-                     log_tag="kirsten podcast")
+        finish_audio(intro_timing(config), intro_music(config), mp3_path,
+                     parts, word_count(turns), log_tag="kirsten podcast",
+                     show=PROFILE)
         return mp3_path
     except Exception as e:
         log.warning(f"[kirsten podcast] FAILED, drafting without audio: {e}")

@@ -83,7 +83,7 @@ PRIVILEGE_EMAIL = ("This email is a private attorney-client communication "
                    "and is protected by the attorney-client and work product "
                    "privileges.")
 AUDIO_LIVE = ("The audio version of this report is now live in your private "
-              "podcast feed.")
+              "GC Updates podcast feed.")
 ARCHIVE_DIRNAME = "_Kirsten Digests"
 _YES = {"yes", "y", "true", "x", "1"}
 
@@ -792,11 +792,22 @@ def run_cli(config: dict, data_dir: Path) -> None:
                  f"already live; not posting another (--force to)")
     else:
         pod = pod or {"date": today}
-        script = archive_dir / f"{today} podcast.txt"
+        # The show folder's _Episodes, like Sam's and the Feud's (10/31).
+        episodes = kirsten_podcast.episodes_dir(config, archive_dir)
+        script = episodes / f"{today} script.txt"
+        title = f"{kirsten_podcast.SHOW_NAME} — {dated}"
+        notes = kirsten_podcast.show_notes(cards, period.label, period.quiet)
         mp3 = (Path(pod["mp3"]) if pod.get("episode_id") and pod.get("mp3")
                else kirsten_podcast.make(
-                   config, cards, period.label, archive_dir / f"{today}.mp3",
+                   config, cards, period.label, episodes / f"{today}.mp3",
                    script, quiet=period.quiet))
+        if mp3:
+            from sams_podcast import notes_page
+            try:
+                (episodes / f"{today} cards.html").write_text(
+                    notes_page(notes, title), encoding="utf-8")
+            except OSError as e:
+                log.warning(f"[kirsten] could not save the show notes: {e}")
         if mp3 and no_publish:
             log.info(f"[kirsten] --no-publish: episode saved to {mp3}, not "
                      f"uploaded")
@@ -811,10 +822,8 @@ def run_cli(config: dict, data_dir: Path) -> None:
                 transcript = script.read_text(encoding="utf-8")
             except OSError:
                 transcript = ""
-            live = kirsten_podcast.publish(
-                config, mp3, f"{REPORT_NAME} — {dated}",
-                kirsten_podcast.show_notes(cards, period.label, period.quiet),
-                transcript, pod)
+            live = kirsten_podcast.publish(config, mp3, title, notes,
+                                           transcript, pod)
             state["podcast"] = pod
             _write_state(data_dir, state)
     html = render_report(cards, period.label, end, audio_live=live,

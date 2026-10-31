@@ -24,6 +24,61 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-10-31 (3) — GC Updates (Kirsten's podcast): show folder, cello intro, name
+
+James sent the intro music (`Cello Awakening.wav`) and asked for Kirsten's
+podcast to use the same folder layout as the other shows.
+
+**What changed**
+
+- Created `Rocky's files - Podcasts\GC Updates` on James's OneDrive (made as
+  `Kirsten's Podcast`, renamed when James named the show). It is
+  `Podcasts\GC Updates` on the Rocky laptop. It holds
+  `Cello Awakening.wav` (copied from James's Desktop), `PROMPTING_GUIDE.md`
+  (copied from the Feud's folder) and an empty `_Episodes`.
+- `kirsten_podcast.py`:
+  - `PROFILE` is a stand-in with the few `Show` fields that Sam's
+    `research_root`, `intro_path` and `finish_audio` read: prefix, tag,
+    folder candidates, intro name and `key()`.
+  - New `show_root`, `episodes_dir` (falls back to `_Kirsten Digests`),
+    `intro_music` and `intro_timing`.
+  - `make` now puts the intro in front through `finish_audio`.
+- Intro: first cut at 24 s, the end of the track's first phrase. James
+  then asked for a fade after 10 seconds, so `INTRO_SECONDS = 14`: 10 s
+  at full volume, a 4 s fade, and the hosts come in at 12 s.
+- James named the show **GC Updates** (`SHOW_NAME`). That name is used
+  in the host's opening line, the episode titles (`GC Updates — <date>`),
+  the email banner ("...your private GC Updates podcast feed."), the
+  dashboard description and the folder name. Module names and
+  `kirsten_podcast_*` keys are unchanged. The Transistor show's own
+  title is set when James creates it.
+- `kirsten_digest.run_cli`: the MP3, ` script.txt` (was ` podcast.txt`)
+  and a new ` cards.html` (the show notes) go to `_Episodes`. The HTML
+  report still goes to `_Kirsten Digests`.
+- Tests: 265 pass. An autouse fixture points `Path.home` at a temp folder,
+  because the real show folder exists on this laptop and tests would
+  otherwise write into the live `_Episodes`. New tests cover the folder
+  probe, the intro lookup and timing, intro-in-front audio (14 + 6 − 2 =
+  18 s), episode files in the show folder, and the fallback.
+
+**Verified**
+
+- The real track mixed through the code path. `state\kirsten_intro_preview.mp3`
+  ran 26.1 s with the 24 s cut, then 16.1 s with the 10 s + fade cut
+  (cello, then 4 s of stand-in silence). Both were sent to James.
+
+**Open**
+
+- No `PODCAST_STYLE.md` yet. The other shows have one, but Kirsten's
+  prompt is still in code.
+- James to listen to the cut point. `kirsten_podcast_intro_seconds`
+  changes it in config. That needs no rebuild, but it does need a config
+  edit on the Rocky laptop.
+- Not deployed: the Rocky laptop needs a rebuild for any of the 10/31
+  Kirsten work.
+
+---
+
 ## Session 2026-10-31 (2) — Vault Checklist and the Vault archive
 
 James added four "The Vault" columns to PENDING LLT MATTERS and asked for

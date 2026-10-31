@@ -9,10 +9,19 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import kirsten_digest as kd  # noqa: E402
 import kirsten_podcast as kp  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_real_show_folder(monkeypatch, tmp_path):
+    """The real show folder exists on James's laptop: never let a test find
+    it (and write into the live _Episodes) through the home folder."""
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
 
 CARDS = [
     ("Bulgin", "EDVA", {"status": "MTD pending.", "week": ["Filed the MTD."],
@@ -107,7 +116,7 @@ def test_report_header_says_audio_is_live_only_when_published():
     plain = kd.render_report(*args)
     assert kd.AUDIO_LIVE not in plain and "attached" not in plain
     live = kd.render_report(*args, audio_live=True)
-    assert "now live in your private podcast feed" in live
+    assert "now live in your private GC Updates podcast feed" in live
     # The banner sits above the cards, not in the footer.
     assert live.index(kd.AUDIO_LIVE) < live.index("Bulgin")
 
@@ -257,3 +266,68 @@ def test_make_rebuilds_the_glued_audio_as_one_stream(monkeypatch, tmp_path):
 def test_default_models_are_opus():
     import sams_podcast as sp
     assert sp.DEFAULT_MODEL == "claude-opus-5-5"
+
+
+def _show(home, share=False):
+    rel = ("Rocky's files - Podcasts" if share else "Podcasts")
+    folder = home / "OneDrive - gejlaw.com" / rel / "GC Updates"
+    folder.mkdir(parents=True)
+    return folder
+
+
+def test_show_folder_sits_beside_the_other_shows(tmp_path):
+    home = tmp_path / "h1"
+    assert kp.show_root({}, home) is None
+    assert kp.episodes_dir({}, tmp_path / "fallback", home) == tmp_path / "fallback"
+    folder = _show(home, share=True)                  # James's laptop
+    assert kp.show_root({}, home) == folder
+    assert kp.episodes_dir({}, tmp_path / "x", home) == folder / "_Episodes"
+    rocky_laptop = _show(tmp_path / "h2")
+    assert kp.show_root({}, tmp_path / "h2") == rocky_laptop
+    pinned = tmp_path / "pinned"
+    pinned.mkdir()
+    assert kp.show_root({"kirsten_podcast_root": str(pinned)}, home) == pinned
+
+
+def test_intro_is_cello_awakening_fading_after_ten_seconds(tmp_path):
+    folder = _show(tmp_path)
+    assert kp.intro_music({}, tmp_path) is None
+    (folder / "Cello Awakening.wav").write_bytes(b"RIFF")
+    assert kp.intro_music({}, tmp_path) == folder / "Cello Awakening.wav"
+    assert kp.intro_music({"kirsten_podcast_intro_file": ""}, tmp_path) is None
+    assert kp.intro_timing({})["kirsten_podcast_intro_seconds"] == 14
+    assert kp.intro_timing({"kirsten_podcast_intro_seconds": 0})[
+        "kirsten_podcast_intro_seconds"] == 0
+
+
+def test_make_puts_the_intro_in_front(monkeypatch, tmp_path):
+    import math
+    import wave
+    from array import array
+    import miniaudio
+    import sams_podcast as sp
+    folder = _show(tmp_path / "home")
+    with wave.open(str(folder / "Cello Awakening.wav"), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(44100)
+        w.writeframes(array("h", (int(3000 * math.sin(2 * math.pi * 196 * k / 44100))
+                                  for k in range(44100 * 30))).tobytes())
+    tone = array("h", (int(5000 * math.sin(2 * math.pi * 220 * k / 44100))
+                       for k in range(44100 * 2)))
+    piece = sp.encode_mp3(tone)
+
+    def fake_synth(key, turns, voices, out, *a, parts=None, **kw):
+        parts.extend([piece, piece, piece])
+        out.write_bytes(piece * 3)
+        return 6.0
+
+    monkeypatch.setattr(kp, "synthesize", fake_synth)
+    monkeypatch.setattr(kp, "write_script", lambda *a, **kw: [
+        {"speaker": 1, "text": "Hello."}, {"speaker": 2, "text": "Bye."}])
+    import anthropic
+    monkeypatch.setattr(anthropic, "Anthropic", lambda api_key: object())
+    mp3 = kp.make({"anthropic_api_key": "k", "elevenlabs_api_key": "e"},
+                  CARDS, "Week", tmp_path / "w.mp3", tmp_path / "w.txt")
+    # 14 s of a 30 s intro, the hosts in at 12 s, then 6 s of hosts.
+    assert abs(miniaudio.mp3_get_file_info(str(mp3)).duration - 18) < 0.4

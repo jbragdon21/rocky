@@ -11,10 +11,19 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import dashboard  # noqa: E402
 import kirsten_digest as kd  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_real_show_folder(monkeypatch, tmp_path):
+    """The real show folder exists on James's laptop: never let a test find
+    it (and write into the live _Episodes) through the home folder."""
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
 
 COL = "Kirsten Digest?"
 
@@ -269,7 +278,7 @@ def test_dashboard_entry_is_on_demand():
     cmd = dashboard._COMMANDS_BY_FLAG["kirsten-digest"]
     assert not cmd.get("recommended")
     assert not any(k.startswith("sched_") for k in cmd)
-    assert "podcast feed" in cmd["desc"]
+    assert "GC Updates podcast feed" in cmd["desc"]
 
 
 END = datetime(2026, 10, 31, 22, 0, tzinfo=timezone.utc)
@@ -342,6 +351,7 @@ def _run(monkeypatch, tmp_path, argv, config=None, published=True):
     monkeypatch.setattr(kd, "collect", fake_collect)
     monkeypatch.setattr(kp, "make", fake_make)
     monkeypatch.setattr(kp, "publish", fake_publish)
+    (tmp_path / "cases").mkdir(exist_ok=True)     # Rocky Cases is always there
     monkeypatch.setattr(rocky, "ROCKY_CASES_ROOT", tmp_path / "cases")
     monkeypatch.setattr(rocky, "get_msal_app", lambda cfg: None)
     monkeypatch.setattr(rocky, "acquire_token", lambda app: "tok")
@@ -364,7 +374,7 @@ def test_run_publishes_then_drafts_with_the_live_header(monkeypatch, tmp_path):
     drafts, pubs, starts = _run(monkeypatch, tmp_path, [])
     assert starts == [datetime(2026, 10, 25, 22, tzinfo=timezone.utc)]
     assert len(pubs) == 1 and pubs[0][1] == "GEORGE: hi\n"
-    assert pubs[0][0].startswith(kd.REPORT_NAME + " — ")
+    assert pubs[0][0].startswith("GC Updates — ")
     html = drafts[0]["html_body"]
     assert kd.AUDIO_LIVE in html and kd.PRIVILEGE_EMAIL in html
     assert drafts[0]["to_addresses"] == ["kwoelper@bozzuto.com"]
@@ -372,6 +382,25 @@ def test_run_publishes_then_drafts_with_the_live_header(monkeypatch, tmp_path):
     assert saved["last_drafted"] == datetime.now().strftime("%Y-%m-%d")
     assert datetime.fromisoformat(saved["last_issued"]) > starts[0]
     assert saved["podcast"]["published"] and saved["podcast"]["episode_id"] == "77"
+
+
+def test_episode_files_go_to_the_show_folder(monkeypatch, tmp_path):
+    show = tmp_path / "show"
+    show.mkdir()
+    _run(monkeypatch, tmp_path, [], config={"kirsten_podcast_root": str(show)})
+    today = datetime.now().strftime("%Y-%m-%d")
+    episodes = show / "_Episodes"
+    assert sorted(p.name for p in episodes.iterdir()) == [
+        f"{today} cards.html", f"{today} script.txt", f"{today}.mp3"]
+    assert "Bulgin" in (episodes / f"{today} cards.html").read_text(encoding="utf-8")
+    # The written report still archives with the case files.
+    assert (tmp_path / "cases" / kd.ARCHIVE_DIRNAME / f"{today}.html").exists()
+
+
+def test_no_show_folder_falls_back_to_the_digest_archive(monkeypatch, tmp_path):
+    _run(monkeypatch, tmp_path, [])
+    today = datetime.now().strftime("%Y-%m-%d")
+    assert (tmp_path / "cases" / kd.ARCHIVE_DIRNAME / f"{today}.mp3").exists()
 
 
 def test_rerun_same_day_reuses_the_live_episode(monkeypatch, tmp_path):

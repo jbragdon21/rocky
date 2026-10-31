@@ -191,7 +191,7 @@ ROCKY_COMMANDS = [
     # Litigation Report" (James's Drafts), covering everything since the
     # last one. No schedule and not recommended, so auto-setup never
     # re-creates the old Sunday task.
-    {"flag": "kirsten-digest", "label": "Kirsten Digest", "group": "Litigation", "dry_run": True, "desc": "Gallagher-Bozzuto Litigation Report — what happened since the last report and next steps for the cases marked for Kirsten, into James's Drafts; the audio version goes to Kirsten's private podcast feed"},
+    {"flag": "kirsten-digest", "label": "Kirsten Digest", "group": "Litigation", "dry_run": True, "desc": "Gallagher-Bozzuto Litigation Report — what happened since the last report and next steps for the cases marked for Kirsten, into James's Drafts; the audio version goes to her private GC Updates podcast feed"},
     # Daily, 6 AM: after the 1 AM research edition lands in the Sam's
     # Podcast folder. Publishes to a private Transistor feed.
     {"flag": "sams-podcast", "label": "Sam's Podcast", "group": "Litigation", "dry_run": True, "desc": "Daily two-host episode — the morning's sports research and yesterday's activity on the cases marked for Sam, published to Sam's private feed", "sched_time": "06:00", "recommended": True},
