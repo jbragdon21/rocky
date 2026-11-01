@@ -222,7 +222,7 @@ def test_dc_nonrent_needs_rad_notice():
 def test_dc_rent_takes_any_notice_and_issued_folder():
     marks, _ = vc.evaluate_row(_row(), "DC", "rent", [], [_doc("notice", TODAY)],
                                TODAY, CFG)
-    assert marks == {"lease": "No", "notice": "Yes", "affidavit": "No",
+    assert marks == {"lease": "N/a", "notice": "Yes", "affidavit": "No",
                      "ledger": "No"}
 
 

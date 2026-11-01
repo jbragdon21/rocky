@@ -293,7 +293,7 @@ green `#E2EFDA`), **No** (light orange `#FCE4D6`) or **N/a** (light gray
 | MD / VA rent, non-rent | required | required | N/a | current |
 | DC breach (and the rare DC non-renewal) | required | RAD-stamped | required | N/a |
 | DC non-rent | required | RAD-stamped | required | current |
-| DC rent | required | any notice (not RAD-stamped) | required | current |
+| DC rent | N/a (a rent-only case files without it; James, 11/1) | any notice (not RAD-stamped) | required | current |
 
 - **Type** comes from Status (rent / non-rent incl. water and utilities /
   non-renewal / breach keywords). Tenant-filed suits, squatters, parking

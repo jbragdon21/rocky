@@ -23,8 +23,9 @@ What each kind of matter needs (James, 2026-10-31):
     DC breach (and non-renewal)   lease, RAD-stamped notice, affidavit
     DC non-rent                   lease, RAD-stamped notice, affidavit,
                                   current ledger
-    DC rent                       lease, notice (not RAD-stamped),
-                                  affidavit, current ledger
+    DC rent                       notice (not RAD-stamped), affidavit,
+                                  current ledger; lease N/a (James,
+                                  11/1: a rent-only case files without it)
 
 A cell is left EMPTY, never guessed, when Rocky cannot tell the matter's
 type from Status or its jurisdiction from the client, the property or a
@@ -105,8 +106,9 @@ RULES = {
     ("DC", "nonrenewal"): _DC_BREACH,
     ("DC", "nonrent"): {"lease": REQ, "notice": RAD, "affidavit": REQ,
                         "ledger": REQ},
-    # A DC rent notice is not filed with RAD, so any notice counts.
-    ("DC", "rent"): {"lease": REQ, "notice": REQ, "affidavit": REQ,
+    # A DC rent notice is not filed with RAD, so any notice counts. A
+    # rent-only case does not need the lease to file (James, 11/1).
+    ("DC", "rent"): {"lease": None, "notice": REQ, "affidavit": REQ,
                      "ledger": REQ},
 }
 
@@ -1275,7 +1277,8 @@ def compute(parsed: dict, folders: list[Folder], issued: list[dict],
         juris, kind = r["jurisdiction"], r["case_type"]
         for f in hits:
             matched.add(f.rel)
-        extra = issued_notices_for(row, issued)             if (juris, kind) == ("DC", "rent") else []
+        extra = (issued_notices_for(row, issued)
+                 if (juris, kind) == ("DC", "rent") else [])
         marks, why = evaluate_row(row, juris, kind, hits, extra, today, config)
         desired[row["row"]] = marks
         r.update({**row, "ripe": row["ripe"].isoformat() if row["ripe"] else "",
