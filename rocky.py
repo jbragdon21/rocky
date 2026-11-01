@@ -310,6 +310,9 @@ ATTACHMENT_TEXT_CAP_TOTAL = 20000
 DAILY_RUN_TEXT_CAP_PER_FILE = 20000
 DAILY_RUN_TEXT_CAP_TOTAL = 60000
 DAILY_RUN_MAX_TOKENS = 8192
+# New files past DAILY_RUN_TEXT_CAP_TOTAL go to more calls in the same run,
+# at most this many a case; anything left waits for the next run.
+DAILY_RUN_MAX_BATCHES = 4
 # Files saved elsewhere in the case folder since the last daily run: listed
 # by name, with a short excerpt of the first few.
 CHANGED_FILES_MAX = 60
@@ -2165,6 +2168,39 @@ def changed_files_block(case_folder: Path, files: list[Path]) -> str:
     return "\n".join(lines)
 
 
+def _raw_file_block(f: Path, text: str | None) -> str:
+    """One new raw file as the daily run's prompt shows it: the name, then its
+    text up to DAILY_RUN_TEXT_CAP_PER_FILE."""
+    block = f"- **{f.name}**"
+    if text:
+        capped = text[:DAILY_RUN_TEXT_CAP_PER_FILE]
+        if len(text) > DAILY_RUN_TEXT_CAP_PER_FILE:
+            capped += "\n[...truncated...]"
+        block += f"\n```\n{capped}\n```"
+    return block
+
+
+def daily_run_batches(new_raws: list[tuple[Path, str | None]]
+                      ) -> list[list[tuple[Path, str]]]:
+    """The new raw files, in order, split into batches whose prompt blocks
+    fit DAILY_RUN_TEXT_CAP_TOTAL, as (path, block) pairs. Each batch is one
+    Claude call. No files is one empty batch, so the run still reads the
+    changed files."""
+    batches: list[list[tuple[Path, str]]] = []
+    current: list[tuple[Path, str]] = []
+    size = 0
+    for f, text in new_raws:
+        block = _raw_file_block(f, text)
+        if current and size + len(block) > DAILY_RUN_TEXT_CAP_TOTAL:
+            batches.append(current)
+            current, size = [], 0
+        current.append((f, block))
+        size += len(block)
+    if current or not batches:
+        batches.append(current)
+    return batches
+
+
 def process_case_folder(
     client: Anthropic,
     case_folder: Path,
@@ -2177,8 +2213,9 @@ def process_case_folder(
     """
     Run the daily review for one case folder. Reads _project/instructions.md
     for case-specific directives; gathers context (new raw files, subfolders,
-    recent activity); makes one Claude call; executes any file_actions from
-    the response; logs everything to activity.jsonl.
+    recent activity); makes one Claude call per batch of new files (one
+    batch unless they overflow DAILY_RUN_TEXT_CAP_TOTAL); executes any
+    file_actions from each response; logs everything to activity.jsonl.
 
     Returns a result summary dict.
     """
@@ -2255,31 +2292,23 @@ def process_case_folder(
             text = extract_text_from_path(f)
             new_raws.append((f, text))
 
-    # Build file-text blocks for the prompt (capped).
-    file_blocks: list[str] = []
-    total_chars = 0
-    for f, text in new_raws:
-        block = f"- **{f.name}**"
-        if text:
-            capped = text[:DAILY_RUN_TEXT_CAP_PER_FILE]
-            if len(text) > DAILY_RUN_TEXT_CAP_PER_FILE:
-                capped += "\n[...truncated...]"
-            block += f"\n```\n{capped}\n```"
-        file_blocks.append(block)
-        total_chars += len(block)
-        if total_chars > DAILY_RUN_TEXT_CAP_TOTAL:
-            file_blocks.append(f"[{len(new_raws) - len(file_blocks)} more file(s) omitted — total cap reached]")
-            break
+    # More new files than one prompt holds go to more calls in the same run,
+    # oldest first, at most DAILY_RUN_MAX_BATCHES a case. The rest used to be
+    # cut: on RRID-0044 the 21 owner emails of 10/30/2026 filled the prompt on
+    # two runs, the sent AG letter behind them was never shown, and the
+    # 11/1 digest lost track of it.
+    batches = daily_run_batches(new_raws)
+    waiting = [f.name for batch in batches[DAILY_RUN_MAX_BATCHES:] for f, _ in batch]
+    batches = batches[:DAILY_RUN_MAX_BATCHES]
+    batched = len(batches) > 1 or bool(waiting)
+    if waiting:
+        log.warning(f"[{rrid}] {len(waiting)} new file(s) wait for the next daily "
+                    f"run after {DAILY_RUN_MAX_BATCHES} batches.")
+    batch_of = {f.name: n for n, batch in enumerate(batches, 1) for f, _ in batch}
 
     # Recent activity (last 48h) for context.
     recent_cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
     recent_activity = _read_activity_since(case_folder, recent_cutoff)
-    activity_summary = ""
-    if recent_activity:
-        lines = []
-        for ev in recent_activity[-20:]:  # cap to last 20 events
-            lines.append(f"- [{ev.get('timestamp', '?')}] {ev.get('event')}: {ev.get('summary') or ev.get('subject') or ''}")
-        activity_summary = "\n".join(lines)
 
     # Everything else saved in the case folder since the last daily run (a
     # day back when there is none, a week at most), less what Rocky filed or
@@ -2293,7 +2322,39 @@ def process_case_folder(
     changed = changed_files_since(case_folder, changed_since, rocky_paths)
     changed_block = changed_files_block(case_folder, changed)
 
-    user_prompt = f"""CASE-SPECIFIC INSTRUCTIONS (from _project/claude.md):
+    totals = {"processed": 0, "skipped": 0, "discarded": 0, "errors": 0}
+    handled_names: set[str] = set()   # raws filed or discarded this run
+    seen: list[Path] = []             # raws shown to a call that came back
+    reports_written: list[Path] = []
+    failure = ""
+    for number, batch in enumerate(batches, 1):
+        if number > 1:
+            # Picks up what the earlier batches filed.
+            recent_activity = _read_activity_since(case_folder, recent_cutoff)
+        activity_summary = "\n".join(
+            f"- [{ev.get('timestamp', '?')}] {ev.get('event')}: "
+            f"{ev.get('summary') or ev.get('subject') or ''}"
+            for ev in recent_activity[-20:])  # cap to last 20 events
+
+        file_blocks = [block for _, block in batch]
+        if batched:
+            others = [f"- {f.name} (" + (f"batch {batch_of[f.name]}" if f.name in batch_of
+                                         else "next daily run") + ")"
+                      for f, _ in new_raws if batch_of.get(f.name) != number]
+            note = (f"This run has more new files than one review holds, so it "
+                    f"reviews them oldest first in batches. This is batch {number} "
+                    f"of {len(batches)}. File only the files shown above. The "
+                    f"other new files, by name only:\n" + "\n".join(others) +
+                    "\nDo not treat a file you were not shown as a duplicate or "
+                    "as already reviewed.")
+            if reports_written:
+                note += ("\nReports already written this run: "
+                         + ", ".join(r.name for r in reports_written)
+                         + ". Do not write them again.")
+            file_blocks.append(note)
+        count = f"{len(batch)} of {len(new_raws)}" if batched else str(len(new_raws))
+
+        user_prompt = f"""CASE-SPECIFIC INSTRUCTIONS (from _project/claude.md):
 {case_instructions}
 
 ---
@@ -2303,20 +2364,127 @@ Case: {case_description}
 RRID: {rrid}
 AVAILABLE SUBFOLDERS: {', '.join(available_folders) if available_folders else '(none)'}
 
-NEW UNPROCESSED FILES IN Raw Documents/ ({len(new_raws)} file(s)):
+NEW UNPROCESSED FILES IN Raw Documents/ ({count} file(s)):
 {chr(10).join(file_blocks) if file_blocks else '(none)'}
 
 RECENT ACTIVITY (last 48h):
 {activity_summary if activity_summary else '(none)'}
 
 FILES ADDED OR CHANGED SINCE THE LAST DAILY RUN (outside Raw Documents; {len(changed)} file(s)):
-{changed_block if changed_block else '(none)'}
+{(changed_block if number == 1 else '(listed in batch 1 of this run)') if changed_block else '(none)'}
 
 {f'Global instructions from James:{chr(10)}{global_instructions}{chr(10)}---' if global_instructions else ''}
 
 Follow the case-specific instructions above. Return ONLY the JSON object."""
 
-    # One Claude call for the entire case.
+        extra = {"new_raw_files_seen": len(batch),
+                 "changed_files_seen": len(changed) if number == 1 else 0}
+        if batched:
+            extra.update(batch=number, batches=len(batches))
+        if waiting:
+            extra["new_raw_files_waiting"] = len(waiting)
+        outcome = _daily_run_batch(
+            client, case_folder, rrid, case_description, user_prompt,
+            [f for f, _ in batch], available_folders, index, extra,
+            DAILY_RUN_REPORTS_MAX - len(reports_written),
+            our_client=our_client, case_name=case_name)
+        if outcome.get("error"):
+            failure = outcome["error"]
+            totals["errors"] += 1
+            break
+        seen += [f for f, _ in batch]
+        handled_names |= outcome["handled"]
+        reports_written += outcome["reports"]
+        for key in totals:
+            totals[key] += outcome[key]
+
+    if failure and not seen:
+        return {"rrid": rrid, "processed": 0, "skipped": 0, "errors": 1,
+                "reason": failure}
+
+    # Seen-but-unfiled guard. A raw file that keeps getting analyzed without
+    # ever being filed or discarded (the model returned no usable file_action,
+    # a DISCARD was refused, the copy kept failing) would otherwise be
+    # re-analyzed as "new" every day forever. Count the misses per file; once
+    # a file misses UNFILED_PARK_THRESHOLD runs, park it — index it so it
+    # stops surfacing as new, and leave a question for a project session
+    # (see CLAUDE_MD_UNFILED_SECTION) instead of burning a Claude call daily.
+    # Only files a call was shown count: one left for a later batch, the next
+    # run or a failed call is not a miss. (11/1/2026: nine RRID-0044 emails
+    # were parked that no call had ever read.)
+    unfiled_attempts = index.setdefault("unfiled_attempts", {})
+    parked_names: list[str] = []
+    for f in seen:
+        if f.name in handled_names:
+            unfiled_attempts.pop(f.name, None)
+            continue
+        misses = unfiled_attempts.get(f.name, 0) + 1
+        if misses < UNFILED_PARK_THRESHOLD:
+            unfiled_attempts[f.name] = misses
+            continue
+        unfiled_attempts.pop(f.name, None)
+        now = datetime.now(timezone.utc).isoformat()
+        index.setdefault("files", []).append({
+            "path": None,
+            "target_folder": None,
+            "disposition": "parked_unfiled",
+            "source_raw": f.name,
+            "processed_at": now,
+            "summary": (f"Seen by {misses} daily runs without being successfully "
+                        f"filed or discarded; parked for James to decide."),
+            "filed_by": "rocky",
+        })
+        append_case_activity(case_folder, {
+            "timestamp": now,
+            "actor": "rocky",
+            "event": "document_parked_unfiled",
+            "rrid": rrid,
+            "source_raw": f.name,
+            "summary": (f"Parked after {misses} daily runs without a successful "
+                        f"filing. File remains in Raw Documents/ and will no "
+                        f"longer be re-analyzed; a project session should ask "
+                        f"James what to do with it."),
+        })
+        log.warning(f"[{rrid}] parked seen-but-unfiled raw file {f.name!r} "
+                    f"after {misses} runs; project session will ask James.")
+        parked_names.append(f.name)
+    if parked_names:
+        _ensure_claude_md_unfiled_pointer(case_folder)
+
+    save_master_index(index_path, index)
+    result = {"rrid": rrid, **totals,
+              "parked": len(parked_names), "reports": len(reports_written)}
+    if batched:
+        result["batches"] = len(batches)
+    if waiting:
+        result["waiting"] = len(waiting)
+    if failure:
+        result["reason"] = failure
+    return result
+
+
+def _daily_run_batch(
+    client: Anthropic,
+    case_folder: Path,
+    rrid: str,
+    case_description: str,
+    user_prompt: str,
+    batch_files: list[Path],
+    available_folders: list[str],
+    index: dict,
+    event_extra: dict,
+    reports_room: int,
+    our_client: str = "",
+    case_name: str = "",
+) -> dict:
+    """One daily-run call over one batch of new raw files: ask Claude, log the
+    daily_run event, write the reports (at most reports_room), and carry out
+    the file actions, which may name only this batch's files. Returns the
+    counts and the names filed or discarded, or {"error": reason} when the
+    call fails or its reply is not JSON."""
+    raw_dir = case_folder / "Raw Documents"
+
+    # One Claude call for this batch.
     try:
         response = claude_call.create(
             client,
@@ -2336,8 +2504,7 @@ Follow the case-specific instructions above. Return ONLY the JSON object."""
             "rrid": rrid,
             "error": f"JSON parse error: {e}",
         })
-        return {"rrid": rrid, "processed": 0, "skipped": 0, "errors": 1,
-                "reason": f"json_parse_error: {e}"}
+        return {"error": f"json_parse_error: {e}"}
     except Exception as e:
         log.error(f"[{rrid}] Daily-run Claude call failed: {e}")
         append_case_activity(case_folder, {
@@ -2347,8 +2514,7 @@ Follow the case-specific instructions above. Return ONLY the JSON object."""
             "rrid": rrid,
             "error": str(e),
         })
-        return {"rrid": rrid, "processed": 0, "skipped": 0, "errors": 1,
-                "reason": f"claude_error: {e}"}
+        return {"error": f"claude_error: {e}"}
 
     analysis = result.get("analysis", "")
     file_actions = result.get("file_actions", [])
@@ -2373,14 +2539,14 @@ Follow the case-specific instructions above. Return ONLY the JSON object."""
         "internal_suggestions": internal_suggestions,
         "file_actions_requested": len(file_actions),
         "discards_requested": discards_requested,
-        "new_raw_files_seen": len(new_raws),
-        "changed_files_seen": len(changed),
         "reports_requested": len(reports),
+        **event_extra,
     })
 
     # Reports the instructions asked for (the Multifamily Feud podcast's hit
     # reports and tracked-case summaries, for one).
-    reports_written = write_case_reports(case_folder, rrid, reports)
+    reports_written = write_case_reports(case_folder, rrid,
+                                         reports[:max(reports_room, 0)])
 
     # Internal case-file maintenance is parked for a project session, not the
     # digest. Point CLAUDE.md at the activity log so it gets offered to James.
@@ -2400,8 +2566,8 @@ Follow the case-specific instructions above. Return ONLY the JSON object."""
     errors = 0
     skipped = 0
     discarded = 0
-    handled_names: set[str] = set()  # raws successfully filed or discarded this run
-    raw_names = {f.name for f, _ in new_raws}
+    handled_names: set[str] = set()  # raws successfully filed or discarded
+    raw_names = {f.name for f in batch_files}
     # Whitespace-tolerant fallback: if the model's echoed source_raw doesn't
     # match any raw name exactly, try matching with whitespace normalized.
     # Without this, a file whose name contains a non-breaking space (or other
@@ -2589,56 +2755,8 @@ Follow the case-specific instructions above. Return ONLY the JSON object."""
                     full_text, our_client=our_client, case_name=case_name,
                 )
 
-    # Seen-but-unfiled guard. A raw file that keeps getting analyzed without
-    # ever being filed or discarded (the model returned no usable file_action,
-    # a DISCARD was refused, the copy kept failing) would otherwise be
-    # re-analyzed as "new" every day forever. Count the misses per file; once
-    # a file misses UNFILED_PARK_THRESHOLD runs, park it — index it so it
-    # stops surfacing as new, and leave a question for a project session
-    # (see CLAUDE_MD_UNFILED_SECTION) instead of burning a Claude call daily.
-    unfiled_attempts = index.setdefault("unfiled_attempts", {})
-    parked_names: list[str] = []
-    for f, _ in new_raws:
-        if f.name in handled_names:
-            unfiled_attempts.pop(f.name, None)
-            continue
-        misses = unfiled_attempts.get(f.name, 0) + 1
-        if misses < UNFILED_PARK_THRESHOLD:
-            unfiled_attempts[f.name] = misses
-            continue
-        unfiled_attempts.pop(f.name, None)
-        now = datetime.now(timezone.utc).isoformat()
-        index.setdefault("files", []).append({
-            "path": None,
-            "target_folder": None,
-            "disposition": "parked_unfiled",
-            "source_raw": f.name,
-            "processed_at": now,
-            "summary": (f"Seen by {misses} daily runs without being successfully "
-                        f"filed or discarded; parked for James to decide."),
-            "filed_by": "rocky",
-        })
-        append_case_activity(case_folder, {
-            "timestamp": now,
-            "actor": "rocky",
-            "event": "document_parked_unfiled",
-            "rrid": rrid,
-            "source_raw": f.name,
-            "summary": (f"Parked after {misses} daily runs without a successful "
-                        f"filing. File remains in Raw Documents/ and will no "
-                        f"longer be re-analyzed; a project session should ask "
-                        f"James what to do with it."),
-        })
-        log.warning(f"[{rrid}] parked seen-but-unfiled raw file {f.name!r} "
-                    f"after {misses} runs; project session will ask James.")
-        parked_names.append(f.name)
-    if parked_names:
-        _ensure_claude_md_unfiled_pointer(case_folder)
-
-    save_master_index(index_path, index)
-    return {"rrid": rrid, "processed": processed, "skipped": skipped,
-            "discarded": discarded, "errors": errors,
-            "parked": len(parked_names), "reports": len(reports_written)}
+    return {"processed": processed, "skipped": skipped, "discarded": discarded,
+            "errors": errors, "handled": handled_names, "reports": reports_written}
 
 
 def daily_run(
@@ -4640,6 +4758,8 @@ def run_daily_run_cli() -> None:
             f"skipped {r.get('skipped', 0)}, errors {r.get('errors', 0)}"
             + (f", parked {r.get('parked', 0)}" if r.get('parked') else "")
             + (f", reports {r.get('reports', 0)}" if r.get('reports') else "")
+            + (f", {r['batches']} batches" if r.get('batches') else "")
+            + (f", {r['waiting']} waiting" if r.get('waiting') else "")
             + (f" — {r.get('reason')}" if r.get('reason') else "")
         )
     log.info(f"Total: {total_processed} filed, {total_errors} error(s).")

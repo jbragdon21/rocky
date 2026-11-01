@@ -7,6 +7,7 @@ and the larger text caps. Claude is faked.
 
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -217,6 +218,137 @@ def test_changed_files_listed_since_the_last_run(tmp_path):
                      "activity.jsonl", "master_file_index.json", "CLAUDE.md"):
         assert left_out not in block.split("Global instructions")[0]
     assert _events(case, "daily_run")[-1]["changed_files_seen"] == 2
+
+
+class ScriptedClient(FakeClient):
+    """Replies with reply_for(prompt), which may raise to fail the call."""
+
+    def __init__(self, reply_for):
+        super().__init__({})
+        self.reply_for = reply_for
+
+    def create(self, **kw):
+        self.calls.append(kw)
+        reply = self.reply_for(kw["messages"][0]["content"])
+        return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(reply))])
+
+
+def _file_all(prompt) -> dict:
+    """Files every raw file the prompt shows in full."""
+    names = re.findall(r"^- \*\*(.+?)\*\*$", prompt, re.M)
+    return _reply(file_actions=[
+        {"source_raw": n, "target_folder": "Correspondence",
+         "suggested_name": Path(n).stem, "summary": "s"} for n in names])
+
+
+def _raws(case, *names):
+    for name in names:
+        (case / "Raw Documents" / name).write_text(
+            f"{name} text " + "x" * 1000, encoding="utf-8")
+
+
+def _index(case) -> dict:
+    return json.loads((case / "master_file_index.json").read_text(encoding="utf-8"))
+
+
+def test_overflow_goes_to_more_batches_in_the_same_run(tmp_path, monkeypatch):
+    # RRID-0044, 10/31 and 11/1/2026: 21 owner emails from 10/30 filled the
+    # prompt, and the sent AG letter behind them was never shown.
+    monkeypatch.setattr(rocky, "DAILY_RUN_TEXT_CAP_TOTAL", 2500)
+    case = _case(tmp_path, "Correspondence")
+    _raws(case, *(f"20261030T16{i:02d}_owner.txt" for i in range(4)),
+          "20261030T2249_letter.txt")
+    client = ScriptedClient(_file_all)
+    result = _run(case, client)
+
+    prompts = [c["messages"][0]["content"] for c in client.calls]
+    assert len(prompts) == 3                       # two, two, then the letter
+    assert "20261030T1600_owner.txt text" in prompts[0]
+    assert "20261030T2249_letter.txt text" not in prompts[0]
+    assert "(2 of 5 file(s))" in prompts[0]
+    assert "- 20261030T2249_letter.txt (batch 3)" in prompts[0]
+    assert "This is batch 3 of 3" in prompts[2]
+    assert "20261030T2249_letter.txt text" in prompts[2]
+    assert "20261030T1600_owner.txt text" not in prompts[2]
+    assert (case / "Correspondence" / "20261030T2249_letter.txt").is_file()
+    assert result["processed"] == 5 and result["batches"] == 3
+    runs = _events(case, "daily_run")
+    assert [(r["batch"], r["new_raw_files_seen"]) for r in runs] == \
+        [(1, 2), (2, 2), (3, 1)]
+    assert not _index(case)["unfiled_attempts"]
+
+
+def test_one_batch_reads_as_before(tmp_path):
+    case = _case(tmp_path, "Correspondence")
+    _raws(case, "a.txt", "b.txt")
+    client = ScriptedClient(_file_all)
+    result = _run(case, client)
+    assert len(client.calls) == 1
+    assert "(2 file(s))" in client.prompt and "batch" not in client.prompt
+    assert "batch" not in _events(case, "daily_run")[0]
+    assert "batches" not in result and result["processed"] == 2
+
+
+def test_files_no_call_was_shown_are_not_misses(tmp_path, monkeypatch):
+    # 11/1/2026: nine RRID-0044 emails were parked that no call had read.
+    monkeypatch.setattr(rocky, "DAILY_RUN_TEXT_CAP_TOTAL", 1500)
+    monkeypatch.setattr(rocky, "DAILY_RUN_MAX_BATCHES", 1)
+    case = _case(tmp_path, "Correspondence")
+    _raws(case, "a.txt", "b.txt")
+    client = FakeClient(_reply())                  # never files anything
+    for _ in range(rocky.UNFILED_PARK_THRESHOLD):
+        result = _run(case, client)
+    assert "- b.txt (next daily run)" in client.prompt
+    assert result["waiting"] == 1
+    assert _events(case, "daily_run")[-1]["new_raw_files_waiting"] == 1
+    index = _index(case)
+    parked = [e["source_raw"] for e in index["files"]
+              if e.get("disposition") == "parked_unfiled"]
+    assert parked == ["a.txt"]                     # shown three times
+    assert "b.txt" not in index["unfiled_attempts"]
+
+
+def test_a_failed_batch_keeps_the_earlier_batches_work(tmp_path, monkeypatch):
+    monkeypatch.setattr(rocky, "DAILY_RUN_TEXT_CAP_TOTAL", 1500)
+    case = _case(tmp_path, "Correspondence")
+    _raws(case, "a.txt", "b.txt")
+
+    def reply_for(prompt):
+        if "This is batch 2" in prompt:
+            raise RuntimeError("overloaded")
+        return _file_all(prompt)
+
+    result = _run(case, ScriptedClient(reply_for))
+    assert (case / "Correspondence" / "a.txt").is_file()
+    assert result["processed"] == 1 and result["errors"] == 1
+    assert result["reason"] == "claude_error: overloaded"
+    index = _index(case)
+    assert [e["source_raw"] for e in index["files"]] == ["a.txt"]
+    assert "b.txt" not in index["unfiled_attempts"]
+    assert _events(case, "daily_run_error")
+
+
+def test_a_batch_files_only_its_own_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(rocky, "DAILY_RUN_TEXT_CAP_TOTAL", 1500)
+    case = _case(tmp_path, "Correspondence")
+    _raws(case, "a.txt", "b.txt")
+    both = _reply(file_actions=[
+        {"source_raw": n, "target_folder": "Correspondence",
+         "suggested_name": Path(n).stem, "summary": "s"} for n in ("a.txt", "b.txt")])
+    result = _run(case, FakeClient(both))         # each batch asks for both
+    assert result["processed"] == 2 and result["skipped"] == 2
+    assert sorted(p.name for p in (case / "Correspondence").iterdir()) == \
+        ["a.txt", "b.txt"]                         # once each, no "(1)" copies
+
+
+def test_batches_fit_the_cap(monkeypatch):
+    monkeypatch.setattr(rocky, "DAILY_RUN_TEXT_CAP_TOTAL", 100)
+    files = [(Path(f"{i}.txt"), "t" * 20) for i in range(5)]   # 40-char blocks
+    batches = rocky.daily_run_batches(files)
+    assert [[f.name for f, _ in b] for b in batches] == \
+        [["0.txt", "1.txt"], ["2.txt", "3.txt"], ["4.txt"]]
+    assert all(sum(len(block) for _, block in b) <= 100 for b in batches)
+    assert rocky.daily_run_batches([]) == [[]]
 
 
 def test_changed_files_skip_rocky_reports_and_cap_excerpts(tmp_path, monkeypatch):

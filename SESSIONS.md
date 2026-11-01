@@ -24,6 +24,64 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-11-01 (2) — Daily run: batches past the prompt budget; misses only for files shown
+
+James asked why the 11/1 digest's VA AG Fees (RRID-0044) section was out of
+date when the case's email folder had his sent 10/30 letter to the OAG.
+
+**Cause**
+
+- On 10/30, 21 owner-notice emails (about 130,000 characters) landed in Raw
+  Documents. The daily run showed new files oldest first, up to 60,000
+  characters, and cut the rest with a one-line "N more file(s) omitted".
+- The sent letter (6:49 PM ET 10/30, fetched 10/31) sorted behind them. The
+  10/31 and 11/1 runs saw only the first 12 owner emails. On 10/31 Claude
+  called all 38 files duplicates of the owner thread and filed nothing.
+- The digest's 24-hour window then held only the 11/1 owner-email filings.
+  The 10/31 email summary was the only record of the letter, and it was
+  logged at 4:18 PM 10/31, outside the window that began at 5:02 PM.
+- The seen-but-unfiled guard counted every new file as a miss, shown or not.
+  On 11/1 it parked nine owner emails (10/30, 18:24 to 19:27 UTC) that no
+  call had ever read.
+- James's Cowork session filed the as-sent letter at 5:08 PM 11/1 (COR-006,
+  EML-031, EML-032).
+
+**What changed**
+
+- `rocky.py`:
+  - New `daily_run_batches` and `_raw_file_block`.
+  - `process_case_folder` now runs up to `DAILY_RUN_MAX_BATCHES` (4) calls,
+    one per batch. The call and the filing moved into `_daily_run_batch`.
+  - The guard counts only files a call that came back was shown.
+  - The `--daily-run` summary line shows batches and waiting files.
+- Tests: six new ones in `tests/test_daily_run.py`. The suite has 288 passing.
+- BUILD_REFERENCE Stage 2, items 3 and 7.
+
+**Decisions made**
+
+- Batch rather than raise the budget. The 8,192-token reply has to carry a
+  file action per file, and a 38-file reply would crowd it.
+- Oldest first, as before. A backlog past four batches waits a day, but
+  nothing is parked unseen.
+- A batch may file only its own files. The other files are listed by name
+  so it can spot duplicates, and it is told not to treat a file it was not
+  shown as reviewed.
+
+**Verified**
+
+- Replaying 11/1's 38 RRID-0044 files: 5 batches. The first 4 cover 33
+  files, the sent letter among them (batch 4), and the last 5 wait.
+- The next run's 14 files fit in 2 batches.
+
+**Open items**
+
+- Not committed and not deployed. The Rocky laptop runs the old exe until
+  a rebuild, so the cut and the unseen parking continue there until then.
+- The nine RRID-0044 owner emails parked unseen on 11/1 are still parked.
+  They need a project session or an index edit after the deploy.
+
+---
+
 ## Session 2026-10-31 (3) — GC Updates (Kirsten's podcast): show folder, cello intro, name
 
 James sent the intro music (`Cello Awakening.wav`) and asked for Kirsten's
