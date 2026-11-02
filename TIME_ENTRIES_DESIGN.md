@@ -548,6 +548,116 @@ diff over each hand run whose entries James has since submitted in a later expor
 `submitted` links. That way the table starts with the hand runs' labeled emails, without waiting
 for a live round. The seed needs brain.db, so it runs on the Rocky laptop.
 
+**Phase 2 status (2026-11-01).** Built on `time-entries`, CLI only, nothing sent:
+
+- `rocky.py --time-entries --draft --csv <timecard>` runs the whole pipeline: correlate, build one
+  day sheet per business day (`daysheet.py`; a weekend rides with its Monday, with Sunday's mail
+  and the Monday batch), draft (`draft.py`), verify, and write the house-format workbook to
+  `<data>\time_entries_data\drafts\`. The recommendations go to te.db.
+- **The calls.** Opus 5.5 at effort high, streaming, with the server-side fallback beta.
+  - Each call gets the style guide and `LESSONS.md` in a cached system prompt. It also gets two
+    tools: `read_email` (one email's full body and reply chain; brain.db gives the whole
+    conversation, corpus.db only the quoted text) and `search_mail` (James's sends between two
+    dates).
+  - Answers come back through a strict `submit_drafts` / `submit_review` tool, and each row cites
+    `[E#]` and `[M#]` refs, so a draft can't name an entry or an email that isn't on the sheet.
+- **Rocky's checks** are the design's list:
+  - one draft per entry
+  - partial drafts begin with James's text
+  - a final semicolon, and no em dashes
+  - High rows cite an email
+  - one email per entry unless the note says "split"
+
+  A failed check goes back once as an error tool result. On a second failure, Rocky fixes the
+  mechanical problems itself (semicolon, em dash) and makes the rest REVIEW with the reason. That
+  is one step gentler than the design, which made every such row REVIEW.
+- **Verification** returns whole corrected rows. Each fix passes the same checks or is dropped.
+  Both versions are stored (`first_*` and `verify_problem` columns).
+- **New te.db tables:** `recommendations`, `outcomes` and `links` (the design's columns plus
+  `note` and `flipped_by`).
+- **The deterministic diff** is `learn.py`, with the design's outcomes and thresholds (0.9
+  accepted, 0.5 edited). It has one reading of the design: a `rehoured` row whose text was
+  accepted or edited still confirms its emails. James kept the substance on that matter.
+- `--draft-backtest --csv <earlier> --final <later> [--hand <hand run>]` drafts an earlier
+  export as if it had just arrived. It reads names and prior narratives only from before the
+  period. It scores against the later export and against the hand run.
+- **Wording alone can't judge this.** In August James pasted 35 of 37 High hand drafts verbatim,
+  so a judge call (Opus 5.5, structured output) also grades each candidate against his final
+  text: same, partial, different or wrong. It sees Rocky's draft, Rocky's pre-verification
+  draft and the hand draft, unlabeled and shuffled.
+- **Pass mark:** Rocky's High rows grade "same" at least as often as the hand run's.
+- **`--seed-links --hand <hand run> --final <later export>`** resolves each hand-run Basis to
+  emails (backtest.py's matcher, the same day through three days later) and writes `submitted`
+  links for the accepted and edited rows. It writes only with `--mail minotaur`, because links
+  key on brain.db's `internet_message_id`.
+  - Dry runs on corpus.db: September Part 1 gives 47 links from 18 rows, and August Part 2 gives
+    130 links from 45 rows.
+  - The real seed runs on the Rocky laptop.
+- **Tests:** `tests/test_time_entries_drafting.py`, with a scripted stand-in for the client.
+- **First backtest: September 1–5, 11/1, on corpus.db.**
+  - **Scope:** 43 blanks across five day sheets. 36 of them James has since filled, and those are
+    the scored rows.
+  - **Cost:** $7.21 for drafting and verification (37 calls), and $0.15 for the judge.
+
+  | Judge grade vs. James's final | High rows | same | partial | different | wrong |
+  |---|---|---|---|---|---|
+  | Rocky (it called 24 High) | 24 | 18 (75%) | 5 | 0 | 1 |
+  | Hand run (it called 32 High) | 32 | 24 (75%) | 7 | 0 | 1 |
+  | Rocky, all 36 rows | 36 | 22 (61%) | 10 | 3 | 1 |
+  | Hand run, all 36 rows | 36 | 25 (69%) | 8 | 1 | 1 |
+
+  - **Pass mark met (a tie at 75%).** Rocky calls fewer rows High than the hand run did (24 against
+    32), so more of its rows land in Medium. That is where the hand run pulls ahead overall.
+  - **Two of Rocky's three "different" Medium rows are a swap, not a misreading.** Two Alvista
+    Bowie entries on 9/1 (0.3 and 0.2) got the right two notices on the wrong hours.
+  - **The third** is Hettinger on 9/5. James wrote "Outline next steps on Conservice strategy",
+    and no email supports that.
+  - **The one wrong High** is Jasmine Banks (356) on 9/2. Rocky called the notice a cure-or-quit
+    for refusing pest treatment, where it concerned a verbal incident.
+  - **Verification** changed 5 rows. It moved the all-rows "same or partial" figure from 86% to 89%.
+  - **Uncaptured:** Rocky listed 94 threads, against the hand run's 96. In the later export, 4 of
+    Rocky's 94 turned up as new entries.
+- **Second backtest: August 1–20, 11/1, on corpus.db.**
+  - **Scope:** 130 blanks and partials across 13 day sheets. 63 of them have since been filled,
+    and those are the scored rows.
+  - **Cost:** $18.27 for drafting and verification (115 calls), and $0.22 for the judge.
+  - **Pass mark NOT MET on its face.** Rocky's High rows graded "same" on 24 of 41 (58%). The hand
+    run's did on 40 of 44 (91%).
+  - **This period can't measure it.** James pasted 52 of the 61 matched hand drafts as they were
+    (similarity 0.9 or more), so the "final" text is mostly the hand draft itself.
+  - **"Same or partial":** Rocky's High rows reach 95% and the hand run's 93%.
+  - **Rows where James wrote his own text (11):** Rocky graded "same" on 1 and the hand run on 0.
+    That sample is too small to read.
+  - **What the partials show.** On the pasted rows Rocky's High drafts grade "partial" 21 times. For
+    9 of the 13 High partials whose reason the judge spelled out, the cause is the same: Rocky
+    packed a second thread from that matter's day into the entry ("adds the Durlach custodian
+    task", "adds unrelated FBI and Behroozi tasks").
+    - Rocky averages 2.2 tasks per narrative, the hand run 1.7.
+    - The hand run kept one thread per entry and sent the rest to Uncaptured.
+    - Whether to adopt that rule is a style question for James, so it went to LESSONS.md and not
+      into the code. **James approved it 11/1** as rule 1 of the first `LESSONS.md`, in the
+      Time Entries folder.
+- **September re-run with rule 1, 11/1** ($7.23).
+  - **The rule did what it says.** Tasks per narrative fell from 2.08 to 1.83, and uncaptured
+    threads rose from 94 to 106.
+  - **The grades fell.**
+    - Rocky's High rows graded "same" on 13 of 25 (52%), down from 18 of 24.
+    - The hand run's identical drafts graded "same" on 20 of 32 (62%), down from 24 of 32.
+    - Pass mark not met.
+  - **The judge is noisy.** 5 of the 35 hand drafts got a different grade on identical text,
+    about 14% of rows, which is roughly 4 rows of the 24 to 32 that each High rate counts.
+  - **Most of Rocky's changes were losses.** 11 of Rocky's rows changed grade, and 8 of them went
+    down, mostly "same" to "partial". On those rows, James's final text kept a second task that the
+    rule had dropped.
+  - **Reading:** on the only fair period the rule doesn't help, and it may cost a few rows.
+  - **Before measuring the next lesson:** grade both runs' drafts in the same judge call (and
+    perhaps twice), so a change is measured against one judge and not two.
+  - **Removed 11/1 on James's say-so.** `LESSONS.md` now has no rules, only a note saying this
+    one was tried and why it came out.
+  - **Different on both.** The two High rows graded "different" had the hand run's draft graded
+    "different" too. James billed work with no email ("Strategy calls to discuss response to
+    ownership"; "Further settlement and dismissal processes").
+
 **Phase 3: the mail trigger and email delivery go live.** Add `--time-entries-mail` to
 `monitor_commands`. The first live spreadsheet runs with James reviewing the workbook exactly as he
 does now.

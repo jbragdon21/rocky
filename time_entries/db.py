@@ -87,11 +87,79 @@ CREATE TABLE IF NOT EXISTS anomalies (
 
 CREATE TABLE IF NOT EXISTS runs (
   id         INTEGER PRIMARY KEY,
-  kind       TEXT,           -- 'correlate' | 'backtest'
+  kind       TEXT,           -- 'correlate' | 'backtest' | 'draft' | 'draft-backtest' | 'seed-links'
   started_at TEXT,
   params     TEXT,           -- JSON
   summary    TEXT            -- JSON
 );
+
+-- Phase 2: what Rocky recommended. One row per drafted entry ('draft') or
+-- uncaptured thread ('uncaptured'). The row holds the verified version;
+-- first_* hold the drafter's, so the learning pass can see what the
+-- verifier caught. basis_ids are internet_message_ids (brain.db) or
+-- corpus:<id> (corpus.db stand-in runs).
+CREATE TABLE IF NOT EXISTS recommendations (
+  id               INTEGER PRIMARY KEY,
+  run_id           INTEGER REFERENCES runs(id),
+  kind             TEXT,
+  work_date        TEXT,
+  matter           TEXT,
+  matter_name      TEXT,
+  hours            REAL,
+  ordinal          INTEGER,     -- nth entry with this (date, matter, hours)
+  entry_row        INTEGER,     -- the export's row number
+  narrative        TEXT,
+  confidence       TEXT,
+  basis            TEXT,
+  basis_ids        TEXT,        -- JSON list
+  note             TEXT,
+  first_narrative  TEXT,
+  first_confidence TEXT,
+  verify_problem   TEXT,
+  created_at       TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_te_rec_key ON recommendations(work_date, matter);
+
+-- The deterministic diff of a recommendation against a later export.
+CREATE TABLE IF NOT EXISTS outcomes (
+  id                INTEGER PRIMARY KEY,
+  recommendation_id INTEGER REFERENCES recommendations(id),
+  run_id            INTEGER REFERENCES runs(id),
+  src_file          TEXT,        -- the export that settled it
+  outcome           TEXT,
+  similarity        REAL,
+  final_matter      TEXT,
+  final_hours       REAL,
+  final_narrative   TEXT,
+  created_at        TEXT
+);
+
+-- Confirmed email-to-matter links (TIME_ENTRIES_DESIGN.md, "Confirmed
+-- email-to-matter links"). Only source='submitted' rows are ground truth.
+-- Rows are never deleted; a contradicting export flips the verdict and
+-- names itself in flipped_by.
+CREATE TABLE IF NOT EXISTS links (
+  id                  INTEGER PRIMARY KEY,
+  work_date           TEXT,
+  matter              TEXT,
+  entry_id            INTEGER,
+  snapshot_id         INTEGER,
+  src_file            TEXT,
+  recommendation_id   INTEGER,
+  internet_message_id TEXT,
+  conversation_id     TEXT,
+  sent_at             TEXT,
+  subject             TEXT,
+  verdict             TEXT,       -- 'confirmed' | 'rejected'
+  source              TEXT,       -- 'submitted' | 'inferred'
+  outcome             TEXT,
+  note                TEXT,
+  created_at          TEXT,
+  updated_at          TEXT,
+  flipped_by          TEXT,
+  UNIQUE(work_date, matter, internet_message_id)
+);
+CREATE INDEX IF NOT EXISTS ix_te_links_msg ON links(internet_message_id);
 """
 
 
@@ -274,3 +342,91 @@ def record_run(cx: sqlite3.Connection, kind: str, params: dict,
             (kind, datetime.now().isoformat(timespec="seconds"),
              json.dumps(params, default=str), json.dumps(summary, default=str)))
     return cur.lastrowid
+
+
+def update_run(cx: sqlite3.Connection, run_id: int, summary: dict) -> None:
+    with cx:
+        cx.execute("UPDATE runs SET summary=? WHERE id=?",
+                   (json.dumps(summary, default=str), run_id))
+
+
+def store_recommendations(cx: sqlite3.Connection, run_id: int,
+                          recs: list[dict]) -> list[int]:
+    """recs: the run's rows (run.flatten output). Returns their ids, in order."""
+    stamp = datetime.now().isoformat(timespec="seconds")
+    ids = []
+    with cx:
+        for r in recs:
+            first = r.get("first") or {}
+            cur = cx.execute(
+                "INSERT INTO recommendations (run_id, kind, work_date, matter, "
+                "matter_name, hours, ordinal, entry_row, narrative, confidence, basis, "
+                "basis_ids, note, first_narrative, first_confidence, verify_problem, "
+                "created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (run_id, r["kind"], r["work_date"], r["matter"], r.get("matter_name"),
+                 r.get("hours"), r.get("ordinal"), r.get("entry_row"), r.get("narrative"),
+                 r.get("confidence"), r.get("basis"), json.dumps(r.get("basis_ids") or []),
+                 r.get("note"), first.get("narrative"), first.get("confidence"),
+                 r.get("problem"), stamp))
+            ids.append(cur.lastrowid)
+    return ids
+
+
+def store_outcomes(cx: sqlite3.Connection, run_id: int, rows: list[dict]) -> None:
+    stamp = datetime.now().isoformat(timespec="seconds")
+    with cx:
+        for o in rows:
+            cx.execute(
+                "INSERT INTO outcomes (recommendation_id, run_id, src_file, outcome, "
+                "similarity, final_matter, final_hours, final_narrative, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (o.get("recommendation_id"), run_id, o.get("src_file"), o["outcome"],
+                 o.get("similarity"), o.get("final_matter"), o.get("final_hours"),
+                 o.get("final_narrative"), stamp))
+
+
+def upsert_link(cx: sqlite3.Connection, link: dict) -> str:
+    """Insert a link, or settle an existing one for the same (work_date,
+    matter, message). A 'submitted' row outranks an 'inferred' one; a
+    contradicting submitted verdict flips the row and records who flipped
+    it. Returns 'new', 'flipped', 'kept' or 'same'."""
+    stamp = datetime.now().isoformat(timespec="seconds")
+    row = cx.execute("SELECT id, verdict, source FROM links WHERE work_date=? AND "
+                     "matter=? AND internet_message_id=?",
+                     (link["work_date"], link["matter"],
+                      link["internet_message_id"])).fetchone()
+    with cx:
+        if row is None:
+            cx.execute(
+                "INSERT INTO links (work_date, matter, entry_id, snapshot_id, src_file, "
+                "recommendation_id, internet_message_id, conversation_id, sent_at, "
+                "subject, verdict, source, outcome, note, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (link["work_date"], link["matter"], link.get("entry_id"),
+                 link.get("snapshot_id"), link.get("src_file"),
+                 link.get("recommendation_id"), link["internet_message_id"],
+                 link.get("conversation_id"), link.get("sent_at"), link.get("subject"),
+                 link["verdict"], link["source"], link.get("outcome"), link.get("note"),
+                 stamp, stamp))
+            return "new"
+        if row["verdict"] == link["verdict"]:
+            if row["source"] == "inferred" and link["source"] == "submitted":
+                cx.execute("UPDATE links SET source='submitted', outcome=?, src_file=?, "
+                           "updated_at=? WHERE id=?",
+                           (link.get("outcome"), link.get("src_file"), stamp, row["id"]))
+            return "same"
+        if row["source"] == "submitted" and link["source"] == "inferred":
+            return "kept"
+        cx.execute("UPDATE links SET verdict=?, source=?, outcome=?, updated_at=?, "
+                   "flipped_by=? WHERE id=?",
+                   (link["verdict"], link["source"], link.get("outcome"), stamp,
+                    link.get("src_file"), row["id"]))
+        return "flipped"
+
+
+def narrative_triples(cx: sqlite3.Connection) -> list[tuple]:
+    """(work_date, matter, narrative) for the drafter's prior-narratives
+    section."""
+    return [(r[0], r[1], r[2]) for r in cx.execute(
+        "SELECT work_date, matter, narrative FROM narratives WHERE matter<>'' "
+        "AND narrative<>'' AND work_date<>''")]

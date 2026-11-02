@@ -81,6 +81,39 @@ def _addr_list(raw) -> str:
     return str(vals)
 
 
+# Where James's own text ends in a reply: the first quoted-header marker, and
+# his signature block ('James D. Bragdon' followed by the P: 410 line).
+# Ported from the folder's daydump.py.
+QUOTE_RE = re.compile(
+    r"(\r?\n|^)\s*(From:|Sent:|-----\s*Original Message|On .{5,80} wrote:|"
+    r"________________________________)", re.I)
+SIG_RE = re.compile(r"\n[ \t​]*James D\. Bragdon[ \t​]*\n[ \t​]*P:[ \t]*410 951 1416",
+                    re.I)
+
+
+def clean_text(body: str | None) -> str:
+    b = (body or "").replace("\r\n", "\n").replace("\x00", "").replace("\xa0", " ")
+    b = re.sub(r"[ \t]+", " ", b)
+    return re.sub(r"\n{2,}", "\n", b).strip()
+
+
+def own_text(body: str | None, n: int | None = None) -> str:
+    """The sender's own words: quoted history and James's signature cut off.
+    A marker in the first 40 characters is kept, since a body that *starts*
+    with one is a forward with no note on top."""
+    b = (body or "").replace("\r\n", "\n").replace("\x00", "").replace("\xa0", " ")
+    m = QUOTE_RE.search(b)
+    if m and m.start() > 40:
+        b = b[:m.start()]
+    sm = SIG_RE.search(b)
+    if sm:
+        b = b[:sm.start()]
+    b = clean_text(b)
+    if n is not None and len(b) > n:
+        return b[:n] + " …"
+    return b
+
+
 def make_hay(email: dict) -> str:
     return " | ".join(filter(None, [email.get("subject"), email.get("to"),
                                     email.get("cc"), email.get("body"),
@@ -99,8 +132,10 @@ class BrainMail:
         if not p.exists():
             raise BrainError(f"Minotaur brain not found at {p}")
         self.path = p
+        # check_same_thread off: the drafting workers read reply chains
+        # through one connection, serialized by run.draft_entries' lock.
         self.cx = sqlite3.connect(f"file:{p.as_posix()}?mode=ro", uri=True,
-                                  timeout=timeout)
+                                  timeout=timeout, check_same_thread=False)
         self.cx.row_factory = sqlite3.Row
         try:
             row = self.cx.execute(
@@ -162,6 +197,36 @@ class BrainMail:
             out.append(e)
         return out
 
+    def thread(self, conversation_id: str | None, limit: int = 40) -> list[dict]:
+        """Every message in a conversation, both directions, oldest first:
+        the reply chain the drafter must read (Rule 0), with who wrote each."""
+        if not conversation_id:
+            return []
+        rows = self.cx.execute(
+            "SELECT internet_message_id, graph_id, direction, "
+            "COALESCE(sent_at, received_at) AS t, from_name, from_addr, "
+            "to_addrs, subject, body_text FROM messages WHERE conversation_id=? "
+            "ORDER BY t", (conversation_id,)).fetchall()
+        out, seen = [], set()
+        for r in rows:
+            key = r["internet_message_id"] or r["graph_id"]
+            if key in seen:
+                continue
+            seen.add(key)
+            utc = parse_utc(r["t"])
+            out.append({
+                "id": key,
+                "direction": r["direction"],
+                "sent_at": (to_eastern(utc).replace(tzinfo=None)
+                            .isoformat(timespec="seconds") if utc else ""),
+                "from": (r["from_name"] or r["from_addr"] or ""),
+                "from_addr": r["from_addr"] or "",
+                "to": _addr_list(r["to_addrs"]),
+                "subject": r["subject"] or "",
+                "body": r["body_text"] or "",
+            })
+        return out[-limit:]
+
 
 class CorpusMail:
     """The Time Entries folder's legacy corpus.db, in BrainMail's shape.
@@ -204,6 +269,11 @@ class CorpusMail:
             e["hay"] = make_hay(e)
             out.append(e)
         return out
+
+    def thread(self, conversation_id: str | None, limit: int = 40) -> list[dict]:
+        """corpus.db holds only James's sends, with no conversation ids; the
+        quoted chain inside each body is all there is."""
+        return []
 
 
 def open_mail(kind: str, paths: dict):

@@ -141,6 +141,83 @@ date when the case's email folder had his sent 10/30 letter to the OAG.
 
 ---
 
+## Session 2026-11-01 — Time Entries phase 2: drafting, verification, backtest
+
+James asked whether Time Entries was running (answer: phase 1 only, CLI),
+then said to start phase 2.
+
+**What changed**
+
+- New in `time_entries/`:
+  - `daysheet.py`: the day sheet and its read_email / search_mail tools
+  - `draft.py`: the drafting and verification calls, plus Rocky's checks
+  - `run.py`: the pipeline
+  - `learn.py`: the deterministic diff and links
+  - `workbook.py`: port of build_workbook.py
+  - `evaluate.py`: the drafting backtest, its judge, and link seeding from hand runs
+- `mail.py`:
+  - `own_text` (ported from daydump.py)
+  - `BrainMail.thread` (the whole conversation)
+  - the connection now opens with `check_same_thread=False`, behind a lock
+- `db.py`: `recommendations`, `outcomes` and `links` tables, with helpers.
+- New CLI commands: `--draft`, `--draft-backtest` and `--seed-links`. rocky.py's help lists them.
+- Tests: `tests/test_time_entries_drafting.py`, with a scripted stand-in for the client. The
+  suite has 282 passing tests.
+- TIME_ENTRIES_DESIGN.md has a new "Phase 2 status" section, with the September numbers.
+
+**Decisions made**
+
+- **Judge call in the backtest.** James pastes hand drafts verbatim (35 of 37 August High rows),
+  so wording similarity alone would score the hand run against itself.
+  - Opus grades each draft against his final text as same, partial, different or wrong, with
+    the drafts unlabeled and shuffled.
+  - Pass mark: Rocky's High rows grade "same" at least as often as the hand run's.
+- **Second failed check.** Mechanical problems (semicolon, em dash) are fixed in code. Everything
+  else becomes REVIEW with the reason stated.
+- **Weekend sheets.** A weekend sheet carries Sunday's mail and Monday's batch even when only
+  Saturday has entries. This came out of the 9/5 smoke test.
+
+**Verified**
+
+- **Smoke test (9/5, $0.99):** works end to end against the real API.
+- **September 1–5 backtest (corpus.db, $7.36): passed.**
+  - Rocky's High rows graded "same" on 18 of 24 (75%). The hand run's did on 24 of 32 (75%).
+  - All rows: Rocky 61% "same", the hand run 69%. Rocky calls fewer rows High.
+  - Results: `time_entries_data\backtests\2026-09 Part 1 - corpus - 20261101-095747.*`.
+- **Link seeding, dry run on corpus.db:** 47 links from September Part 1 and 130 from August
+  Part 2.
+
+- **August 1–20 backtest (corpus.db, $18.49): not met on its face.**
+  - High "same": Rocky 24 of 41 (58%), the hand run 40 of 44 (91%).
+  - James pasted 52 of the 61 matched hand drafts verbatim, so August mostly measures agreement
+    with the hand run.
+  - "Same or partial": Rocky 95%, the hand run 93%.
+  - Rocky's partials are mostly a second thread packed into the entry. It averages 2.2 tasks per
+    narrative against the hand run's 1.7.
+  - Detail is in TIME_ENTRIES_DESIGN.md.
+
+**Open items**
+
+- **First `LESSONS.md`, approved by James 11/1.** It is in the Time Entries folder, and every
+  drafting and verification prompt reads it. Rule 1: one thread per entry, unless the hours
+  carry more. Other threads on the matter go to Uncaptured.
+- **September re-run with rule 1 ($7.23).** Tasks per narrative fell from 2.08 to 1.83, but
+  the grades fell too.
+  - Rocky High "same": 13 of 25, down from 18 of 24.
+  - Hand run High "same": 20 of 32, down from 24. Its text was identical, so this drop is judge
+    noise.
+  - 5 of 35 identical hand drafts were regraded differently, about 14%.
+  - Most of Rocky's losses were "same" to "partial", where James's final text kept a second task.
+  - Rule 1 doesn't help on September. Before the next lesson is measured, the judge should grade
+    both runs in one call.
+  - **James had rule 1 removed 11/1.** `LESSONS.md` keeps its header and a note on the trial,
+    with no rules in force.
+- Real link seeding on the Rocky laptop (`--mail minotaur`).
+- Phase 3: the mail trigger, delivery, and the te.db snapshot ingest.
+- Nothing committed or deployed. The Phase 1 brain.db confirmation is still unreported.
+
+---
+
 ## Session 2026-10-31 (3) — GC Updates (Kirsten's podcast): show folder, cello intro, name
 
 James sent the intro music (`Cello Awakening.wav`) and asked for Kirsten's
