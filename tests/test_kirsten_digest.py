@@ -102,6 +102,23 @@ def test_activity_lines_drop_housekeeping_and_noops():
     assert len(lines) == 2
 
 
+def test_activity_lines_keep_long_analyses_and_a_busy_week_whole():
+    analysis = "The letter to the AG went out Friday with the fee schedule. " * 50
+    step = "Calendar the AG's response date and draft the follow-up letter. " * 8
+    events = [{"event": "daily_run", "timestamp": "2026-10-30T20:50:00Z",
+               "file_actions_requested": 2, "new_raw_files_seen": 2,
+               "analysis": analysis, "recommendations": [step]}]
+    events += [{"event": "drafting", "timestamp": f"2026-10-{20 + n % 9:02d}T18:00:00Z",
+                "summary": f"Draft {n}: " + "revised the fee letter. " * 40}
+               for n in range(30)]
+    lines = kd.activity_lines(events)
+    text = "\n".join(lines)
+    assert analysis.strip() in text and step.strip() in text
+    assert not any(line.endswith("...") for line in lines)
+    assert "[...earlier activity omitted...]" not in text
+    assert len(lines) == 32
+
+
 def test_parse_json_tolerates_fences():
     assert kd._parse_json('```json\n{"status": "x", "week": []}\n```') == {
         "status": "x", "week": []}

@@ -150,8 +150,12 @@ _HOUSEKEEPING = {
     "spine_updated", "instructions_updated", "internal_suggestions",
     "folder_setup", "tooling", "skill_created", "session_log",
 }
-_PROMPT_CAP = 20000      # activity characters per case
-_LINE_CAP = 700
+# Guards against a runaway log, not a budget: a week of the busiest case ran
+# 39,000 characters and the longest line 4,935. (Until 11/1/26: 20,000 a
+# case and 700 a line, 300 for action items and next steps, which cut the
+# daily-run analyses and dropped the start of the week on the busiest cases.)
+_PROMPT_CAP = 60000      # activity characters per case
+_LINE_CAP = 6000
 
 
 # ---------------------------------------------------------------------------
@@ -270,7 +274,7 @@ def activity_lines(events: list[dict], authors: bool = False) -> list[str]:
             if not ev.get("emails") and ev.get("summary"):
                 lines.append(f"{day} emails: {_clip(ev['summary'])}")
             for item in ev.get("action_items") or []:
-                lines.append(f"{day}   action item: {_clip(item, 300)}")
+                lines.append(f"{day}   action item: {_clip(item)}")
         elif kind == "email_ingested":
             lines.append(_clip(f"{day} email received: {ev.get('subject')!r} "
                                f"from {ev.get('from_name') or ev.get('from_address')}"))
@@ -283,7 +287,7 @@ def activity_lines(events: list[dict], authors: bool = False) -> list[str]:
                 lines.append(f"{day} review of new documents: "
                              f"{_clip(ev['analysis'])}")
             for rec in ev.get("recommendations") or []:
-                lines.append(f"{day}   suggested next step: {_clip(rec, 300)}")
+                lines.append(f"{day}   suggested next step: {_clip(rec)}")
         else:
             text = ev.get("summary") or ""
             details = ev.get("details")

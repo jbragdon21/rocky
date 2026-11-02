@@ -24,6 +24,65 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-11-01 (4) — Input caps raised: whole summaries, quiet cases, long filings, activity lines
+
+James asked whether other low limits were hurting quality to save a little
+cost. An audit found that the reply limits never bind (the longest digest
+section last week was about 1,000 tokens, against a 1,500 limit). Four
+input caps were cutting real case content. He said to raise all four.
+
+**What changed**
+
+- `rocky.py`:
+  - `STATUS_MEMO_CAP` is 100,000 (was 8,000) in `_extract_status_memo_text`.
+    23 of 27 Master Case Summaries ran longer, the longest 61,759, so the
+    Working Checklist / Next Steps section at the end was never read. This
+    feeds the digest, Sam's Podcast and Kirsten's report.
+  - No-activity list: each quiet case gets its whole memo (was 4,000
+    characters, and 12 cases got none). New `no_activity_batches` groups
+    cases into calls under `NO_ACTIVITY_BATCH_CHARS` (200,000). A failed
+    call costs only its own cases.
+  - `PLEADING_FACTS_TEXT_CAP` is 400,000 (was 60,000) and
+    `PLEADING_FACTS_MAX` is 60 (was 30), with reply `max_tokens` 6,000.
+  - `_read_pleading_facts` keeps the latest read per `source`, so a
+    re-read replaces the old facts instead of doubling them.
+- `kirsten_digest.py`: `_LINE_CAP` is 6,000 (was 700, and 300 for action
+  items and next steps) and `_PROMPT_CAP` is 60,000 (was 20,000).
+- Tests: six new ones (5 in `test_daily_digest.py`, 1 in
+  `test_kirsten_digest.py`). The suite has 294 passing.
+- BUILD_REFERENCE: the Kirsten Digest paragraph, Stage 2 item 8, Stage 3
+  step 2 and "Sources beyond the memo".
+
+**Decisions made**
+
+- The memo and activity caps are now guards against a runaway file, not
+  budgets. They are set well above the largest real input.
+- The no-activity list is batched rather than one call. With every case
+  quiet, the whole memos come to about 181K tokens, and one call weighing
+  40 summaries invites crossed cases.
+- The pleading cap stops at 400,000 characters. Above that are only
+  motions with hundreds of pages of exhibits (Ogunnupe PLD-039 at 995K,
+  Bulgin MOT-001 at 771K, and Goddard PLD-062 and -064 at about 500K). Their
+  bodies come first, so the facts are read.
+- Measured cost: about $0.72 a day at most for the no-activity calls, and
+  about $0.10–0.35 more for the digest and podcast memos. The pleading
+  reads are one call per new filing.
+
+**Open items**
+
+- Not committed and not deployed. The batching fix in entry (2) was
+  committed as 16470b0 on `time-entries` and is not deployed either.
+- The 50 filings cut by the old 60,000 cap keep their partial facts until
+  re-read with `--pleading-facts RRID-XXXX <file>...`, roughly $5–10 for
+  all of them. That's safe now that a re-read replaces the old event.
+- Not audited: the daily run's changed-files excerpts (the first 3,000
+  characters of each changed file, while spine edits land at the bottom),
+  and the Litigation Updater, Vault classifier and Sam's research-memo caps.
+- `_read_pleading_facts` still sends the digest the newest 60 facts by date
+  (15 for the no-activity list).
+
+---
+
 ## Session 2026-11-01 (2) — Daily run: batches past the prompt budget; misses only for files shown
 
 James asked why the 11/1 digest's VA AG Fees (RRID-0044) section was out of

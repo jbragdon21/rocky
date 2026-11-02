@@ -189,6 +189,38 @@ def test_pleading_facts_prompt_without_client():
     assert "WE REPRESENT: unknown (Gallagher LLP / James Bragdon). Use filed_by" in user
 
 
+def test_a_re_read_filing_replaces_the_earlier_read(tmp_path):
+    lines = [
+        dict(_facts_event("us", [("2026-08-26", "First read, cut short.")], "SAC"),
+             source="01 - Pleadings\\PLD-023 SAC.pdf"),
+        _facts_event("court", [("2026-10-30", "Court set a status hearing.")], "Order"),
+        _facts_event("court", [("2026-11-02", "Court set a pretrial conference.")], "Notice"),
+        dict(_facts_event("us", [("2026-08-26", "Second read, whole."),
+                                 ("2026-09-14", "Plaintiffs filed the SAC.")], "SAC"),
+             source="01 - Pleadings/PLD-023 SAC.pdf"),
+    ]
+    (tmp_path / "activity.jsonl").write_text(
+        "\n".join(json.dumps(e) for e in lines), encoding="utf-8")
+    text, _ = rocky._read_pleading_facts(tmp_path, TODAY)
+    assert "First read" not in text
+    assert "Second read, whole." in text and "Plaintiffs filed the SAC." in text
+    # Events without a source are never merged.
+    assert "status hearing" in text and "pretrial conference" in text
+
+
+def test_a_long_filing_is_read_whole_and_keeps_up_to_60_facts():
+    reply = json.dumps({"filed_by": "opposing", "facts": [
+        {"date": f"2026-01-{d:02d}", "fact": f"Fact {n}."}
+        for n, d in enumerate([1 + i % 28 for i in range(70)])]})
+    fake = FakeClient(reply)
+    complaint = "Statement of facts. " * 10_000 + "LAST PAGE"   # 200,009 characters
+    result = rocky.extract_pleading_facts(fake, "Williams", "PLD-023 SAC.pdf", complaint)
+    prompt = fake.prompts[0][1]
+    assert "LAST PAGE" in prompt and "[...truncated...]" not in prompt
+    assert len(result["facts"]) == 60
+    assert "At most 60 facts" in rocky.PLEADING_FACTS_SYSTEM_PROMPT
+
+
 def test_court_filing_folders():
     assert rocky._is_court_filing_folder("01 - Pleadings")
     assert rocky._is_court_filing_folder("02 - Motions")
@@ -211,6 +243,55 @@ def test_past_next_deadline_is_dropped():
     assert rocky._drop_past_deadline("2026-08-26 — Status hearing (PAST)", TODAY) == "None on file"
     assert rocky._drop_past_deadline("2026-12-02 — Trial", TODAY) == "2026-12-02 — Trial"
     assert rocky._drop_past_deadline("None on file", TODAY) == "None on file"
+
+
+# --- Master Case Summary and the no-activity list ---------------------------
+
+def test_master_case_summary_is_read_to_the_end(tmp_path):
+    from docx import Document
+
+    doc = Document()
+    doc.add_paragraph("MASTER CASE SUMMARY")
+    for n in range(300):
+        doc.add_paragraph(f"Timeline entry {n}: the parties exchanged letters.")
+    doc.add_paragraph("WORKING CHECKLIST / NEXT STEPS")
+    doc.add_paragraph("Calendar the AG's reply date.")
+    (tmp_path / "Master Case Summary").mkdir()
+    doc.save(tmp_path / "Master Case Summary" / "Master Case Summary.docx")
+    text = rocky._extract_status_memo_text(tmp_path)
+    assert len(text) > 8000
+    assert text.rstrip().endswith("Calendar the AG's reply date.")
+    assert "[...truncated...]" not in text
+
+
+def test_no_activity_batches_group_by_size(monkeypatch):
+    monkeypatch.setattr(rocky, "NO_ACTIVITY_BATCH_CHARS", 100)
+    blocks = ["a" * 40, "b" * 40, "c" * 40, "d" * 250, "e" * 10]
+    assert [len(b) for b in rocky.no_activity_batches(blocks)] == [2, 1, 1, 1]
+    assert rocky.no_activity_batches([]) == []
+
+
+def test_no_activity_cases_get_whole_memos_and_a_failed_batch_costs_only_its_own(monkeypatch):
+    monkeypatch.setattr(rocky, "NO_ACTIVITY_BATCH_CHARS", 20_000)
+    memo = "STATUS MEMO:\n" + "Background. " * 700 + "\nNEXT STEPS: serve the reply."
+    cases = [("RRID-0001", "One", memo), ("RRID-0002", "Two", memo),
+             ("RRID-0003", "Three", memo)]
+
+    def reply(kw):
+        prompt = kw["messages"][0]["content"]
+        if "RRID-0003" in prompt:
+            raise RuntimeError("overloaded")
+        return "\n".join(f"{r} | Serve the reply | None on file"
+                         for r in ("RRID-0001", "RRID-0002") if r in prompt)
+
+    client = FakeClient(reply)
+    got = rocky.build_no_activity_next_events(client, cases, "2026-11-01 (Sunday)")
+    assert len(client.prompts) == 2
+    first = client.prompts[0][1]
+    assert first.count("NEXT STEPS: serve the reply.") == 2 and "[...truncated...]" not in first
+    assert got == {"RRID-0001": ("Serve the reply", "None on file"),
+                   "RRID-0002": ("Serve the reply", "None on file"),
+                   "RRID-0003": ("None on file", "None on file")}
 
 
 # --- End to end --------------------------------------------------------------

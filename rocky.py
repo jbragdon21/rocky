@@ -1879,8 +1879,12 @@ def _build_filed_filename(raw_filename: str, suggested_name: str | None) -> str:
 
 # Case subfolders whose documents are court filings.
 _COURT_FILING_FOLDER_RE = re.compile(r"pleading|motion|order", re.IGNORECASE)
-PLEADING_FACTS_TEXT_CAP = 60000
-PLEADING_FACTS_MAX = 30
+# About 115K tokens, enough for a full complaint or deposition transcript;
+# only motions carrying hundreds of pages of exhibits run past it. (Until
+# 11/1/26: 60,000 characters and 30 facts, which cut 50 of 588 filings, among
+# them Williams's Second Amended Complaint at 27%.)
+PLEADING_FACTS_TEXT_CAP = 400_000
+PLEADING_FACTS_MAX = 60
 
 PLEADING_FACTS_SYSTEM_PROMPT = """You are Rocky, a litigation paralegal for James Bragdon at Gallagher LLP. You read one court filing and pull out the dated facts it states, for the case timeline.
 
@@ -1899,7 +1903,7 @@ FACTS
 - Court dates the document SETS or SCHEDULES (hearings, conferences, deadlines) are facts: "Court set a remote scheduling conference for 2026-10-23 at 10:30 AM".
 - State each fact plainly, as the document states it. No legal argument, characterization, or conclusions ("Plaintiff's argument is baseless" is not a fact).
 - Use only dates the document states. Never infer or compute a date. Skip a fact whose date the document does not give.
-- One event per fact. At most 30 facts, the most case-significant first if you must choose.
+- One event per fact. At most 60 facts, the most case-significant first if you must choose.
 - An empty "facts" list is fine for a filing with no dated facts (a bare notice of appearance)."""
 
 CLAUDE_MD_PLEADING_FACTS_SECTION = """## Facts From Filed Pleadings
@@ -1950,7 +1954,7 @@ def extract_pleading_facts(
     try:
         response = claude_call.create(
             client,
-            max_tokens=3000,
+            max_tokens=6000,
             system=PLEADING_FACTS_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_prompt}],
         )
@@ -3055,14 +3059,21 @@ def _read_case_digest_instructions(case_folder: Path) -> str:
     return ""
 
 
+# The whole Master Case Summary goes to the digest, Sam's Podcast and
+# Kirsten's report; the cap only guards against a runaway file. (Until
+# 11/1/26 it was 8,000 characters: 23 of 27 summaries ran longer, the longest
+# 61,759, so the Working Checklist / Next Steps section at the end of the
+# house template was never read.)
+STATUS_MEMO_CAP = 100_000
+
+
 def _extract_status_memo_text(case_folder: Path) -> str:
     memo = _find_status_memo(case_folder)
     if not memo:
         return ""
     text = extract_text_from_path(memo) or ""
-    # Cap so a giant memo doesn't blow the prompt.
-    if len(text) > 8000:
-        text = text[:8000] + "\n[...truncated...]"
+    if len(text) > STATUS_MEMO_CAP:
+        text = text[:STATUS_MEMO_CAP] + "\n[...truncated...]"
     return text
 
 
@@ -3135,9 +3146,14 @@ def _read_pleading_facts(case_folder: Path, today: date, cap: int = 60) -> tuple
     """
     entries: list[tuple[str, str]] = []
     upcoming: list[date] = []
-    for ev in _read_jsonl(case_folder / "activity.jsonl"):
-        if ev.get("event") != "pleading_facts":
-            continue
+    # A later read of the same filing (a --pleading-facts re-read) replaces
+    # the earlier one.
+    latest: dict = {}
+    for i, ev in enumerate(_read_jsonl(case_folder / "activity.jsonl")):
+        if ev.get("event") == "pleading_facts":
+            source = str(ev.get("source") or "").replace("\\", "/").lower()
+            latest[source or i] = ev
+    for ev in latest.values():
         label = _FILED_BY_LABEL.get(ev.get("filed_by"), "source unclear")
         doc = ev.get("document") or ev.get("source") or "filing"
         filed_on = f", filed {ev['filed_on']}" if ev.get("filed_on") else ""
@@ -3353,59 +3369,74 @@ Rules for the NEXT BIG DEADLINE (last field):
 Output ONLY the lines, one per case, no preamble or commentary."""
 
 
+# Quiet cases go to the no-activity call with their whole Master Case
+# Summary, grouped into calls of at most this many characters (about 57K
+# tokens), so no one call weighs two dozen summaries and a failed call costs
+# only its own cases. (Until 11/1/26 each case got 4,000 characters, deadlines
+# and facts first, and 12 cases got no summary at all.)
+NO_ACTIVITY_BATCH_CHARS = 200_000
+
+
+def no_activity_batches(blocks: list[str]) -> list[list[str]]:
+    """Case blocks, in order, grouped under NO_ACTIVITY_BATCH_CHARS. A block
+    over the budget gets a call of its own."""
+    batches: list[list[str]] = []
+    size = 0
+    for block in blocks:
+        if not batches or (batches[-1] and size + len(block) > NO_ACTIVITY_BATCH_CHARS):
+            batches.append([])
+            size = 0
+        batches[-1].append(block)
+        size += len(block)
+    return batches
+
+
 def build_no_activity_next_events(
     client: Anthropic,
     cases: list[tuple[str, str, str]],
     today_str: str,
 ) -> dict[str, tuple[str, str]]:
     """
-    One batched Claude call for all no-activity cases.
-    `cases` is a list of (rrid, name, case_text) — the deadlines table and
-    filing dates first, then the status memo, so truncation cuts the memo.
+    Batched Claude calls for the no-activity cases (see
+    NO_ACTIVITY_BATCH_CHARS). `cases` is a list of (rrid, name, case_text) —
+    the deadlines table and filing dates, then the status memo.
     Returns {rrid: (next_step, next_deadline)}.
     Falls back to ("None on file", "None on file") for any case the model omits
-    or on error.
+    or whose call failed.
     """
     fallback = {rrid: ("None on file", "None on file") for rrid, _, _ in cases}
     if not cases:
         return {}
 
-    blocks = []
-    for rrid, name, memo in cases:
-        memo_excerpt = (memo or "").strip()
-        if len(memo_excerpt) > 4000:
-            memo_excerpt = memo_excerpt[:4000] + "\n[...truncated...]"
-        blocks.append(
-            f"{rrid} — {name}\n{memo_excerpt or '(no memo on file)'}\n"
-        )
-
-    user_prompt = f"TODAY: {today_str}\n\n" + "\n---\n".join(blocks)
-
-    try:
-        response = claude_call.create(
-            client,
-            max_tokens=1200,
-            system=NO_ACTIVITY_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_prompt}],
-        )
-        text = claude_call.text(response).strip()
-    except Exception as e:
-        log.error(f"No-activity next-event summary failed: {e}")
-        return fallback
+    blocks = [f"{rrid} — {name}\n{(text or '').strip() or '(no memo on file)'}\n"
+              for rrid, name, text in cases]
 
     result = dict(fallback)
-    for line in text.splitlines():
-        if "|" not in line:
+    for batch in no_activity_batches(blocks):
+        user_prompt = f"TODAY: {today_str}\n\n" + "\n---\n".join(batch)
+        try:
+            response = claude_call.create(
+                client,
+                max_tokens=1200,
+                system=NO_ACTIVITY_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": user_prompt}],
+            )
+            text = claude_call.text(response).strip()
+        except Exception as e:
+            log.error(f"No-activity next-event summary failed ({len(batch)} case(s)): {e}")
             continue
-        parts = [p.strip() for p in line.split("|")]
-        m = RRID_PATTERN.search(parts[0])
-        if not m:
-            continue
-        rrid = m.group(0).upper()
-        next_step = (parts[1] if len(parts) > 1 else "") or "None on file"
-        next_deadline = (parts[2] if len(parts) > 2 else "") or "None on file"
-        if rrid in result:
-            result[rrid] = (next_step, next_deadline)
+        for line in text.splitlines():
+            if "|" not in line:
+                continue
+            parts = [p.strip() for p in line.split("|")]
+            m = RRID_PATTERN.search(parts[0])
+            if not m:
+                continue
+            rrid = m.group(0).upper()
+            next_step = (parts[1] if len(parts) > 1 else "") or "None on file"
+            next_deadline = (parts[2] if len(parts) > 2 else "") or "None on file"
+            if rrid in result:
+                result[rrid] = (next_step, next_deadline)
     return result
 
 
@@ -3908,8 +3939,8 @@ def daily_digest(
         log.error(f"Could not create {DAILY_DIGESTS_DIR}: {e}")
         return {"written": False, "reason": f"mkdir_failed: {e}"}
 
-    # Resolve the "next event" for each open case with no activity (one batched
-    # Claude call), then build the bottom-of-digest list.
+    # Resolve the "next event" for each open case with no activity (batched
+    # Claude calls), then build the bottom-of-digest list.
     no_activity_rows: list[tuple[str, str, str, str]] = []
     if no_activity_cases:
         today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d (%A)")
