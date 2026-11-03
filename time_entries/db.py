@@ -163,11 +163,27 @@ CREATE INDEX IF NOT EXISTS ix_te_links_msg ON links(internet_message_id);
 """
 
 
+# Phase 3 columns on snapshots, added in place on a te.db made before them.
+# status: NULL (read by hand or migrated), pending (waiting to run), running,
+# done, nothing (no blanks), failed.
+SNAPSHOT_COLUMNS = {
+    "status": "TEXT", "file_path": "TEXT", "subject": "TEXT",
+    "internet_message_id": "TEXT", "scope": "TEXT", "run_id": "INTEGER",
+    "error": "TEXT", "updated_at": "TEXT",
+}
+
+
 def connect(path: Path) -> sqlite3.Connection:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    cx = sqlite3.connect(path)
+    # timeout: the mail step and a detached run can both write.
+    cx = sqlite3.connect(path, timeout=30)
     cx.row_factory = sqlite3.Row
     cx.executescript(SCHEMA)
+    have = {r[1] for r in cx.execute("PRAGMA table_info(snapshots)")}
+    for col, kind in SNAPSHOT_COLUMNS.items():
+        if col not in have:
+            cx.execute(f"ALTER TABLE snapshots ADD COLUMN {col} {kind}")
+    cx.commit()
     return cx
 
 
@@ -422,6 +438,31 @@ def upsert_link(cx: sqlite3.Connection, link: dict) -> str:
                    (link["verdict"], link["source"], link.get("outcome"), stamp,
                     link.get("src_file"), row["id"]))
         return "flipped"
+
+
+def queue_snapshot(cx: sqlite3.Connection, snapshot_id: int, **fields) -> None:
+    """Mark a mailed export pending, with what the run needs to find it."""
+    set_snapshot(cx, snapshot_id, status="pending", **fields)
+
+
+def set_snapshot(cx: sqlite3.Connection, snapshot_id: int, **fields) -> None:
+    bad = set(fields) - set(SNAPSHOT_COLUMNS) - {"sender", "note"}
+    if bad:
+        raise ValueError(f"unknown snapshot fields {sorted(bad)}")
+    fields["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    cols = ", ".join(f"{k}=?" for k in fields)
+    with cx:
+        cx.execute(f"UPDATE snapshots SET {cols} WHERE id=?",
+                   (*fields.values(), snapshot_id))
+
+
+def snapshot(cx: sqlite3.Connection, snapshot_id: int):
+    return cx.execute("SELECT * FROM snapshots WHERE id=?", (snapshot_id,)).fetchone()
+
+
+def pending_snapshots(cx: sqlite3.Connection) -> list:
+    return cx.execute("SELECT * FROM snapshots WHERE status='pending' "
+                      "ORDER BY id").fetchall()
 
 
 def narrative_triples(cx: sqlite3.Connection) -> list[tuple]:

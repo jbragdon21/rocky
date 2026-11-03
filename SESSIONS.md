@@ -24,6 +24,78 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-11-01 (5) — Time Entries phase 3: the mail trigger and delivery
+
+James said "Start phase 3" after phase 2 was committed (`1ce3c09`). Built on `time-entries`,
+not committed or deployed. Detail is in TIME_ENTRIES_DESIGN.md, "Phase 3 status (2026-11-01)".
+
+**What changed**
+
+- `time_entries/trigger.py` (new): `--time-entries-mail`, the monitor step.
+  - It finds Aspen exports in rocky@'s Inbox, by the export's header or by "time entries"
+    words in the subject or note.
+  - It saves each export, ingests it as a snapshot, and queues it with the scope parsed from
+    the note.
+  - It replies when it can't use the email, moves processed mail to `Inbox\Time Entries`, and
+    starts the run detached.
+- `time_entries/live.py` (new): `--time-entries-run`.
+  - It waits for brain.db to cover the period, for up to 12 hours.
+  - It drafts and verifies, saves the workbook to `Time Entries\drafts`, and emails James,
+    cc'ing the sender.
+  - A failed run emails James the retry command.
+  - `--csv … --no-send` runs the whole path on a local file.
+- `rocky.py`:
+  - `--time-entries-mail` is added to `MONITOR_DEFAULT_COMMANDS`.
+  - Dispatch for both commands, with their own locks (`time-entries-mail`,
+    `time-entries-run`).
+  - Help lines.
+- `db.py`: phase 3 columns on `snapshots`, added in place on an old te.db; queue and status
+  helpers; a 30 s lock timeout.
+- `mail.py`: `last_ingest()`, so a quiet Saturday isn't mistaken for a stale brain.
+- `timecards.py`: finds the export on any sheet of a workbook.
+- `evaluate.py` and `cli.py`, the judge fix:
+  - The judge grades any set of candidates in one call. Identical texts share a grade.
+  - New `--compare` and `--rejudge [--repeat N]` options.
+- `run.py`: `draft_entries` also returns `props`.
+- `tests/test_time_entries_live.py` (new, 16 tests).
+
+**Decisions**
+
+- The trigger replies when an export is a duplicate. The design said to do nothing, but a
+  short reply answers "where did it go?"
+- A failed run is not retried by itself, since each try costs Opus calls. James reruns it with
+  `--snapshot N`.
+- A `--no-send` run keeps its workbook off OneDrive, so test output never lands in
+  `Time Entries\drafts`.
+- The learning diff and the `[TL-####]` email stay in phase 4.
+
+**Verification**
+
+- Full suite: 310 passing.
+- **Smoke test, dev laptop ($1.20).** 9/5 from the September export, with corpus mail and
+  nothing sent: 3 drafted (High 2, REVIEW 1), 7 uncaptured. The workbook was built and the
+  email printed.
+  - The smoke test led to three fixes in the email: how current the mail was replaces a
+    misleading send count, REVIEW notes are cut at a word, and a stray trailing space is gone.
+- **`--rejudge`, September with and without LESSONS rule 1, in one call, twice ($0.41).**
+  - High rows graded "same": Rocky without the rule, 16–17 of 24. With the rule, 13 of 25 on
+    both passes. Hand run, 20–21 of 32.
+  - The judge agreed with itself on 94% of grades.
+  - The rule's cost is real, so removing it was right.
+- The inbox scan is not tested against Graph. The dev laptop has no app secret.
+
+**Open items**
+
+- Deploy, then on the Rocky laptop:
+  - check `monitor_commands` in config, if set;
+  - confirm Minotaur's nightly ingest;
+  - run `rocky.exe --time-entries-mail --dry-run`;
+  - email one real export to rocky@.
+- Phase 4: the learning diff, the lessons email, and the accuracy trend in the results email.
+- Real link seeding (`--mail minotaur`), and the phase 1 brain.db confirmation.
+
+---
+
 ## Session 2026-11-01 (4) — Input caps raised: whole summaries, quiet cases, long filings, activity lines
 
 James asked whether other low limits were hurting quality to save a little

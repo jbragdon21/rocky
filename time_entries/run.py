@@ -119,7 +119,7 @@ def draft_entries(config: dict, paths: dict, entries: list[dict], work: list[dic
     recs = flatten(sheets, outs, learn.ordinals(entries))
     return {"sheets": sheets, "outs": outs, "recs": recs, "emails": emails,
             "results": results, "usage": usage.as_dict(), "model": model,
-            "effort": effort, "mail_window": (lo, hi)}
+            "effort": effort, "mail_window": (lo, hi), "props": props}
 
 
 def flatten(sheets, outs, ords: dict) -> list[dict]:

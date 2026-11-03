@@ -6057,7 +6057,7 @@ def run_pma_activity_cli() -> None:
 # one never stalls the others — the monitor is a scheduler, not a merge).
 # Config monitor_commands overrides without a rebuild.
 MONITOR_DEFAULT_COMMANDS = ["--letterstream", "--vault-mail", "--vault-inbox",
-                            "--pacer-mail"]
+                            "--pacer-mail", "--time-entries-mail"]
 
 
 # The Litigation Updater rides along on every cycle too, but in the
@@ -6516,6 +6516,12 @@ def main():
     # --time-entries flag, and every one of them writes te.db.
     if "--time-entries" in sys.argv:
         command = "time-entries"
+    # The mail step and the detached drafting run lock apart: the monitor
+    # must keep checking mail while a run takes half an hour.
+    if "--time-entries-mail" in sys.argv:
+        command = "time-entries-mail"
+    if "--time-entries-run" in sys.argv:
+        command = "time-entries-run"
     if command:
         lock_fh = acquire_instance_lock(command)  # noqa: F841 — must stay alive
         _job_tag.tag = command
@@ -6592,6 +6598,14 @@ def main():
     elif "--letterstream" in sys.argv or "--affidavits" in sys.argv:
         import mailing_affidavits
         mailing_affidavits.run_cli(load_config(), DATA_DIR)
+    elif "--time-entries-mail" in sys.argv:
+        from time_entries import trigger
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        sys.exit(trigger.run_mail_cli(load_config(), DATA_DIR))
+    elif "--time-entries-run" in sys.argv:
+        from time_entries import live
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        sys.exit(live.run_cli(load_config(), DATA_DIR))
     elif "--time-entries" in sys.argv:
         from time_entries import cli as time_entries_cli
         DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -6696,6 +6710,10 @@ def main():
         print("                 | --seed-links --hand <file> --final <later>")
         print("                                          Time entries, phase 2: draft and verify narratives (Opus 5.5),")
         print("                                          score them against what James submitted, seed email-matter links")
+        print("  --time-entries-mail [--dry-run]         Time entries, phase 3 (monitor step): pick up Aspen exports")
+        print("                                          emailed to rocky@, queue them, start the run")
+        print("  --time-entries-run [--snapshot N | --csv <export>] [--no-send] [--force]")
+        print("                                          Draft every queued export and email James the workbook")
         print("  --inbox-<user> --snapshot|--analyze|--questionnaire|--chat|--rules-update|--digest|--execute|--status")
         print("                                          Inbox Cleaner per-user process (e.g. --inbox-matt);")
         print("                                          users are defined in config inbox_users")

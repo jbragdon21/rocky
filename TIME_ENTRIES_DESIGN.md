@@ -662,6 +662,95 @@ for a live round. The seed needs brain.db, so it runs on the Rocky laptop.
 `monitor_commands`. The first live spreadsheet runs with James reviewing the workbook exactly as he
 does now.
 
+**Phase 3 status (2026-11-01).** Built on `time-entries`, tested, **not deployed**.
+
+- **`--time-entries-mail`** (`time_entries/trigger.py`) is in `MONITOR_DEFAULT_COMMANDS`, so it
+  runs every monitor cycle once deployed.
+  - It reads rocky@'s Inbox with the app token, mail with attachments only, from a cursor in
+    `<local>\mail_state.json`. On first run it looks back `time_entries_backfill_days`
+    (default 3).
+  - It takes mail only from @gallagherllp.com, never from rocky@ itself.
+  - Either signal from "Trigger" counts. The words test reads the subject and
+    `forwarding_note`, and ignores replies to Rocky's own results emails.
+  - A readable export is saved to `<local>\snapshots\`, ingested as a snapshot, and queued as
+    `pending` along with the scope parsed from the note. The email then moves to
+    `Inbox\Time Entries`.
+  - Scope phrases: "just 10/19–10/23", "only 10/21", "blanks only", "skip partials". A bare M/D
+    takes the year nearest the export's period.
+  - Replies go to the sender:
+    - the words match but nothing reads as an export (the reply names the expected columns);
+    - the export has no rows for James (0197);
+    - the export is already in te.db (a short reply instead of silence, so nobody wonders
+      where it went).
+  - If an attachment fails to download, the step stops at that email and keeps the cursor, so
+    the next cycle retries.
+  - When anything is pending, it starts `--time-entries-run` detached.
+  - `--dry-run` reads and reports, and changes nothing.
+- **`--time-entries-run`** (`time_entries/live.py`) works through every pending snapshot,
+  oldest first, and checks again before it exits.
+  - **Coverage.** The run needs mail through the batch hour on the morning after the last work
+    date (for a weekend, the morning after its Monday). The brain counts as current once its
+    newest send or its last ingest (`MAX(ingested_at)`) reaches that time. If it hasn't, the
+    snapshot stays pending. Each monitor cycle starts the run again, which re-checks, for up
+    to `time_entries_wait_hours` (default 12). After that the run goes ahead, and the email
+    and Read Me say how far the mail reached.
+  - **Then** it runs `run.draft_entries` (the phase 2 pipeline), stores the recommendations
+    under a `mail-run` row in `runs`, and writes `YYYY-MM-DD to YYYY-MM-DD - draft
+    narratives.xlsx` to OneDrive `Time Entries\drafts\`. If OneDrive is missing, the workbook
+    goes to te.db's folder.
+  - **The email** goes through `send_mail_guarded` to `time_entries_results_to` (default James),
+    with the sender cc'd when it isn't James. Subject: `Rocky — Time entries: M/D to M/D draft
+    narratives`. The body covers:
+    - counts and hours by confidence;
+    - the uncaptured count;
+    - up to 15 REVIEW notes;
+    - matters missing from the Property Reference Table, by hours;
+    - zero-hit tokens;
+    - drafting problems;
+    - how current the mail was;
+    - the cost.
+  - **Other endings.** An export with nothing to draft gets a short note. A failed run marks the
+    snapshot `failed` and emails James alone with the retry command,
+    `--time-entries-run --snapshot N`. It is not retried by itself.
+  - **By hand:** `--time-entries-run --csv <export> [--from D --to D] [--no-send] [--force]`.
+    `--no-send` prints the email and keeps the workbook off OneDrive.
+- **Schema.** `snapshots` gains status, file_path, subject, internet_message_id, scope, run_id,
+  error and updated_at. `db.connect` adds them in place, so the Rocky laptop's te.db upgrades
+  itself. Connections wait 30 s on a lock, because the mail step and a run can write at the
+  same time.
+- **Not in phase 3:** the learning diff, the `[TL-####]` lessons email and the accuracy trend in
+  the email (phase 4).
+- **The judge fix.**
+  - `judge` now grades any set of candidates in one call. Identical texts on a row are shown
+    once and share a grade.
+  - `--draft-backtest --compare <earlier .json>` adds another run's drafts as a candidate.
+  - `--rejudge <backtest .json> [--compare <.json>] [--repeat N]` re-grades saved rows without
+    redrafting, and reports how often repeated passes agree.
+- **Rejudge of September, both runs in one call, two passes ($0.41).** The judge gave the same
+  grade on 134 of 143 (94%) across the passes.
+
+  | High rows graded "same" | Pass 1 | Pass 2 |
+  |---|---|---|
+  | Rocky, without rule 1 | 16 of 24 (67%) | 17 of 24 (71%) |
+  | Rocky, with rule 1 | 13 of 25 (52%) | 13 of 25 (52%) |
+  | Hand run | 20 of 32 (62%) | 21 of 32 (66%) |
+
+  The rule cost three or four High rows under one judge, so removing it was right. Rocky
+  without it still passes against the hand run.
+- **Tests.** `tests/test_time_entries_live.py` has 16 tests covering scope, export detection,
+  the scan's replies and dedupe, the download-failure stop, the dry run, the schema upgrade,
+  coverage and the wait, delivery, scope and cc, nothing to draft, failure, the judge with
+  compare, agreement, and the rejudge CLI. Full suite: 310 passing.
+- **Smoke test, dev laptop (corpus mail, nothing sent, $1.20).** `--csv "2026-09 List
+  Download.csv" --from 2026-09-05 --to 2026-09-05` drafted 3 entries (High 2, REVIEW 1) and
+  listed 7 uncaptured threads. It built the workbook and printed the email.
+- **Before it goes live on the Rocky laptop:**
+  1. Deploy.
+  2. Check that config's `monitor_commands`, if set, includes `--time-entries-mail`.
+  3. Confirm brain.db's nightly ingest runs.
+  4. Run `rocky.exe --time-entries-mail --dry-run` against the real Inbox.
+  5. Email one real export to rocky@.
+
 **Phase 4: the learning loop.** The first real round is the next export covering 10/6–10/18 after
 James submits those entries. It compares his submitted text with the October Part 2 workbook.
 From then on, every round's diff writes its confirmed and rejected links. Alias proposals draw on

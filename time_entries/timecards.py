@@ -71,8 +71,12 @@ def read_rows(path: Path | str, content: bytes | None = None) -> list[list[str]]
         # dimension, which some workbooks get wrong, and silently stops early.
         wb = openpyxl.load_workbook(src, data_only=True)
         try:
-            ws = wb.worksheets[0]
-            return [[_cell(v) for v in row] for row in ws.iter_rows(values_only=True)]
+            # The export's sheet, wherever it sits: someone re-saving it may
+            # put a cover sheet first.
+            sheets = [[[_cell(v) for v in row] for row in ws.iter_rows(values_only=True)]
+                      for ws in wb.worksheets]
+            return next((s for s in sheets if find_header(s) is not None),
+                        sheets[0] if sheets else [])
         finally:
             wb.close()
     raw = content if content is not None else Path(path).read_bytes()

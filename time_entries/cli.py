@@ -29,6 +29,14 @@ Phase 2 (Claude calls, Opus 5.5 by default; time_entries_model in config):
         narratives from before the period only), then score the drafts against
         what James submitted in the later export, next to the hand run's.
 
+        --compare <earlier backtest .json> grades that run's drafts in the same
+        judge call, so a change (a lesson, a prompt edit) is measured on one
+        judge's grades and not two.
+
+    --time-entries --rejudge <backtest .json> [--compare <backtest .json>] [--repeat N]
+        Grade a finished backtest's rows again, without redrafting (pennies).
+        --repeat runs the judge N times and reports how often it agreed.
+
     --time-entries --seed-links --hand <hand run> --final <later export> [--dry-run]
         Turn a submitted hand run into confirmed email-to-matter links. Writes
         te.db only with --mail minotaur (links key on internet_message_id).
@@ -61,6 +69,9 @@ def _parser() -> argparse.ArgumentParser:
     mode.add_argument("--draft", action="store_true")
     mode.add_argument("--draft-backtest", action="store_true")
     mode.add_argument("--seed-links", action="store_true")
+    mode.add_argument("--rejudge")
+    p.add_argument("--compare")
+    p.add_argument("--repeat", type=int, default=1)
     p.add_argument("--csv")
     p.add_argument("--hand")
     p.add_argument("--final")
@@ -123,6 +134,8 @@ def run_cli(config: dict, data_dir: Path, argv: list[str] | None = None) -> int:
 
     if a.seed_links:
         return _seed_links(a, config, paths)
+    if a.rejudge:
+        return _rejudge(a, config, paths)
     if a.draft or a.draft_backtest:
         return _draft(a, config, paths)
     if not (a.correlate or a.backtest):
@@ -277,6 +290,9 @@ def _draft(a, config: dict, paths: dict) -> int:
                                   "final_narrative")},
              "recommendation_id": rid, "src_file": a.final}
             for rid, o in zip(rec_ids, outs) if o])
+        if a.compare:
+            n = evaluate.attach_compare(scored, _load_scored(paths, a.compare))
+            print(f"Comparing with {Path(a.compare).name}: {n} of {len(scored)} rows matched")
         judge_usage = draft.Usage()
         if not a.no_judge and scored:
             print(f"Judging {len(scored)} rows ...", flush=True)
@@ -301,6 +317,52 @@ def _draft(a, config: dict, paths: dict) -> int:
     js.write_text(json.dumps(detail, indent=1, default=str), encoding="utf-8")
     print(f"\nWorkbook: {xlsx}\nDetail:   {js}")
     cx.close()
+    return 0
+
+
+def _load_scored(paths: dict, name: str) -> list[dict]:
+    p = Path(name)
+    if not p.is_absolute() and not p.exists():
+        p = paths["backtests"] / p
+    return json.loads(p.read_text(encoding="utf-8"))["scored"]
+
+
+def _rejudge(a, config: dict, paths: dict) -> int:
+    """--rejudge: grade a saved backtest's rows again, in one call with
+    --compare's drafts when given."""
+    import copy
+    base = _load_scored(paths, a.rejudge)
+    for r in base:
+        for k in [k for k in r if k.startswith(("grade_", "why_"))]:
+            del r[k]
+        r.pop("compare", None)
+        r.pop("compare_conf", None)
+    if a.compare:
+        n = evaluate.attach_compare(base, _load_scored(paths, a.compare))
+        print(f"{len(base)} rows from {Path(a.rejudge).name}; {n} matched in "
+              f"{Path(a.compare).name}")
+    client = run.make_client(config)
+    model = config.get("time_entries_model") or draft.DEFAULT_MODEL
+    passes, usage = [], draft.Usage()
+    for k in range(max(1, a.repeat)):
+        rows = copy.deepcopy(base)
+        u = evaluate.judge(client, rows, model=model, seed=7 + k)
+        usage.merge(u)
+        passes.append(rows)
+        s = evaluate.summarize(rows, [])
+        print()
+        print(evaluate.format_report(f"{Path(a.rejudge).stem} (judge pass {k + 1})", s,
+                                     {"cost_usd": 0, "calls": 0}, u.as_dict(), rows))
+    if len(passes) > 1:
+        ag = evaluate.agreement(passes)
+        print(f"\nJudge agreement across {len(passes)} passes: {ag['agreed']} of "
+              f"{ag['compared']} grades the same ({(ag['rate'] or 0) * 100:.0f}%)")
+    print(f"\nJudge cost: ${usage.as_dict()['cost_usd']}")
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    out = paths["backtests"] / f"{Path(a.rejudge).stem} - rejudged {stamp}.json"
+    out.write_text(json.dumps({"rejudge": a.rejudge, "compare": a.compare,
+                               "passes": passes}, indent=1, default=str), encoding="utf-8")
+    print(f"Detail: {out}")
     return 0
 
 

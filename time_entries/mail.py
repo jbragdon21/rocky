@@ -159,6 +159,12 @@ class BrainMail:
                               "WHERE direction='sent'").fetchone()
         return parse_utc(row[0]) if row else None
 
+    def last_ingest(self) -> datetime | None:
+        """When Minotaur last added mail. A quiet Saturday leaves newest_sent
+        behind even though the brain is current; this tells the two apart."""
+        row = self.cx.execute("SELECT MAX(ingested_at) FROM messages").fetchone()
+        return parse_utc(row[0]) if row else None
+
     def sent_between(self, dfrom: str, dto: str) -> list[dict]:
         """James's sends with an Eastern send date in [dfrom, dto]."""
         lo = (date.fromisoformat(dfrom) - timedelta(days=1)).isoformat()
@@ -247,6 +253,10 @@ class CorpusMail:
     def newest_sent(self) -> datetime | None:
         row = self.cx.execute("SELECT MAX(sent_at) FROM emails").fetchone()
         return datetime.fromisoformat(row[0]) if row and row[0] else None
+
+    def last_ingest(self) -> datetime | None:
+        """corpus.db is a closed archive; it has no ingest to wait for."""
+        return None
 
     def sent_between(self, dfrom: str, dto: str) -> list[dict]:
         out = []

@@ -22,7 +22,11 @@ final narrative and the candidates, unlabeled and shuffled, and grades each:
   wrong      misstates the work: wrong person, inverted action, wrong document
 
 The candidates are Rocky's verified draft, Rocky's first draft when the
-verifier changed it, and the hand run's draft.
+verifier changed it, the hand run's draft, and (with --compare) the drafts
+from an earlier backtest of the same period. Grading the two runs in one
+call matters: on the 11/1 September re-run, 5 of 35 hand drafts graded
+differently on identical text when the runs were judged apart, enough to
+hide a lesson's effect.
 """
 
 import collections
@@ -37,6 +41,7 @@ log = logging.getLogger("rocky")
 
 GRADES = ("same", "partial", "different", "wrong")
 JUDGE_BATCH = 20
+CANDIDATES = ("rocky", "first", "hand", "compare")
 
 JUDGE_PROMPT = """\
 You grade draft time-entry narratives for an attorney's billing. For each row you get the \
@@ -111,33 +116,53 @@ def score_rows(recs: list[dict], early: list[dict], final: list[dict],
     return scored, outs
 
 
+def attach_compare(rows: list[dict], earlier: list[dict]) -> int:
+    """Put an earlier backtest's Rocky draft on each matching row as the
+    'compare' candidate. Rows match on (date, matter, hours, James's final
+    text), in order, which survives a re-run's different row numbering.
+    Returns how many matched."""
+    pool = collections.defaultdict(list)
+    for e in earlier:
+        pool[(e["date"], e["matter"], e.get("hours"), e.get("final"))].append(e)
+    n = 0
+    for r in rows:
+        hit = pool.get((r["date"], r["matter"], r.get("hours"), r.get("final")))
+        if hit:
+            e = hit.pop(0)
+            r["compare"], r["compare_conf"] = e.get("rocky") or "", e.get("rocky_conf")
+            n += 1
+    return n
+
+
 def judge(client, rows: list[dict], model: str = draft.DEFAULT_MODEL,
           effort: str = "medium", seed: int = 7) -> draft.Usage:
-    """Fills grade_rocky / grade_first / grade_hand (and *_why) on each row.
-    An empty candidate grades 'none' without a call."""
+    """Fills grade_<who> and why_<who> on each row for every candidate it
+    carries (CANDIDATES). Identical texts on one row are shown once and
+    share a grade, so the judge can't grade the same words two ways. An
+    empty candidate grades 'none' without a call."""
     usage = draft.Usage()
     rng = random.Random(seed)
     for start in range(0, len(rows), JUDGE_BATCH):
         batch = rows[start:start + JUDGE_BATCH]
         lines, labels = [], {}
         for i, row in enumerate(batch, 1):
-            cands = [("rocky", row["rocky"])]
-            if row["first"] and row["first"] != row["rocky"]:
-                cands.append(("first", row["first"]))
-            if row.get("hand"):
-                cands.append(("hand", row["hand"]))
-            for who, text in [("rocky", row["rocky"]), ("first", row["first"]),
-                              ("hand", row.get("hand"))]:
-                if not (text or "").strip():
+            texts: dict[str, list[str]] = {}
+            for who in CANDIDATES:
+                if who not in row:
+                    continue
+                text = (row.get(who) or "").strip()
+                if not text:
                     row[f"grade_{who}"] = "none"
-            cands = [c for c in cands if (c[1] or "").strip()]
+                    continue
+                texts.setdefault(text, []).append(who)
+            cands = list(texts.items())
             rng.shuffle(cands)
             lines.append(f"ROW {i}: {row['matter']} {row.get('matter_name') or ''} | "
                          f"{row['hours']}h | {row['date']}")
             lines.append(f"  FINAL: {row['final']}")
-            for j, (who, text) in enumerate(cands):
-                lab = "ABC"[j]
-                labels[(i, lab)] = who
+            for j, (text, whos) in enumerate(cands):
+                lab = "ABCDEFGH"[j]
+                labels[(i, lab)] = whos
                 lines.append(f"  {lab}: {text}")
         if not labels:
             continue
@@ -158,16 +183,28 @@ def judge(client, rows: list[dict], model: str = draft.DEFAULT_MODEL,
             log.error(f"[time-entries] judge reply unreadable: {e}")
             continue
         for g in grades:
-            who = labels.get((g.get("row"), (g.get("label") or "").strip().upper()))
-            if who is None:
+            whos = labels.get((g.get("row"), (g.get("label") or "").strip().upper()))
+            if whos is None:
                 continue
             row = batch[g["row"] - 1]
-            row[f"grade_{who}"] = g["grade"]
-            row[f"why_{who}"] = g.get("why") or ""
-    for row in rows:
-        if row["first"] == row["rocky"]:
-            row["grade_first"] = row.get("grade_rocky")
+            for who in whos:
+                row[f"grade_{who}"] = g["grade"]
+                row[f"why_{who}"] = g.get("why") or ""
     return usage
+
+
+def agreement(passes: list[list[dict]]) -> dict:
+    """How often repeated judge passes gave one candidate the same grade."""
+    same = total = 0
+    for rows in zip(*passes):
+        for who in CANDIDATES:
+            grades = [r.get(f"grade_{who}") for r in rows]
+            if any(g is None for g in grades) or grades[0] == "none":
+                continue
+            total += 1
+            same += len(set(grades)) == 1
+    return {"compared": total, "agreed": same,
+            "rate": round(same / total, 3) if total else None}
 
 
 def _rates(rows: list[dict], who: str) -> dict:
@@ -185,6 +222,13 @@ def summarize(rows: list[dict], outs: list[dict]) -> dict:
     for c in draft.CONFIDENCE:
         s[f"rocky_{c}"] = _rates([r for r in rows if r["rocky_conf"] == c], "rocky")
     s["first_High"] = _rates([r for r in rows if r["first_conf"] == "High"], "first")
+    compared = [r for r in rows if "compare" in r]
+    if compared:
+        s["compare_all"] = _rates(compared, "compare")
+        s["rocky_on_compare_rows"] = _rates(compared, "rocky")
+        for c in draft.CONFIDENCE:
+            s[f"compare_{c}"] = _rates([r for r in compared if r["compare_conf"] == c],
+                                       "compare")
     handed = [r for r in rows if "hand" in r]
     if handed:
         s["hand_all"] = _rates(handed, "hand")
@@ -211,15 +255,22 @@ def _line(name: str, r: dict) -> str:
 def format_report(label: str, s: dict, run_usage: dict, judge_usage: dict,
                   rows: list[dict]) -> str:
     L = [f"Time entries drafting backtest: {label}",
-         f"Scored rows (James has since filled the entry): {s['scored']}",
-         f"Outcomes against the later export: "
-         + ", ".join(f"{k} {v}" for k, v in sorted(s["outcomes"].items())), "",
-         "Judge grades against James's final narrative:"]
+         f"Scored rows (James has since filled the entry): {s['scored']}"]
+    if s["outcomes"]:
+        L.append("Outcomes against the later export: "
+                 + ", ".join(f"{k} {v}" for k, v in sorted(s["outcomes"].items())))
+    L += ["", "Judge grades against James's final narrative:"]
     for c in draft.CONFIDENCE:
         L.append(_line(f"Rocky, rows it called {c}", s.get(f"rocky_{c}")))
     L.append(_line("Rocky, all rows", s["rocky_all"]))
     L.append(_line("Rocky before verification", s["first_all"]))
     L.append(_line("  (first draft's High rows)", s["first_High"]))
+    if "compare_all" in s:
+        L.append("")
+        for c in draft.CONFIDENCE:
+            L.append(_line(f"Compared run, rows it called {c}", s.get(f"compare_{c}")))
+        L.append(_line("Compared run, all rows", s["compare_all"]))
+        L.append(_line("This run on the same rows", s["rocky_on_compare_rows"]))
     if "hand_all" in s:
         L.append("")
         for c in draft.CONFIDENCE:
