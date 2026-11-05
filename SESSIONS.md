@@ -24,6 +24,65 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-11-05 (3) — Deploy the branch tip, with Joe's Email Archive
+
+James asked to commit and push all current changes and repackage, with Joe's
+Email Archive in the new exe.
+
+**What changed**
+
+- `2612557` on `joe-archive`: the 11/4 Joe's Email Archive work, committed
+  from its worktree (steps 1-2, 37 tests).
+- `d4386c1` on `time-entries`: two sessions' uncommitted entries,
+  2026-11-05 (2) and 2026-11-01 (3).
+- `8a86b7b`: `joe-archive` merged into `time-entries`. Only SESSIONS.md
+  conflicted (both sides added entries at the top), and both were kept.
+  354 tests pass.
+- Pushed `time-entries` to origin (`2e74a50..8a86b7b`).
+- BUILD_REFERENCE: Time Entries phase 3 and Joe's archive now say deployed.
+
+**Deploy (11/5 12:06)**
+
+- Built rocky.exe and dashboard.exe from `8a86b7b` in a throwaway worktree.
+- First deploy of `af975ca` (Vault Checklist DC rent), `16470b0`
+  (daily-run batching), `210b6cb` (input caps), `1ce3c09` (Time Entries
+  phase 2), `f9a4ff7` (phase 3's mail trigger) and Joe's archive.
+- Left out: `cns-feed-fix` (`7e43d77`, fixes B and C, which James chose not
+  to deploy yet) and `mf-brain-v2`.
+- Checks:
+  - deployed hashes = build output (rocky 52.4 MB, dashboard 16.3 MB);
+  - all 26 raw bundled .py files equal `8a86b7b`;
+  - the bundle holds all 6 `joe_archive` and all 18 `time_entries` modules;
+  - the exe prints its usage with the Joe line, and `--joe-archive --stats`
+    loads the package and stops at the dev laptop's missing config.
+- PyInstaller's `Hidden import "tzdata" not found` comes from its zoneinfo
+  hook. No Rocky code uses zoneinfo.
+- Backups in the session scratchpad: rocky.exe 11/5 09:55, dashboard.exe
+  11/1 17:05.
+- dashboard.exe only changed in description text. It loads after a restart
+  (`restart_dashboard.cmd`).
+
+**Podcast feeds (11:02)**
+
+- `--multifamily-feud --episodes` on the Rocky laptop: all 8 Feud episodes
+  are published with audio ready. Both private feeds (jbragdon, jdugan)
+  list all 8, the newest audio downloads, and both subscribers have
+  downloads. A missing episode is on the listener's app side. Sam's and
+  Kirsten's shows weren't checked. James is handling the feeds.
+
+**Watch-outs**
+
+- Live only once the Rocky laptop's dashboard header shows `rocky` 11/5
+  12:06.
+- Time Entries phase 3 runs every monitor cycle if config has no
+  `monitor_commands` (the built-in list includes `--time-entries-mail`). If
+  config sets the list, it stays off until added. Go-live steps are in
+  2026-11-01 (5): `--time-entries-mail --dry-run`, then one real export.
+- Joe's archive: `rocky.exe --joe-archive --check` comes first, on the
+  Rocky laptop. Joe should agree before `--backfill` (DATA_SECURITY.md).
+
+---
+
 ## Session 2026-11-05 (2) — Courthouse News feed: a two-underscore path; whole briefs
 
 James asked why no CNS daily brief ever reached RRID-0045 (Multifamily Feud).
