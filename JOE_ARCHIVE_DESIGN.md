@@ -332,3 +332,63 @@ Next on the Rocky laptop, after a deploy:
    runs on what it pulled
 4. `rocky.exe --joe-archive --backfill` until it finishes (rerun to resume)
 
+
+## Status (2026-11-05, later): scope decided; a Vault check
+
+**Census** (Rocky laptop, 13:35 build): 2,418 folders, 2,049 with mail.
+63,380 unique sends, with 4,187 receipts and meeting replies left out. 63,037
+are in Sent Items, and 22,607 of those also sit in another folder. Only 343
+exist only outside Sent Items: 220 filed, 112 only in Deleted Items, 11 in
+both. 32,439 sends (2019-03-18 to 2023-07-14) are Vault shortcuts with no
+full copy in the mailbox. 2019-2022 are about 95% Vault-only, 2023 about
+half, and 2024 on none. 100 Sent Items shortcuts have a full copy filed in
+another folder.
+
+**James's scope calls (11/5):**
+
+1. **Sent Items plus the 231 sends filed only outside it** (the 220 filed
+   and the 11 filed and deleted). The backfill walks the other folders after
+   Sent Items.
+2. **Deleted Items-only sends stay out** (112). Joe deleted them. A config
+   switch can add them if Joe asks.
+3. Shortcuts: settled after the Vault check below. The proposal is to
+   archive them, flag them in search results as cut short with no
+   attachments, let a full copy replace one, and use the full copy wherever
+   the mailbox has one (the 100).
+
+**IT gave the Rocky app access to Joe's Enterprise Vault (11/5).** Graph
+reads only the primary mailbox. It can't read an In-Place Archive (the
+mailbox import/export API went GA in May 2026 for primary and shared
+mailboxes, with archives "coming soon"), and its export returns an opaque
+stream, not MIME. It has no route to an Enterprise Vault server at all. A
+grant on the Vault server doesn't show up in a Graph token.
+
+`--joe-archive --vault-check` (`evault.py`) tests what Rocky can reach and
+prints numbers only, safe to paste:
+
+1. The Graph permissions in Rocky's token (its `roles` claim).
+2. One listing page from each of seven dates (2019 to 2024): how much text
+   a shortcut keeps next to a full send (length buckets, Joe's own text,
+   `<<attachment>>` lists, attachments).
+3. A whole-mailbox `internetMessageId` lookup for each sampled shortcut.
+   Before IT's change, full copies existed for about 0.3% of shortcuts
+   (the census's 100). A rate over 10% means the Vault mail came back.
+4. Graph's archive routes: `/users/{id}/settings/exchange` (v1.0 and beta)
+   and the export API's folder listing for each mailbox id it names.
+5. The Vault server the shortcut links name (host and first path segment;
+   the archive and saveset ids are dropped), whether it resolves from the
+   Rocky laptop, and how it answers an anonymous request.
+
+What the answers lead to:
+
+- **Full copies back in the mailbox:** they pull as they are. Rerun
+  `--census` for the count.
+- **The Vault server answers from the Rocky laptop** (likely Windows
+  sign-in): a Vault-side route may exist. The shortcut's links carry the
+  archive and saveset ids, so Rocky could fetch each original from the Vault
+  with a Windows account the Vault trusts. That needs IT, and it is new
+  ground.
+- **Neither:** the Vault mail comes in only by IT exporting Joe's Vault to
+  PST (then James's PST Processor), or by restoring the items into a mailbox
+  folder Graph reads (rocky@'s, not Joe's, since 30,000 restored sends could
+  fill his quota).

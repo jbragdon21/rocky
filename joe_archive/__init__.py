@@ -5,6 +5,8 @@ searchable. Design: JOE_ARCHIVE_DESIGN.md.
     store.py   archive.db (SQLite + FTS5) and the .eml parser
     search.py  the one search function the CLI and (later) the chat share
     ingest.py  --check and --backfill / --sync
+    census.py  --census: every send in every folder, counted
+    evault.py  --vault-check: can Rocky reach the Vault's full copies?
     cli.py     rocky.py --joe-archive ...
 
 Rocky never writes to Joe's mailbox. Everything lands under

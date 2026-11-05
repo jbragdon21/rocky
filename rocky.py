@@ -203,13 +203,15 @@ Rocky — Virtual Paralegal
       this case, status, send the docket, send document N. Runs in the
       --monitor loop so requests are answered within minutes.
 
-  python rocky.py --joe-archive --check | --census | --backfill [--limit N] | --sync | --search "query" | --show REF | --stats
+  python rocky.py --joe-archive --check | --census | --vault-check | --backfill [--limit N] | --sync | --search "query" | --show REF | --stats
       Joe's Email Archive: jdugan@'s Sent Items copied to the Rocky laptop
       (.eml files + a SQLite FTS5 index in joe_archive_data) and searched
       for exact language. Read only on Joe's mailbox. --check first: it
       finds which grant reaches the mailbox and sizes the job. --census
       counts every send in every folder, Vault shortcuts included,
-      downloading nothing. See JOE_ARCHIVE_DESIGN.md.
+      downloading nothing. --vault-check tests whether Rocky can reach
+      the full copies behind the Vault shortcuts (numbers only). See
+      JOE_ARCHIVE_DESIGN.md.
 
   python rocky.py --inbox-<user> --snapshot|--analyze|--questionnaire|--chat|--rules-update|--digest|--execute|--status
       Inbox Cleaner: per-user inbox triage at 200k+ scale that becomes a
@@ -6806,7 +6808,7 @@ def main():
         print("                                          emailed to rocky@, queue them, start the run")
         print("  --time-entries-run [--snapshot N | --csv <export>] [--no-send] [--force]")
         print("                                          Draft every queued export and email James the workbook")
-        print("  --joe-archive --check | --census | --backfill [--limit N] | --sync | --search \"query\" | --show REF | --stats")
+        print("  --joe-archive --check | --census | --vault-check | --backfill [--limit N] | --sync | --search \"query\" | --show REF | --stats")
         print("                                          Joe's Email Archive: copy jdugan@'s Sent Items and search it")
         print("                                          (see JOE_ARCHIVE_DESIGN.md)")
         print("  --inbox-<user> --snapshot|--analyze|--questionnaire|--chat|--rules-update|--digest|--execute|--status")

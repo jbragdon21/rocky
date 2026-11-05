@@ -13,6 +13,14 @@
         mailbox, a year-by-year table and the folders holding the most sends
         found nowhere else. Writes census.json.
 
+    --joe-archive --vault-check
+        Can Rocky reach the full copies behind the Vault shortcuts? Rocky's
+        Graph permissions, how much text a shortcut keeps next to a full
+        send, a whole-mailbox lookup for a full copy of each sampled
+        shortcut, Graph's archive-mailbox routes, and the Vault server the
+        shortcuts link to. Numbers only, safe to paste. Writes
+        vault_check.json.
+
     --joe-archive --backfill [--limit N] [--workers N]
         Copy Sent Items, oldest first, to eml\\YYYY\\MM\\ and index it.
         Checkpointed: rerun to resume. --limit N stops after N new sends
@@ -46,14 +54,14 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from . import census, ingest, search, store
+from . import census, evault, ingest, search, store
 from .graph import GraphError
 
 log = logging.getLogger("rocky")
 
 # These share the joe-archive lock: they call Graph hard (Exchange allows 4
 # requests at once per mailbox) or write the archive.
-WRITE_FLAGS = ("--check", "--census", "--backfill", "--sync")
+WRITE_FLAGS = ("--check", "--census", "--vault-check", "--backfill", "--sync")
 
 
 def get_root(config: dict, data_dir: Path, override: str | None = None) -> Path:
@@ -66,6 +74,7 @@ def _parser() -> argparse.ArgumentParser:
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true")
     mode.add_argument("--census", action="store_true")
+    mode.add_argument("--vault-check", action="store_true")
     mode.add_argument("--backfill", action="store_true")
     mode.add_argument("--sync", action="store_true")
     mode.add_argument("--search", metavar="QUERY")
@@ -112,6 +121,9 @@ def run_cli(config: dict, data_dir: Path, argv: list[str] | None = None) -> int:
         if args.census:
             report = census.run(config, root)
             return 0 if report.get("sent_items_listed") else 1
+        if args.vault_check:
+            evault.run(config, root)
+            return 0
         if args.backfill or args.sync:
             result = ingest.backfill(config, root, limit=args.limit,
                                      workers=max(1, min(args.workers, 4)),

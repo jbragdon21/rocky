@@ -638,3 +638,172 @@ def test_walk_folders_reports_progress(monkeypatch):
     seen = []
     folders = ingest.walk_folders(graph.TokenKeeper({}, "app", "t"), MB, progress=seen.append)
     assert len(folders) == 600 and seen == [250, 500]
+
+
+# =============================================================================
+# --vault-check
+# =============================================================================
+
+from joe_archive import evault  # noqa: E402
+
+SECRET_SUBJECT = "Zanzibar settlement"
+SECRET_WORDS = "quokka indemnity waiver"
+EV_LINK = ("https://ev01.gejlaw.local/EnterpriseVault/ViewMessage.asp?"
+           "VaultId=1ABC&SavesetId=201903181746")
+
+
+def fake_jwt(claims: dict) -> str:
+    import base64
+    body = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+    return f"e30.{body}.sig"
+
+
+class FakeResp:
+    def __init__(self, status, data=None):
+        self.status_code = status
+        self._data = data or {}
+        self.text = json.dumps(self._data)
+        self.headers = {}
+
+    def json(self):
+        return self._data
+
+
+@pytest.fixture
+def vault_mailbox(monkeypatch):
+    """Sent Items with Vault shortcuts (2019-2023), full sends after, one
+    shortcut whose full copy is filed elsewhere, and Graph's archive routes."""
+    short = "Joe here. " + SECRET_WORDS + " <<Lease.pdf>> archived"
+    msgs = [gmsg(i, sent, subject=SECRET_SUBJECT, body=b, mclass=c) for i, sent, b, c in [
+        (1, "2019-03-18T17:46:57Z", short, SC),
+        (2, "2019-03-19T10:00:00Z", short[:12], SC),
+        (3, "2020-06-02T10:00:00Z", short, SC),           # full copy filed elsewhere
+        (4, "2020-06-03T10:00:00Z", "Accepted", "IPM.Schedule.Meeting.Resp.Pos"),
+        (5, "2023-09-02T10:00:00Z", SECRET_WORDS * 40, "IPM.Note"),
+        (6, "2024-06-02T10:00:00Z", SECRET_WORDS * 3, "IPM.Note")]]
+    full3 = dict(msgs[2], id="g3-filed", body={"content": short + " " + "x" * 300},
+                 singleValueExtendedProperties=[{"id": "String 0x1a", "value": "IPM.Note"}])
+    calls = {"routes": [], "lookups": 0}
+
+    def iter_pages(keeper, mb, folder_id="sentitems", since=None, top=None, max_pages=None):
+        rows = [dict(m) for m in msgs if not since or m["sentDateTime"] >= since]
+        yield rows[:top or 50]
+
+    def get_json(keeper, url, params=None, headers=None):
+        flt = (params or {}).get("$filter", "")
+        if url.endswith("/messages") and "internetMessageId eq" in flt:
+            calls["lookups"] += 1
+            imid = flt.split("eq ", 1)[1].strip("'")
+            same = [dict(m) for m in msgs + [full3] if m.get("internetMessageId") == imid]
+            return {"value": same}
+        if url.endswith("/sentitems/messages"):       # HTML bodies, oldest first
+            return {"value": [{"id": "g1", "body": {"content":
+                    f'<p>{SECRET_WORDS}</p><a href="{EV_LINK}">View</a>'}}]}
+        raise AssertionError(url)
+
+    def get(keeper, url, params=None, headers=None, **kw):
+        calls["routes"].append(url)
+        if url.endswith("/settings/exchange"):
+            if "/beta/" in url:
+                return FakeResp(200, {"primaryMailboxId": "MBX:p", "archiveMailboxId": "MBX:a"})
+            return FakeResp(200, {"primaryMailboxId": "MBX:p"})
+        if "/admin/exchange/mailboxes/" in url:
+            return FakeResp(403, {"error": {"code": "ErrorAccessDenied",
+                                            "message": "Access is denied."}})
+        raise AssertionError(url)
+
+    token = fake_jwt({"roles": ["User.Read.All", "Mail.Send", "Mail.Read"]})
+    monkeypatch.setattr(graph, "iter_pages", iter_pages)
+    monkeypatch.setattr(graph, "get_json", get_json)
+    monkeypatch.setattr(graph, "get", get)
+    monkeypatch.setattr(ingest, "resolve_access",
+                        lambda config, root, state: (graph.TokenKeeper({}, "app", token), MB))
+    monkeypatch.setattr(evault, "probe_host", lambda stem: {
+        "stem": stem, "resolves": True, "status": 401, "auth": ["NTLM", "Negotiate"]})
+    return calls
+
+
+def test_vault_check_prints_numbers_only(vault_mailbox, tmp_path):
+    lines = []
+    evault.run({}, tmp_path, out=lines.append)
+    text = "\n".join(lines)
+    saved = (tmp_path / "vault_check.json").read_text()
+    for secret in (SECRET_SUBJECT, "quokka", "Lease.pdf", "Joe here", "VaultId", "1ABC"):
+        assert secret not in text and secret not in saved
+
+
+def test_vault_check_measures_shortcuts_against_full_sends(vault_mailbox, tmp_path):
+    report = evault.run({}, tmp_path, out=lambda line: None)
+    sc, full = report["sample"]["shortcuts"], report["sample"]["full"]
+    assert sc["n"] == 3 and full["n"] == 2 and report["sample"]["skipped"] == 1
+    assert sc["has_attachments"] == 0 and sc["lists_attachments"] == 2
+    assert sc["mentions_archive"] == 2
+    assert sc["chars_max"] == len("Joe here. " + SECRET_WORDS + " <<Lease.pdf>> archived")
+    assert full["chars_max"] == len(SECRET_WORDS * 40)
+    assert sum(sc["buckets"].values()) == 3 and sc["buckets"]["1-250"] == 3
+
+
+def test_vault_check_finds_a_full_copy_filed_elsewhere(vault_mailbox, tmp_path):
+    lines = []
+    report = evault.run({}, tmp_path, out=lines.append)
+    found = report["lookup"]
+    assert found["looked_up"] == 3 and found["full_copy"] == 1
+    assert found["only_shortcut"] == 2 and vault_mailbox["lookups"] == 3
+    assert found["pairs_whole_text"] == 0 and found["pairs_kept_ratio_median"] < 0.3
+    assert report["verdict"][0].startswith("1 of 3 sampled shortcuts have a full copy")
+    assert "back in the mailbox" in report["verdict"][0]
+
+
+def test_vault_check_a_few_filed_copies_are_not_the_vault(vault_mailbox, monkeypatch,
+                                                          tmp_path):
+    monkeypatch.setattr(evault, "BACK_IN_MAILBOX", 0.5)
+    report = evault.run({}, tmp_path, out=lambda line: None)
+    assert report["verdict"][0].startswith("Only 1 of 3 sampled shortcuts")
+    assert "won't pull" in report["verdict"][0]
+
+
+def test_vault_check_says_when_nothing_pulls(vault_mailbox, monkeypatch, tmp_path):
+    monkeypatch.setattr(evault, "copies", lambda keeper, mb, imid: [])
+    report = evault.run({}, tmp_path, out=lambda line: None)
+    assert report["verdict"][0].startswith("None of the 3 sampled shortcuts")
+
+
+def test_vault_check_reports_permissions_and_archive_routes(vault_mailbox, tmp_path):
+    lines = []
+    report = evault.run({}, tmp_path, out=lines.append)
+    text = "\n".join(lines)
+    assert report["permissions"] == ["Mail.Read", "Mail.Send", "User.Read.All"]
+    assert "Archive-related: none" in text
+    beta = report["archive_routes"][1]
+    assert beta["mailboxes"][1] == {"label": "archiveMailboxId", "archive": True,
+                                    "folders": "403 ErrorAccessDenied: Access is denied."}
+    assert any("lists an archive mailbox, but Rocky can't read it" in v
+               for v in report["verdict"])
+    assert any("outside Graph" in v for v in report["verdict"])
+
+
+def test_vault_check_names_the_vault_server_without_ids(vault_mailbox, tmp_path):
+    lines = []
+    report = evault.run({}, tmp_path, out=lines.append)
+    assert report["vault_links"]["stems"] == {"https://ev01.gejlaw.local/EnterpriseVault": 1}
+    assert "anonymous request answered 401, sign-in NTLM/Negotiate" in "\n".join(lines)
+
+
+def test_vault_links_ignore_other_links():
+    stems = evault.vault_links([
+        "see https://gallagherllp.sharepoint.com/sites/Vault/x and "
+        "<https://EV01.gejlaw.local/EnterpriseVault/Download.asp?a=1>.",
+        EV_LINK + " " + EV_LINK])
+    assert stems == {"https://ev01.gejlaw.local/EnterpriseVault": 2}
+
+
+def test_token_claims_tolerates_junk():
+    assert evault.token_claims("not-a-jwt") == {}
+    assert evault.token_claims(fake_jwt({"scp": "Mail.Read"}))["scp"] == "Mail.Read"
+
+
+def test_vault_check_cli_takes_the_lock(vault_mailbox, tmp_path, capsys):
+    assert "--vault-check" in cli.WRITE_FLAGS
+    assert cli.run_cli({}, tmp_path, ["--joe-archive", "--vault-check",
+                                      "--root", str(tmp_path)]) == 0
+    assert "Verdict:" in capsys.readouterr().out
