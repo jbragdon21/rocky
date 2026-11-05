@@ -201,6 +201,13 @@ Rocky — Virtual Paralegal
       this case, status, send the docket, send document N. Runs in the
       --monitor loop so requests are answered within minutes.
 
+  python rocky.py --joe-archive --check | --backfill [--limit N] | --sync | --search "query" | --show REF | --stats
+      Joe's Email Archive: jdugan@'s Sent Items copied to the Rocky laptop
+      (.eml files + a SQLite FTS5 index in joe_archive_data) and searched
+      for exact language. Read only on Joe's mailbox. --check first: it
+      finds which grant reaches the mailbox and sizes the job. See
+      JOE_ARCHIVE_DESIGN.md.
+
   python rocky.py --inbox-<user> --snapshot|--analyze|--questionnaire|--chat|--rules-update|--digest|--execute|--status
       Inbox Cleaner: per-user inbox triage at 200k+ scale that becomes a
       permanent, rule-learning maintenance process ("inbox-matt",
@@ -6522,6 +6529,15 @@ def main():
         command = "time-entries-mail"
     if "--time-entries-run" in sys.argv:
         command = "time-entries-run"
+    # Joe's Email Archive: --check/--backfill/--sync write state and the
+    # archive and share one lock; --search/--show/--stats only read, so they
+    # skip the lock and work while a backfill runs for hours.
+    joe_flag = "--joe-archive" in sys.argv
+    if joe_flag:
+        from joe_archive.cli import WRITE_FLAGS as _joe_writes
+        command = ("joe-archive" if any(f in sys.argv for f in _joe_writes)
+                   else None)
+        _job_tag.tag = "joe-archive"
     if command:
         lock_fh = acquire_instance_lock(command)  # noqa: F841 — must stay alive
         _job_tag.tag = command
@@ -6598,6 +6614,10 @@ def main():
     elif "--letterstream" in sys.argv or "--affidavits" in sys.argv:
         import mailing_affidavits
         mailing_affidavits.run_cli(load_config(), DATA_DIR)
+    elif joe_flag:
+        from joe_archive import cli as joe_archive_cli
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        sys.exit(joe_archive_cli.run_cli(load_config(), DATA_DIR))
     elif "--time-entries-mail" in sys.argv:
         from time_entries import trigger
         DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -6714,6 +6734,9 @@ def main():
         print("                                          emailed to rocky@, queue them, start the run")
         print("  --time-entries-run [--snapshot N | --csv <export>] [--no-send] [--force]")
         print("                                          Draft every queued export and email James the workbook")
+        print("  --joe-archive --check | --backfill [--limit N] | --sync | --search \"query\" | --show REF | --stats")
+        print("                                          Joe's Email Archive: copy jdugan@'s Sent Items and search it")
+        print("                                          (see JOE_ARCHIVE_DESIGN.md)")
         print("  --inbox-<user> --snapshot|--analyze|--questionnaire|--chat|--rules-update|--digest|--execute|--status")
         print("                                          Inbox Cleaner per-user process (e.g. --inbox-matt);")
         print("                                          users are defined in config inbox_users")

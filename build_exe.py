@@ -98,6 +98,8 @@ def build_rocky():
         # shipped as add-data, so PyInstaller analyzes its imports (csv,
         # ast, argparse, sqlite3). Collect every submodule explicitly.
         "--collect-submodules", "time_entries",
+        # Joe's Email Archive is a package too (sqlite3, email, concurrent).
+        "--collect-submodules", "joe_archive",
         # Jinja2 is used by pending_llt; ensure PyInstaller bundles it.
         "--hidden-import", "jinja2",
         # Sam's Podcast mixes its intro music (sams_podcast.py is add-data,
