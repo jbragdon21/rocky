@@ -291,6 +291,20 @@ What differs from the sections above:
 - **Search excerpts** come from Joe's own text when the match is there, then
   the quoted history, then the subject or recipients.
 
+## Status (2026-11-05): deployed, access checked
+
+- Merged into `time-entries` and deployed in rocky.exe 11/5 12:06.
+- `--check` on the Rocky laptop: the **app** path reads jdugan@'s Sent
+  Items (67,219 items, 15.1 GB, 2019-03-18 to 11/5). Listing and MIME
+  download work; 566 GB free on C:.
+- It also read `sample classes: (none) x10`. `message_class` compared the
+  property id as text with `String 0x001A`, but Graph answers with its
+  own form (`String 0x1a`), so every class read blank. That would have
+  archived read receipts and recalls and stored no class. Fixed by
+  comparing the parsed tag (`graph.prop_tag`). The test fixtures now use
+  Graph's form; nine tests fail on the old code. When a class still reads
+  blank, `--check` prints the property ids Graph returned.
+
 Next on the Rocky laptop, after a deploy:
 
 1. `rocky.exe --joe-archive --check`

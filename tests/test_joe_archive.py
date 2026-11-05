@@ -26,14 +26,17 @@ def person(addr, name=""):
 
 
 def gmsg(i, sent, subject="Status", body="Hello there.", to=("kwoelper@bozzuto.com",),
-         cc=(), mclass="IPM.Note", imid=True, odata="#microsoft.graph.message"):
+         cc=(), mclass="IPM.Note", imid=True, odata="#microsoft.graph.message",
+         prop_id="String 0x1a"):
+    # prop_id is Graph's own short form, not the request's "String 0x001A":
+    # fixtures built from graph.MESSAGE_CLASS hid the 11/5 blank-class bug.
     m = {"id": f"g{i}", "subject": subject, "conversationId": f"c{i}",
          "sentDateTime": sent, "hasAttachments": False, "@odata.type": odata,
          "from": person(MB, "Joseph Dugan"),
          "toRecipients": [person(a, a.split("@")[0].title()) for a in to],
          "ccRecipients": [person(a) for a in cc], "bccRecipients": [],
          "body": {"contentType": "text", "content": body},
-         "singleValueExtendedProperties": [{"id": graph.MESSAGE_CLASS, "value": mclass}]}
+         "singleValueExtendedProperties": [{"id": prop_id, "value": mclass}]}
     if imid:
         m["internetMessageId"] = f"<im{i}@gallagherllp.com>"
     return m
@@ -346,6 +349,23 @@ def test_backfill_archives_skips_and_finishes(fake, tmp_path):
     state = json.loads((tmp_path / "state.json").read_text())
     assert state["backfill"]["cursor"] == "2026-01-06T10:00:00Z"
     assert state["backfill"]["complete_utc"]
+    classes = dict(conn.execute("SELECT graph_id, message_class FROM messages"))
+    assert classes == {"g1": "IPM.Note", "g2": "IPM.Note", "g5": "IPM.Note",
+                       "g6": "IPM.Note"}
+
+
+@pytest.mark.parametrize("prop_id", ["String 0x1a", "String 0x001A", "string 0x1A"])
+def test_message_class_reads_either_form_of_the_tag(prop_id):
+    msg = {"singleValueExtendedProperties": [{"id": prop_id, "value": "REPORT.IPM.Note.IPNRN"}]}
+    assert graph.message_class(msg) == "REPORT.IPM.Note.IPNRN"
+
+
+@pytest.mark.parametrize("prop_id", ["String 0x1b", "Integer 0x1a", "String {guid} Name x",
+                                     "String 0xZZ", "", None])
+def test_message_class_ignores_other_properties(prop_id):
+    msg = {"singleValueExtendedProperties": [{"id": prop_id, "value": "IPM.Note"}]}
+    assert graph.message_class(msg) == ""
+    assert graph.message_class({}) == ""
 
 
 def test_backfill_limit_then_resume(fake, tmp_path):
@@ -453,6 +473,7 @@ def test_check_reports_access_size_and_filed_sends(fake, monkeypatch, tmp_path):
     assert report["auth"] == "delegated"
     assert "Sent Items: 6 items, 3.0 GB" in text
     assert "sample classes: IPM.Note x" in text and "MIME download works" in text
+    assert "extended properties returned" not in text
     assert "120 of Joe's sends sit in 1 other folders (1 folders couldn't be counted)" in text
     assert "Inbox/Bozzuto" in text
     assert not (tmp_path / "_check").exists()          # the sample .eml is cleaned up
@@ -460,6 +481,22 @@ def test_check_reports_access_size_and_filed_sends(fake, monkeypatch, tmp_path):
     assert saved["filed"]["folders"] == [{"path": "Inbox/Bozzuto", "from_joe": 120,
                                           "items": 900}]
     assert json.loads((tmp_path / "state.json").read_text())["auth"] == "delegated"
+
+
+def test_check_shows_what_graph_returned_when_no_class_reads(fake, monkeypatch, tmp_path):
+    for m in fake.msgs:
+        m["singleValueExtendedProperties"] = []
+    keeper = graph.TokenKeeper({}, "app", "t")
+    monkeypatch.setattr(ingest, "find_access", lambda config, mb: (
+        "app", keeper, MB, {"totalItemCount": 6, "sizeInBytes": 1024 ** 3},
+        [{"path": "app", "mailbox": MB, "ok": True, "note": "reads Sent Items"}]))
+    monkeypatch.setattr(ingest, "_first_sent", lambda k, mb, d: "2026-01-01T10:00:00Z")
+    lines = []
+    report = ingest.check({}, tmp_path, out=lines.append, scan_folders=False)
+    text = "\n".join(lines)
+    assert "sample classes: (none) x" in text
+    assert "extended properties returned: none" in text
+    assert report["listing"]["property_ids"] == {}
 
 
 def test_check_with_no_way_in_says_what_it_needs(monkeypatch, tmp_path):

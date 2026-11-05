@@ -200,6 +200,15 @@ def check(config: dict, root: Path, *, scan_folders: bool = True, out=print) -> 
         out(f"  listing request works; sample classes: "
             + ", ".join(f"{k} x{v}" for k, v in classes.most_common()))
         report["listing"] = {"ok": True, "classes": dict(classes)}
+        if "(none)" in classes:
+            # Show what Graph sent back, so a blank class can be told apart
+            # from a missing property without another round trip.
+            ids = Counter(p.get("id") or "?" for m in sample
+                          for p in m.get("singleValueExtendedProperties") or [])
+            out("  (none) means no message class was read; extended properties "
+                "returned: " + (", ".join(f"{k!r} x{v}" for k, v in ids.most_common())
+                                or "none"))
+            report["listing"]["property_ids"] = dict(ids)
         if sample:
             tmp = root / "_check" / "sample.eml"
             try:

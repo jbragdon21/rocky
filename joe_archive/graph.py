@@ -207,9 +207,27 @@ def message(keeper: TokenKeeper, mailbox: str, graph_id: str) -> dict | None:
     return resp.json()
 
 
+def prop_tag(prop_id: str | None) -> tuple[str, int] | None:
+    """('string', 0x1a) for 'String 0x001A' or 'String 0x1a', else None.
+
+    Graph answers a tagged property in its own short form ('String 0x1a')
+    whatever form the request used, so compare the parsed tag, not the text.
+    The 11/5 --check read every class as blank on the text compare."""
+    parts = (prop_id or "").split()
+    if len(parts) != 2 or not parts[1].lower().startswith("0x"):
+        return None
+    try:
+        return parts[0].lower(), int(parts[1], 16)
+    except ValueError:
+        return None
+
+
+_CLASS_TAG = prop_tag(MESSAGE_CLASS)
+
+
 def message_class(msg: dict) -> str:
     for prop in msg.get("singleValueExtendedProperties") or []:
-        if (prop.get("id") or "").lower() == MESSAGE_CLASS.lower():
+        if prop_tag(prop.get("id")) == _CLASS_TAG:
             return prop.get("value") or ""
     return ""
 

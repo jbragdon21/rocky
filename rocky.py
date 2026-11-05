@@ -515,6 +515,8 @@ def acquire_app_token(config: dict) -> str:
     restricts which mailboxes the app can access:
         rocky@gallagherllp.com, eaiken@gallagherllp.com,
         jbragdon@gallagherllp.com, smetzger@gallagherllp.com
+    That list is out of date: the app token also reads jdugan@ (its Sent
+    Items, `--joe-archive --check` on 2026-11-05).
     """
     client_secret = config.get("client_secret")
     if not client_secret:
