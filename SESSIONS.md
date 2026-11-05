@@ -24,6 +24,66 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-11-05 (6) — Joe's archive: scope decided; a Vault check deployed
+
+James ran the census (results in `JOE_ARCHIVE_DESIGN.md`, status
+"2026-11-05, later"). Then IT gave **the Rocky app** access to Joe's
+**Enterprise Vault**, and James asked for a recheck that the Vault mail
+will pull.
+
+**Decisions (James, 11/5)**
+
+- Backfill scope: Sent Items plus the 231 sends filed only outside it.
+  Deleted Items-only sends (112) stay out.
+- Shortcut handling waits on the Vault check. The proposal: archive them
+  flagged and replaceable, and use the full copy where the mailbox has one.
+
+**What Graph can't do (checked 11/5)**
+
+- Graph reads only the primary mailbox. The mailbox import/export API (GA
+  May 2026) covers primary and shared mailboxes. Archive support is "coming
+  soon," and its export is an opaque stream, not MIME.
+- Graph has no route to an Enterprise Vault server. A grant on the Vault
+  doesn't show up in a Graph token.
+
+**What changed** (`36be313`)
+
+- `joe_archive/evault.py`, `--joe-archive --vault-check`. It prints numbers
+  only, safe to paste:
+  1. the token's Graph permissions;
+  2. seven sample pages (2019 to 2024), measuring how much text a shortcut
+     keeps next to a full send;
+  3. a whole-mailbox internetMessageId lookup for each sampled shortcut
+     (over 10% with full copies means the Vault mail came back; before,
+     about 0.3% had one);
+  4. Graph's archive routes (`settings/exchange` in v1.0 and beta, and the
+     export API's folder listing);
+  5. the Vault server the shortcut links name, with ids dropped: does it
+     resolve from the laptop, and how does it answer an anonymous GET?
+- It writes `vault_check.json` and shares the `joe-archive` lock. A test
+  proves no subject or body text reaches the output or the file.
+- Tests: 10 new, 63 Joe tests, 382 in all. Help text, BUILD_REFERENCE and
+  the design doc are updated, with the scope calls recorded.
+
+**Deploy (11/5 15:10)**
+
+- rocky.exe only, from `36be313` in a throwaway worktree.
+- Checks:
+  - deployed hash = build output (52.4 MB);
+  - all 26 raw bundled .py files equal `36be313`;
+  - `joe_archive.evault` is bundled;
+  - the exe loads `--vault-check` and stops at the dev laptop's missing
+    config.
+- Backup: rocky.exe 11/5 13:35 in the session scratchpad.
+
+**Next**
+
+- After the header shows `rocky` 11/5 15:10, run
+  `rocky.exe --joe-archive --vault-check` and paste the output.
+- Backfill changes for the scope above are in progress.
+
+---
+
 ## Session 2026-11-05 (5) — Joe's archive: Vault shortcuts, filed sends, and a census
 
 After the 12:20 deploy, James ran `--check --no-folders`, then the full
