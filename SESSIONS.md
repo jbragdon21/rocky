@@ -24,6 +24,100 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-11-05 — Podcasts: cover everything since the last episode; Transistor read-back
+
+James said the podcasts weren't reaching subscribers' feeds. He also said
+not to assume scheduled runs: he runs the shows when he needs them. The
+synced `_Episodes` folders bear that out. No Sam's or Feud episode was ever
+made at its 6 AM or 5 AM slot, and the gaps between episodes run 1 to 5
+days. Sam's and the Feud read only yesterday's case activity, and only
+today's or yesterday's reports, so the days in between were lost. Built
+on `time-entries`; not committed or deployed.
+
+**What changed**
+
+- `sams_podcast.py` (both shows):
+  - `period_start`: each episode covers everything since the last
+    *published* episode. It starts at that record's new `covered_to`.
+    A record from before 11/5 has none, so it starts at that record's
+    day's midnight, which is where the old window ended.
+  - With nothing on record, the period starts at yesterday's midnight.
+    It is capped at `MAX_PERIOD_DAYS` (14). It ends when the run starts,
+    so the day's own activity counts.
+  - `collect_cases(start=)` reads activity from `start` to now.
+  - Case card JSON `yesterday` becomes `developments`, dated when the
+    period runs past yesterday. The prompt has PERIOD START.
+  - `pick_edition(since=)` takes every unused edition in the period.
+    `merge_editions` gives one memo per topic, newest first
+    (`_MERGED_MEMO_CAP` 40,000). The record keeps `editions`.
+  - `earlier_scripts` takes the last N *published* episodes, however
+    far apart. It used to take the last N days.
+  - `published_episodes`: only published episodes count as used or
+    covered. An unpublished one (failed upload, `--no-publish`) reached
+    nobody, so its material comes round again. This also fixes a bug: a
+    rerun after a failed upload used to skip that day's edition.
+  - `since_label` drives "Since yesterday" and "Quiet since Monday,
+    November 2" in the cards and show notes.
+  - The prompts say "since the last episode", and the script and fact
+    check use "as we said last time". The default style's "Yesterday"
+    became "Developments".
+  - Transistor: `get_episode`, `list_episodes`, `list_subscribers`,
+    `check_published` and `log_feed`. Each publish is read back and
+    logged, as a warning when the episode isn't published or its audio
+    processing failed.
+  - New `--episodes` flag on all three shows. It logs the last ten
+    episodes (status, publish time, audio state) and the subscribers
+    (email status, downloads, feed URL).
+- `multifamily_feud.py`:
+  - `gather(since=)` takes report files from the period start's day
+    through today.
+  - When a source has more than one file, each card carries its date
+    ("Daily research memo, Nov. 3").
+  - The prompts were updated the same way as Sam's.
+- `kirsten_podcast.py` / `kirsten_digest.py`: `--episodes`, and the
+  read-back after a publish. Kirsten's period already ran since the last
+  report.
+- `rocky.py` help, the dashboard descriptions and BUILD_REFERENCE.md now
+  say "on demand". The dashboard's 6 AM and 5 AM `sched_time` entries are
+  unchanged and unused.
+- Tests: the period, labels, merged editions, Feud `since`, count-based
+  repeats, read-back, `--episodes`, and a Feud run where the unpublished
+  episode's files come round again and the case period starts at
+  `covered_to`. Full suite 317 passing.
+- Memory: schedule assumptions removed. New `runs_on_demand` feedback
+  memory.
+
+**Decisions**
+
+- The period chains from *published* episodes, not ones that were only
+  made. A hand-uploaded episode isn't seen; publish through Rocky.
+- `repeat_lookback_days` keeps its name, but it now counts episodes.
+
+**Transistor**
+
+- The calls match the v1 docs. Create accepts `audio_url` and
+  `transcript_text`, and the publish status `published` is right. The
+  docs don't say whether publishing during `audio_processing` matters.
+- Still unknown why subscribers don't get episodes. Next step: run
+  `rocky.exe --multifamily-feud --episodes` (or `--sams-podcast` /
+  `--kirsten-digest`) on the Rocky laptop after deploying, and check
+  whether the episodes say `published` with audio ready. Then check
+  whether a subscriber's feed URL lists them.
+
+**Watch-outs**
+
+- The live PODCAST_STYLE.md files for Sam's and the Feud got four
+  wording fixes each, live at once (they are read every run):
+  - the Cases / Our docket line: "what happened since the last episode";
+  - the callback: "As we said last time";
+  - the case-card item: "**Developments:**";
+  - the `repeat_lookback_days` note now counts episodes.
+  Nothing else in them changed. Sam's still calls itself "a daily show,
+  weekends included".
+- Kirsten's report is unchanged.
+
+---
+
 ## Session 2026-11-01 (5) — Time Entries phase 3: the mail trigger and delivery
 
 James said "Start phase 3" after phase 2 was committed (`1ce3c09`). Built on `time-entries`,

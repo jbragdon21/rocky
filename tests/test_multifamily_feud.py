@@ -91,6 +91,32 @@ def test_gather_reads_the_three_folders_and_skips_the_rest(tmp_path):
         f"Daily ChatGPT research/{today}_Research_Memo.md@")
 
 
+def test_gather_goes_back_to_the_last_episode(tmp_path):
+    """James runs the show when he needs it (11/5): every report since the
+    last published episode's day counts, each dated when a source has more
+    than one."""
+    cases, folder = _case_folder(tmp_path)
+    now = datetime.now()
+    days = [(now - timedelta(days=n)).date() for n in range(5)]
+    for d in days:
+        _put(folder, "research", f"{d:%Y-%m-%d}_Research_Memo.md",
+             mtime=_old(0))
+    _put(folder, "hits", f"{days[3]:%Y-%m-%d} CNS hits.md", mtime=_old(0))
+    config = {"cases_root": str(cases)}
+    edition = mf.gather(config, now, set(), since=days[3])
+    topics = [m["topic"] for m in edition["memos"]]
+    label = lambda d: f"{d.strftime('%b')}. {d.day}"  # noqa: E731
+    assert topics == [f"Daily research memo, {label(d)}"
+                      for d in sorted(days[:4])] + ["Courthouse News hits"]
+    assert len(edition["inputs"]) == 5
+    # A file a published episode used is not aired again.
+    used = {edition["inputs"][0]}
+    again = mf.gather(config, now, used, since=days[3])
+    assert len(again["inputs"]) == 4
+    # Without since: today and yesterday, as before.
+    assert len(mf.gather(config, now, set())["inputs"]) == 2
+
+
 def test_gather_uses_each_file_once_unless_saved_again(tmp_path):
     cases, folder = _case_folder(tmp_path)
     now = datetime.now()
@@ -296,7 +322,7 @@ def test_dry_run_end_to_end(monkeypatch, tmp_path):
 
     def fake_ask(client, model, system, messages, **kw):
         systems.append(system)
-        if system.startswith("# Goal\n\nTurn one of today's reports"):
+        if system.startswith("# Goal\n\nTurn one of the reports"):
             return json.dumps({"headline": "McAdams v. Essex dismissed.",
                                "developments": ["Judge Chhabria dismissed "
                                                 "the CLRA claim."],
@@ -335,7 +361,7 @@ def test_dry_run_end_to_end(monkeypatch, tmp_path):
     assert (show_root / "PODCAST_STYLE.md").is_file()         # seeded
     assert not (state / "sams_podcast_preview.txt").exists()
     # Three report cards, one script call, one fact check, all the show's own.
-    card = "# Goal\n\nTurn one of today's reports"
+    card = "# Goal\n\nTurn one of the reports"
     assert sum(s.startswith(card) for s in systems) == 3
     script_system = next(s for s in systems if "Write the script" in s)
     opener = ["Archie", "Frieda"][sp.opener_index("alternate", datetime.now())]
@@ -347,7 +373,38 @@ def test_dry_run_end_to_end(monkeypatch, tmp_path):
     keys = mf.gather(config, datetime.now(), set())["inputs"]
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     (state / "multifamily_feud.json").write_text(json.dumps(
-        {"episodes": {yesterday: {"inputs": keys[:2]}}}), encoding="utf-8")
+        {"episodes": {yesterday: {"inputs": keys[:2], "published": True}}}),
+        encoding="utf-8")
     systems.clear()
     mf.run_cli(dict(config), tmp_path)
     assert sum(s.startswith(card) for s in systems) == 1
+
+    # The same episode never published: nobody heard it, so all three files
+    # come round again.
+    (state / "multifamily_feud.json").write_text(json.dumps(
+        {"episodes": {yesterday: {"inputs": keys[:2], "published": False}}}),
+        encoding="utf-8")
+    systems.clear()
+    mf.run_cli(dict(config), tmp_path)
+    assert sum(s.startswith(card) for s in systems) == 3
+
+    # The case period starts where the last published episode stopped,
+    # three days ago.
+    starts = []
+
+    def fake_cases(*a, **k):
+        starts.append(k.get("start"))
+        return [{"kind": "case", "quiet": True, "title": "Hettinger"}], "ok"
+
+    monkeypatch.setattr(sp, "collect_cases", fake_cases)
+    stop = (datetime.now() - timedelta(days=3)).astimezone().replace(
+        microsecond=0)
+    (state / "multifamily_feud.json").write_text(json.dumps(
+        {"episodes": {stop.strftime("%Y-%m-%d"): {
+            "published": True, "covered_to": stop.isoformat()}}}),
+        encoding="utf-8")
+    mf.run_cli(dict(config), tmp_path)
+    assert starts == [stop]
+    notes = (state / "multifamily_feud_preview.html").read_text(
+        encoding="utf-8")
+    assert f"Quiet since {sp.since_label(stop, datetime.now())}:" in notes

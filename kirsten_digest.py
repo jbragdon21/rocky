@@ -5,7 +5,7 @@ Kirsten Digest — the weekly Gallagher-Bozzuto litigation report
     python rocky.py --kirsten-digest [--days N] [--dry-run] [--force]
                                      [--no-podcast] [--audio] [--no-publish]
                                      [RRID-XXXX ...]      (on demand, dashboard)
-    python rocky.py --kirsten-digest --shows | --subscribe EMAIL
+    python rocky.py --kirsten-digest --shows | --episodes | --subscribe EMAIL
 
 Internally "the Kirsten Digest"; externally (the email itself) "the Weekly
 Gallagher-Bozzuto Litigation Report". Kirsten Woelper at Bozzuto is the
@@ -733,7 +733,7 @@ def run_cli(config: dict, data_dir: Path) -> None:
     import kirsten_podcast
 
     args = sys.argv[1:]
-    if "--shows" in args or "--subscribe" in args:
+    if "--shows" in args or "--subscribe" in args or "--episodes" in args:
         kirsten_podcast.feed_cli(config, args)
         return
     dry_run = "--dry-run" in args

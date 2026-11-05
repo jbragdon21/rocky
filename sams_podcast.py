@@ -1,10 +1,11 @@
 """
-Sam's Podcast — a daily two-host audio show: sports research + case activity
+Sam's Podcast — a two-host audio show: sports research + case activity
 ============================================================================
 
     python rocky.py --sams-podcast [--dry-run] [--audio] [--force]
-                                   [--no-publish] [RRID-XXXX ...]   (6:00 AM daily)
+                                   [--no-publish] [RRID-XXXX ...]   (on demand)
     python rocky.py --sams-podcast --shows
+    python rocky.py --sams-podcast --episodes
     python rocky.py --sams-podcast --subscribe EMAIL
 
 Sam is a Gallagher colleague, so this is an INTERNAL show: the case segment
@@ -19,19 +20,28 @@ Two sources:
             memo per topic plus manifest.json, written LAST. An edition is
             used only when its manifest parses, says status "complete", and
             every memo it lists exists and is nonempty. Each edition is used
-            once (edition_date is the idempotency key); today's is preferred,
-            yesterday's is taken if it landed after yesterday's run. No
+            once (edition_date is the idempotency key). Every unused
+            edition since the last published episode is taken, merged by
+            topic (newest first), so one card covers the whole span. No
             usable edition = a cases-only episode.
 
   CASES     Every open row of the Rocky Case Index whose "Sam's Podcast"
             column (any header containing both "sam" and "podcast") says
-            yes, from that case folder's activity.jsonl for YESTERDAY (local
-            midnight to midnight). Cases with no activity yesterday get no
-            Claude call; the show names them as quiet in one line.
+            yes, from that case folder's activity.jsonl SINCE THE LAST
+            PUBLISHED EPISODE (period_start). Cases with no activity in that
+            time get no Claude call; the show names them as quiet in one line.
+
+The period: James runs the show when he needs it, not daily (11/5), so an
+episode covers everything since the last one that reached the feed: from
+that episode's covered_to (an episode recorded before 11/5 covered the day
+before it, so it ended at its own day's midnight) to now. No published
+episode on record = since yesterday's midnight; never more than
+MAX_PERIOD_DAYS back. An unpublished episode (failed upload, --no-publish)
+reached nobody, so its edition, reports and case activity come round again.
 
 Cards: one Claude call per research memo and one per active case turns the
 material into a card (topic: headline, developments, upcoming; case: status,
-yesterday, next steps). The cards are the show notes, the archive copy, and
+developments since the last episode, next steps). The cards are the show notes, the archive copy, and
 the ONLY source for the script, so what Sam hears matches the notes.
 
 Script and audio: one Claude call writes a two-host script of about ten
@@ -42,10 +52,12 @@ request chunking as the Kirsten podcast).
 Feed: Transistor.fm, a PRIVATE show. The MP3 is uploaded
 (GET /episodes/authorize_upload, PUT to the presigned URL), an episode is
 created with the cards as its description and the script as its transcript,
-then published. Sam subscribes once through a personal private-feed URL
-(--subscribe EMAIL creates it and prints it). If publishing fails after the
-episode was created, the next run publishes that episode instead of
-uploading a second copy.
+then published, and read back so the log says what Transistor holds
+(status, audio processing or failed). Sam subscribes once through a personal
+private-feed URL (--subscribe EMAIL creates it and prints it). --episodes
+logs the show's last ten episodes as Transistor holds them and its
+subscribers. If publishing fails after the episode was created, a rerun the
+same day publishes that episode instead of uploading a second copy.
 
 Files: <root>\\_Episodes\\YYYY-MM-DD.mp3, YYYY-MM-DD script.txt and
 YYYY-MM-DD cards.html. state\\sams_podcast.json records each day's episode
@@ -138,10 +150,11 @@ class Show:
     cases_heading: str = "Cases"
     edition_word: str = "research edition"
     # A show that doesn't read dated research editions from its folder
-    # gathers its own material: (config, now, used inputs, tag) -> an
-    # edition {"date", "memos", "inputs"} or None. "inputs" names what it
-    # used, recorded on the episode so the next run skips it. None = Sam's
-    # dated editions in the show folder.
+    # gathers its own material: (config, now, used inputs, tag, since=date)
+    # -> an edition {"date", "memos", "inputs"} or None. since is the day
+    # the period starts. "inputs" names what it used, recorded on the
+    # episode so the next run skips it. None = Sam's dated editions in the
+    # show folder.
     gather: Callable | None = None
     stability: float | None = 0.0
     audio_tags: tuple = ("excited", "cheerfully", "laughs", "chuckles")
@@ -194,6 +207,9 @@ _RATE = 44100            # the hosts' MP3 rate (OUTPUT_FORMAT mp3_44100_64)
 _LISTENER = "Sam Cowin"
 
 _MEMO_CAP = 12000        # characters of one research memo sent for its card
+_MERGED_MEMO_CAP = 40000  # one topic's memos from several editions, merged
+FIRST_PERIOD_DAYS = 1    # no published episode on record: since yesterday
+MAX_PERIOD_DAYS = 14     # never reach back further than this
 _TAG = "sams podcast"
 
 TOPIC_CORE = """You turn one sports research memo into a card for Sam's Podcast, a daily audio show for {listener}, a lawyer at Gallagher LLP. The card is the show notes for this topic and the only source the hosts will read from.
@@ -211,6 +227,7 @@ RULES
 - "developments" are verified facts from the memo. Leave out anything the memo marks as rumor unless you say plainly it is unconfirmed.
 - "upcoming" holds only games or events on or after TODAY. Each text leads with its date and time as the memo gives them, times Eastern ("Oct. 28, 8 p.m. Eastern — UIC exhibition, B1G+"). A conflict or uncertainty the memo flags stays flagged.
 - "angles" are opinions for the hosts to discuss, not facts.
+- MEMO can hold several editions, each headed "=== EDITION YYYY-MM-DD ===", newest first: the days since the last episode. The card covers them all. Where they differ, the newest edition wins (a final score replaces a preview, a later status replaces an earlier one).
 - No URLs, no markdown, no emojis inside the strings.
 
 CARD STYLE (how many items, how long, what to favor)
@@ -220,17 +237,17 @@ Output the JSON object and nothing else."""
 
 CASE_CORE = """You write one case's card for Sam's Podcast, a daily internal audio show for {listener}, a lawyer at Gallagher LLP. This is internal, so name parties, courts, opposing counsel, and Gallagher people where the sources do, and include internal next steps. {listener} is the listener: where a source names {listener} as the one who did something, write it as "you" ("you drafted the declaration"). Use "you" ONLY then. Work a source credits to someone else stays theirs by name; work no source attributes is "the team".
 
-You receive the case's identity, the activity recorded on the case YESTERDAY (a line ending [by NAME] is that person's work), and background (the case overview and status memorandum, when they exist).
+You receive the case's identity, the activity recorded on the case since PERIOD START, the last episode (a line ending [by NAME] is that person's work), and background (the case overview and status memorandum, when they exist).
 
 Return ONLY a JSON object:
 {
   "status": "<one sentence>",
-  "yesterday": [{"date": "<YYYY-MM-DD the development itself happened, or null>", "text": "<bullet>"}, ...],
+  "developments": [{"date": "<YYYY-MM-DD the development itself happened, or null>", "text": "<bullet>"}, ...],
   "next_steps": [{"date": "<YYYY-MM-DD of the date the bullet leads with, or null>", "text": "<bullet>"}, ...]
 }
 
 RULES
-- "yesterday" holds only developments from yesterday's activity. Activity lines carry the day they were recorded; one can describe an older event, so check the event's own date and leave out anything before YESTERDAY.
+- "developments" holds only developments from the activity since PERIOD START, which can be several days. Activity lines carry the day they were recorded; one can describe an older event, so check the event's own date and leave out anything before PERIOD START. When PERIOD START is before yesterday, lead each bullet with the date it happened as the sources give it ("Nov. 3: ...").
 - "next_steps" is in date order, soonest first (undated last). Every hearing or deadline on or after TODAY that the sources state belongs there. Never list a date before TODAY as upcoming: the memo may be months old. If nothing is pending, return [{"date": null, "text": "Nothing pending."}].
 - Leave out case, docket, and inquiry numbers.
 - Never calculate a date; use only dates the sources state. A contemplated, threatened, or conditional event stays pending. Do not invent facts.
@@ -259,7 +276,7 @@ _STYLE_CAP = 12000
 
 SCRIPT_CORE = """You write the script for today's episode of Sam's Podcast, a daily audio show for {listener}, a lawyer at Gallagher LLP. Two hosts present it: {host1} is speaker 1 and {host2} is speaker 2.
 
-You receive the day's cards: sports TOPIC cards, and CASE cards for the matters Sam follows. Those cards are your only source. Follow the STYLE GUIDE below for the show's shape, tone, pacing, and how things are said. Where the style guide conflicts with these RULES, the RULES win.
+You receive the cards: sports TOPIC cards, and CASE cards for the matters Sam follows. They cover everything since the last episode, which can be several days (CASE ACTIVITY PERIOD says since when). Those cards are your only source. Follow the STYLE GUIDE below for the show's shape, tone, pacing, and how things are said. Where the style guide conflicts with these RULES, the RULES win.
 
 Return ONLY a JSON object:
 {"turns": [{"speaker": 1 or 2, "text": "<what that host says>"}, ...]}
@@ -268,10 +285,11 @@ RULES
 - Use only facts in the cards. Do not add or calculate dates, scores, outcomes, or names. Keep anything pending, conditional, or unconfirmed exactly that.
 - Add nothing from your own knowledge: no schedules, bye weeks, standings, records, history, or context the cards don't state. If a card gives no next game or date, say nothing about what's next for that team.
 - A date before TODAY is past: never present it as upcoming.
+- Say when something happened by its day; call it "yesterday" only if it was yesterday.
 - Cases are internal and the listener is {listener}, a colleague: name parties, courts and Gallagher people where the cards do, and keep the cards' "you" as "you" (that is {listener}'s own work); never turn anyone else's work into "you". The hosts do not predict how a case will go.
 - If a section has no cards, do not mention it anywhere, including the preview.
 - Never mention Rocky, AI, activity logs, cards, or research memos: the hosts just know the news.
-- ALREADY COVERED (when given) is what Sam heard in earlier episodes. It is context, not a source: a brief callback to what an earlier episode said is fine ("as we said yesterday"), but every new fact must be on today's cards. Handle repeats as the style guide's Repeats section says.
+- ALREADY COVERED (when given) is what Sam heard in earlier episodes. It is context, not a source: a brief callback to what an earlier episode said is fine ("as we said last time"), but every new fact must be on today's cards. Handle repeats as the style guide's Repeats section says.
 - At most {max_words} words in total across all turns; anything longer is cut off.
 - Spoken words only: no case, inquiry, or docket numbers, no citations, no URLs, no markdown, no stage directions, no emojis.
 - {tag_rule}
@@ -327,9 +345,9 @@ over config.json.
   audio_tags              Eleven v3 delivery cues the script may use, comma
                           separated (e.g. excited, laughs, whispers), or none
   model                   the Claude model that writes cards and script
-  repeat_lookback_days    how many earlier days' episodes the script sees as
-                          already covered (only episodes whose audio came
-                          out full length); 0 = off
+  repeat_lookback_days    how many earlier episodes the script sees as
+                          already covered, however far back (only published
+                          episodes whose audio came out full length); 0 = off
 
 THE SECTIONS. "## Topic cards" and "## Case cards" style the show notes
 (one card per sports memo and per active case). Every other section styles
@@ -344,13 +362,13 @@ of the original on the next run.
 
 ## The show
 
-A warm, quick, conversational sports-and-docket morning show for Sam, who listens on the commute. {host1} and {host2} walk Sam through it. It is a daily show, weekends included.
+A warm, quick, conversational sports-and-docket morning show for Sam, who listens on the commute. {host1} and {host2} walk Sam through it. Each episode picks up where the last one left off, however many days ago that was.
 
 ## Shape
 
 - **Opening.** {host1} opens: "Sam's Podcast", the day and date, and a one-line preview of the headlines.
 - **Sports.** Each topic card in the order given, as a short back-and-forth: the headline, the key developments, then what's next and when. Times are Eastern; say "Eastern" once per segment. The hosts may discuss the card's angles briefly, as their take.
-- **Cases.** Hand off clearly ("Now to the docket."). For each active case: what happened yesterday, then what comes next and when. Then the quiet cases in one turn: name them, nothing more. If there are no case cards, skip this segment.
+- **Cases.** Hand off clearly ("Now to the docket."). For each active case: what happened since the last episode, then what comes next and when. Then the quiet cases in one turn: name them, nothing more. If there are no case cards, skip this segment.
 - **Close.** One line on the next upcoming game and the next case date, then a sign-off ("see you tomorrow").
 
 ## Length
@@ -370,7 +388,7 @@ Peppy and upbeat: a quick morning show, not a newscast.
 
 ALREADY COVERED holds the last few episodes Sam actually heard.
 
-- Don't re-report a development already covered. If it still matters, give it one short callback ("As we said yesterday, ...") and move on.
+- Don't re-report a development already covered. If it still matters, give it one short callback ("As we said last time, ...") and move on.
 - Something new in an old story leads with the new part.
 - Upcoming games and deadlines still ahead may come up again in one line, without re-explaining them. Always mention anything in the next three days.
 - Background already given (rankings, records, season context, a case's posture) gets a few words at most.
@@ -393,7 +411,7 @@ ALREADY COVERED holds the last few episodes Sam actually heard.
 ## Case cards
 
 - **Status:** one sentence, at most 25 words: where the case stands (forum, stage, next key date if known).
-- **Yesterday:** 0 to 5 substantive developments, one or two sentences each: filings and orders, hearings, discovery, settlement talk, deadlines set or moved, significant correspondence, significant work completed.
+- **Developments:** 0 to 5 substantive developments, one or two sentences each: filings and orders, hearings, discovery, settlement talk, deadlines set or moved, significant correspondence, significant work completed.
 - **Next steps:** 1 to 4 bullets: what happens next and who does it.
 """
 
@@ -1008,19 +1026,47 @@ def load_edition(folder: Path, tag: str = _TAG) -> dict | None:
 
 
 def pick_edition(root: Path, today: datetime, used: set[str],
-                 tag: str = _TAG) -> dict | None:
-    """Today's edition, else yesterday's if it was never used. Older ones are
-    stale news and are left alone."""
-    for day in (today, today - timedelta(days=1)):
+                 tag: str = _TAG, since: date | None = None) -> dict | None:
+    """Every complete edition dated from `since` (default yesterday) through
+    today that no published episode used, merged by topic, newest first.
+    James runs the show when he needs it, not daily (11/5), so the days
+    between two episodes all count."""
+    floor = since or (today.date() - timedelta(days=1))
+    editions = []
+    day = today.date()
+    while day >= floor:
         name = day.strftime("%Y-%m-%d")
-        if name in used:
-            continue
         folder = root / name
-        if folder.is_dir():
+        if name not in used and folder.is_dir():
             edition = load_edition(folder, tag)
-            if edition:
-                return edition
-    return None
+            if edition and edition["date"] not in used:
+                editions.append(edition)
+        day -= timedelta(days=1)
+    return merge_editions(editions) if editions else None
+
+
+def merge_editions(editions: list[dict]) -> dict:
+    """Editions (newest first) as one: a memo per topic holding that topic's
+    memo from each edition, newest first and dated, so one card covers the
+    whole span. A single edition comes back as it is."""
+    dates = [e["date"] for e in editions]
+    if len(editions) == 1:
+        return {**editions[0], "dates": dates}
+    groups: dict[str, list[tuple[str, dict]]] = {}
+    for edition in editions:
+        for memo in edition["memos"]:
+            key = memo["topic"].strip().lower()
+            groups.setdefault(key, []).append((edition["date"], memo))
+    memos = []
+    for group in groups.values():
+        memos.append({
+            "topic": group[0][1]["topic"],
+            "file": ", ".join(f"{d}/{m['file']}" for d, m in group),
+            "text": "\n\n".join(f"=== EDITION {d} ===\n{m['text']}"
+                                for d, m in group),
+            "cap": _MERGED_MEMO_CAP})
+    return {"date": dates[0], "dates": dates, "folder": editions[0]["folder"],
+            "memos": memos}
 
 
 # ---------------------------------------------------------------------------
@@ -1044,11 +1090,64 @@ def sam_column(cases: list[dict]) -> str | None:
     return show_column(cases, SAMS)
 
 
-def yesterday_window(now: datetime) -> tuple[datetime, datetime]:
-    """Local midnight to midnight, as aware datetimes."""
+def published_episodes(episodes: dict, before: str) -> list[tuple[str, dict]]:
+    """(day, record) for every episode that reached the feed, dated before
+    `before` (YYYY-MM-DD), oldest first. An episode that was made but never
+    published (a failed upload, --no-publish) reached nobody, so it neither
+    ends a period nor uses up an edition or report."""
+    return [(d, e) for d, e in sorted(episodes.items())
+            if d < before and isinstance(e, dict) and e.get("published")]
+
+
+def _aware(value) -> datetime | None:
+    try:
+        when = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return when.astimezone()
+
+
+def period_start(episodes: dict, now: datetime, tag: str = _TAG) -> datetime:
+    """Where today's material starts: where the last published episode's
+    material ended. James runs the shows when he needs them, not daily
+    (11/5), so this can be several days back. An episode recorded before
+    11/5 has no covered_to; it covered the day before it, midnight to
+    midnight, so it ended at its own day's midnight. With no published
+    episode on record: yesterday's midnight. Never more than
+    MAX_PERIOD_DAYS back."""
     now = now.astimezone()
-    end = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    return end - timedelta(days=1), end
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    start = None
+    earlier = published_episodes(episodes, now.strftime("%Y-%m-%d"))
+    if earlier:
+        day, record = earlier[-1]
+        start = _aware(record.get("covered_to"))
+        if start is None:
+            try:
+                start = datetime.strptime(day, "%Y-%m-%d").astimezone()
+            except ValueError:
+                start = None
+    if start is None:
+        start = midnight - timedelta(days=FIRST_PERIOD_DAYS)
+    floor = midnight - timedelta(days=MAX_PERIOD_DAYS)
+    if start < floor:
+        log.info(f"[{tag}] the last published episode was more than "
+                 f"{MAX_PERIOD_DAYS} days ago; starting at "
+                 f"{floor.strftime('%Y-%m-%d')}")
+        start = floor
+    return min(start, now)
+
+
+def since_label(start: datetime, now: datetime) -> str:
+    """"yesterday", "earlier today" or "Monday, November 2", for the cards
+    and show notes ("Since yesterday", "Quiet since Monday, November 2")."""
+    days = (now.astimezone().date() - start.astimezone().date()).days
+    if days <= 0:
+        return "earlier today"
+    if days == 1:
+        return "yesterday"
+    start = start.astimezone()
+    return f"{start.strftime('%A, %B')} {start.day}"
 
 
 def attributed_lines(events: list[dict]) -> list[str]:
@@ -1116,7 +1215,8 @@ def topic_card(client, model: str, memo: dict, today: str,
     s = _sh(show)
     card = {"kind": "topic", "title": memo["topic"]}
     prompt = (f"TODAY: {today}\nTOPIC: {memo['topic']}\n\nMEMO:\n"
-              f"{memo['text'][:_MEMO_CAP]}\n\nWrite the JSON card.")
+              f"{memo['text'][:memo.get('cap') or _MEMO_CAP]}\n\n"
+              f"Write the JSON card.")
     try:
         data = _parse_json(_ask(client, model,
                                 card_prompt(s.topic_core, style, "topic",
@@ -1136,24 +1236,25 @@ def topic_card(client, model: str, memo: dict, today: str,
 
 
 def case_card(client, model: str, case: dict, lines: list[str], memo: str,
-              background: str, today: str, yesterday: str,
+              background: str, today: str, since: str,
               listener: str = "Sam", style: str | None = None,
               show: Show | None = None) -> dict:
-    """One Claude call for a case with activity yesterday."""
+    """One Claude call for a case with activity since the last episode.
+    since is PERIOD START, "YYYY-MM-DD (Weekday) H:MM AM"."""
     from kirsten_digest import _parse_json
     s = _sh(show)
     card = {"kind": "case", "title": str(case.get("File Name") or
                                          case.get("RRID#") or "").strip(),
             "subtitle": str(case.get("Description") or "").strip()}
     prompt = f"""TODAY: {today}
-YESTERDAY: {yesterday}
+PERIOD START: {since} (the last episode; this card covers everything from then to now)
 
 CASE
 Name: {case.get('File Name')}
 Client: {case.get('Client')}
 Description: {case.get('Description') or '(none)'}
 
-ACTIVITY YESTERDAY ({len(lines)} items):
+ACTIVITY SINCE PERIOD START ({len(lines)} items):
 {chr(10).join(lines)}
 
 CASE OVERVIEW (background):
@@ -1175,9 +1276,9 @@ Write the JSON card."""
         return {**card, "error": "the card came back unreadable"}
     return {**card,
             "status": str(data.get("status") or "").strip(),
-            "yesterday": _dated_texts(data.get("yesterday"), today[:10],
-                                      drop_before=yesterday[:10],
-                                      tag=s.tag)[:8],
+            "developments": _dated_texts(data.get("developments"),
+                                         today[:10], drop_before=since[:10],
+                                         tag=s.tag)[:8],
             "next_steps": (_dated_texts(data.get("next_steps"), today[:10],
                                         tag=s.tag)
                            or ["Nothing pending."])[:6]}
@@ -1191,9 +1292,12 @@ def quiet_card(case: dict) -> dict:
 
 def collect_cases(config: dict, client, model: str, now: datetime,
                   rrids: list[str] | None = None,
-                  show: Show | None = None) -> tuple[list[dict], str]:
+                  show: Show | None = None,
+                  start: datetime | None = None) -> tuple[list[dict], str]:
     """Case cards for every flagged open case (quiet ones without a Claude
-    call). Returns (cards, note) where note explains an empty list."""
+    call), from the activity between start (default yesterday's midnight;
+    run_cli passes period_start) and now. Returns (cards, note) where note
+    explains an empty list."""
     import rocky
     from kirsten_digest import find_folder, select_cases
     s = _sh(show)
@@ -1213,9 +1317,15 @@ def collect_cases(config: dict, client, model: str, now: datetime,
     if not selected:
         return [], f"no open case is marked yes for {s.name}"
 
-    start, end = yesterday_window(now)
+    end = now.astimezone()
+    if start is None:
+        start = end.replace(hour=0, minute=0, second=0,
+                            microsecond=0) - timedelta(days=1)
+    start = start.astimezone()
     today_s = now.strftime("%Y-%m-%d (%A)")
-    yesterday_s = start.strftime("%Y-%m-%d (%A)")
+    since_s = (f"{start.strftime('%Y-%m-%d (%A)')} "
+               f"{start.strftime('%I:%M %p').lstrip('0')}")
+    label = since_label(start, end)
     cards = []
     for case in selected:
         rrid = str(case.get("RRID#") or "").upper()
@@ -1234,12 +1344,12 @@ def collect_cases(config: dict, client, model: str, now: datetime,
         card = case_card(client, model, case, lines,
                          rocky._extract_status_memo_text(folder),
                          rocky._read_case_digest_instructions(folder),
-                         today_s, yesterday_s, listener(config, s),
+                         today_s, since_s, listener(config, s),
                          config.get("_case_style"), s)
         if card.get("error"):
             log.warning(f"[{s.tag}] {rrid}: {card['error']}")
         log.info(f"[{s.tag}] {rrid} {folder.name}: {len(lines)} activity "
-                 f"line(s) yesterday")
+                 f"line(s) since {label}")
         cards.append(card)
     # Active cases first, quiet ones last.
     cards.sort(key=lambda c: (bool(c.get("quiet")), c["title"].lower()))
@@ -1251,10 +1361,10 @@ def collect_cases(config: dict, client, model: str, now: datetime,
 # ---------------------------------------------------------------------------
 
 def cards_text(topics: list[dict], cases: list[dict],
-               label: str = "TOPIC") -> str:
+               label: str = "TOPIC", since: str = "yesterday") -> str:
     """The cards, plain, for the script prompt. Failed cards are left out.
     label names the research/report cards (Sam's TOPIC, the Feud's
-    REPORT)."""
+    REPORT); since is since_label of the case period."""
     blocks = []
     for c in topics:
         if c.get("error"):
@@ -1269,21 +1379,25 @@ def cards_text(topics: list[dict], cases: list[dict],
             lines += [f"- {b}" for b in c["angles"]]
         blocks.append("\n".join(lines))
     active = [c for c in cases if not c.get("quiet") and not c.get("error")]
+    quiet = [c["title"] for c in cases if c.get("quiet")]
+    if active or quiet:
+        blocks.append(f"CASE ACTIVITY PERIOD: since {since} (the last "
+                      f"episode).")
     for c in active:
         lines = [f"CASE: {c['title']}" + (f" — {c['subtitle']}"
                                           if c.get("subtitle") else ""),
-                 f"Status: {c.get('status') or ''}", "Yesterday:"]
-        lines += [f"- {b}" for b in c.get("yesterday") or []] or \
+                 f"Status: {c.get('status') or ''}", f"Since {since}:"]
+        lines += [f"- {b}" for b in c.get("developments") or []] or \
             ["- No significant developments."]
         lines.append("Next steps:")
         lines += [f"- {b}" for b in c.get("next_steps") or []]
         blocks.append("\n".join(lines))
-    quiet = [c["title"] for c in cases if c.get("quiet")]
     if quiet:
         # One per line: case names carry commas ("Bulgin, Alexander"), and a
         # comma-joined list read as "Alexander Bulgin's DC AG fees matter".
-        blocks.append("QUIET CASES (no activity yesterday; each line is one "
-                      "separate case):\n" + "\n".join(f"- {q}" for q in quiet))
+        blocks.append(f"QUIET CASES (no activity since {since}; each line "
+                      f"is one separate case):\n"
+                      + "\n".join(f"- {q}" for q in quiet))
     return "\n\n".join(blocks)
 
 
@@ -1382,7 +1496,7 @@ You receive TODAY, a CALENDAR, the CARDS, sometimes ALREADY COVERED (earlier epi
 
 Check every turn, one claim at a time, including the opening preview and the close, which summarize several cards at once and are where facts get crossed. For each team, case, or person a turn names, confirm the claim is on THAT card.
 
-Find every turn that states something the cards do not support: a fact, date, score, opponent, schedule, bye week, record, or name not in the cards; a fact moved to the wrong team, case, or person (for example one team's game credited to another); a past date presented as upcoming; or something pending or unconfirmed presented as done. A weekday is wrong only if the CALENDAR says so: never change one from your own reckoning. A brief callback to an earlier episode ("again", "as we said yesterday") is fine when ALREADY COVERED says it; anything else must be on today's cards. Opinions and discussion of a card's angles are fine. Delivery cues in brackets ([excited], [laughs], ...) are not claims: leave them. Wording and style are not your concern.
+Find every turn that states something the cards do not support: a fact, date, score, opponent, schedule, bye week, record, or name not in the cards; a fact moved to the wrong team, case, or person (for example one team's game credited to another); a past date presented as upcoming; or something pending or unconfirmed presented as done. A weekday is wrong only if the CALENDAR says so: never change one from your own reckoning. A brief callback to an earlier episode ("again", "as we said last time") is fine when ALREADY COVERED says it; anything else must be on today's cards. Opinions and discussion of a card's angles are fine. Delivery cues in brackets ([excited], [laughs], ...) are not claims: leave them. Wording and style are not your concern.
 
 Return ONLY a JSON object:
 {"fixes": [{"turn": <number>, "problem": "<short reason>", "text": "<the whole turn rewritten to say only what the cards support, same speaker voice, or empty to drop the turn>"}]}
@@ -1445,7 +1559,7 @@ def _ul(items: list[str]) -> str:
 
 
 def render_notes(topics: list[dict], cases: list[dict],
-                 show: Show | None = None) -> str:
+                 show: Show | None = None, since: str = "yesterday") -> str:
     s = _sh(show)
     parts = []
     if topics:
@@ -1472,13 +1586,13 @@ def render_notes(topics: list[dict], cases: list[dict],
             continue
         if c.get("status"):
             parts.append(f"<p><strong>Status:</strong> {escape(c['status'])}</p>")
-        parts.append("<p><strong>Yesterday</strong></p>"
-                     + (_ul(c.get("yesterday") or [])
+        parts.append(f"<p><strong>Since {escape(since)}</strong></p>"
+                     + (_ul(c.get("developments") or [])
                         or "<p>No significant developments.</p>"))
         parts.append("<p><strong>Next steps</strong></p>"
                      + _ul(c.get("next_steps") or []))
     if quiet:
-        parts.append(f"<p><strong>Quiet yesterday:</strong> "
+        parts.append(f"<p><strong>Quiet since {escape(since)}:</strong> "
                      f"{escape(', '.join(quiet))}</p>")
     return "\n".join(p for p in parts if p)
 
@@ -1538,6 +1652,78 @@ def publish_episode(api_key: str, episode_id: str) -> None:
                           headers={"x-api-key": api_key}, timeout=60,
                           data={"episode[status]": "published"}),
            "publish")
+
+
+def get_episode(api_key: str, episode_id: str) -> dict:
+    """The episode's attributes (status, published_at, audio_processing,
+    processing_failure, media_url, ...)."""
+    data = _check(requests.get(f"{TRANSISTOR}/episodes/{episode_id}",
+                               headers={"x-api-key": api_key}, timeout=60),
+                  "get episode")
+    return (data.get("data") or {}).get("attributes") or {}
+
+
+def list_episodes(api_key: str, show_id: str, per: int = 10) -> list[dict]:
+    data = _check(requests.get(f"{TRANSISTOR}/episodes", timeout=60,
+                               headers={"x-api-key": api_key},
+                               params={"show_id": show_id, "order": "desc",
+                                       "pagination[per]": per}),
+                  "list episodes")
+    return data.get("data") or []
+
+
+def list_subscribers(api_key: str, show_id: str) -> list[dict]:
+    data = _check(requests.get(f"{TRANSISTOR}/subscribers", timeout=60,
+                               headers={"x-api-key": api_key},
+                               params={"show_id": show_id,
+                                       "pagination[per]": 50}),
+                  "list subscribers")
+    return data.get("data") or []
+
+
+def describe_episode(attrs: dict) -> str:
+    """One line on what Transistor holds for an episode."""
+    bits = [f"status {attrs.get('status')}",
+            f"published {attrs.get('published_at') or '-'}",
+            f"audio {'processing' if attrs.get('audio_processing') else 'ready' if attrs.get('media_url') else 'none'}"]
+    if attrs.get("duration"):
+        bits.append(f"{attrs['duration']} s")
+    if attrs.get("processing_failure"):
+        bits.append(f"PROCESSING FAILED: {attrs['processing_failure']}")
+    return ", ".join(bits)
+
+
+def check_published(api_key: str, episode_id: str, tag: str = _TAG) -> None:
+    """After a publish: log what Transistor now says about the episode, and
+    warn when it isn't live or its audio failed. Never raises."""
+    try:
+        attrs = get_episode(api_key, episode_id)
+    except Exception as e:
+        log.info(f"[{tag}] could not read episode {episode_id} back: {e}")
+        return
+    line = describe_episode(attrs)
+    if attrs.get("status") != "published" or attrs.get("processing_failure"):
+        log.warning(f"[{tag}] Transistor episode {episode_id}: {line}")
+    else:
+        log.info(f"[{tag}] Transistor episode {episode_id}: {line}")
+
+
+def log_feed(api_key: str, show_id: str, tag: str = _TAG) -> None:
+    """--episodes: the show's last ten episodes as Transistor holds them,
+    then its private-feed subscribers."""
+    episodes = list_episodes(api_key, show_id)
+    log.info(f"[{tag}] show {show_id}: {len(episodes)} most recent episode(s)")
+    for ep in episodes:
+        attrs = ep.get("attributes") or {}
+        log.info(f"[{tag}]   {ep.get('id')} {attrs.get('title')!r}: "
+                 f"{describe_episode(attrs)}")
+    subs = list_subscribers(api_key, show_id)
+    log.info(f"[{tag}] {len(subs)} private-feed subscriber(s)")
+    for sub in subs:
+        attrs = sub.get("attributes") or {}
+        log.info(f"[{tag}]   {attrs.get('email')}: email status "
+                 f"{attrs.get('status')}, has downloads "
+                 f"{attrs.get('has_downloads')}, feed {attrs.get('feed_url')}")
 
 
 def list_shows(api_key: str) -> list[dict]:
@@ -1605,17 +1791,21 @@ def audio_complete(words: int | None, hosts_seconds: float | None) -> bool:
     return hosts_seconds >= words / 150 * 60 * 0.75
 
 
-def earlier_scripts(episodes: dict, archive: Path, now: datetime, days: int,
+def earlier_scripts(episodes: dict, archive: Path, now: datetime, count: int,
                     tags=None, tag: str = _TAG) -> list[tuple[str, str]]:
-    """[(day label, script)] for the last `days` days before today whose
-    episode was made with full-length audio, oldest first. Anything else (no
-    record, cut-off audio, a missing script file) is skipped and logged."""
+    """[(day label, script)] for the last `count` published episodes before
+    today with full-length audio, oldest first, however far apart they are
+    (the shows run when James needs them, 11/5). An unpublished episode
+    reached nobody and is not looked at; one with cut-off audio or a
+    missing script file is skipped and logged."""
     out = []
-    for back in range(days, 0, -1):
-        day = now - timedelta(days=back)
-        key = day.strftime("%Y-%m-%d")
-        record = episodes.get(key)
-        if not record:
+    for key, record in reversed(published_episodes(
+            episodes, now.strftime("%Y-%m-%d"))):
+        if len(out) >= count:
+            break
+        try:
+            day = datetime.strptime(key, "%Y-%m-%d")
+        except ValueError:
             continue
         if not record.get("audio_complete"):
             log.info(f"[{tag}] {key}: not counted as covered (audio was not "
@@ -1628,6 +1818,7 @@ def earlier_scripts(episodes: dict, archive: Path, now: datetime, days: int,
                         f"counted as covered")
             continue
         out.append((day_label(day), strip_tags(text, tags)[:_COVERED_CAP]))
+    out.reverse()
     if out:
         log.info(f"[{tag}] already covered: {', '.join(d for d, _ in out)}")
     return out
@@ -1659,6 +1850,14 @@ def _feed_cli(config: dict, args: list[str], show: Show | None = None) -> None:
                      f"{attrs.get('title')!r} (private: "
                      f"{attrs.get('private_show', attrs.get('private'))})")
         return
+    if "--episodes" in args:
+        show_id = config.get(s.key("show_id"))
+        if not show_id:
+            log.error(f"[{s.tag}] {s.key('show_id')} is not set in "
+                      f"config.json")
+            return
+        log_feed(key, str(show_id), s.tag)
+        return
     i = args.index("--subscribe")
     email = args[i + 1] if i + 1 < len(args) else ""
     show_id = config.get(s.key("show_id"))
@@ -1676,7 +1875,7 @@ def run_cli(config: dict, data_dir: Path, show: Show | None = None) -> None:
     s = _sh(show)
     tag = s.tag
     args = sys.argv[1:]
-    if "--shows" in args or "--subscribe" in args:
+    if "--shows" in args or "--subscribe" in args or "--episodes" in args:
         _feed_cli(config, args, s)
         return
     if not enabled(config, s):
@@ -1708,6 +1907,8 @@ def run_cli(config: dict, data_dir: Path, show: Show | None = None) -> None:
             _write_state(data_dir, state, s)
             log.info(f"[{tag}] published episode {mine['episode_id']} "
                      f"(created on the earlier run)")
+            check_published(config["transistor_api_key"], mine["episode_id"],
+                            tag)
         except Exception as e:
             log.warning(f"[{tag}] publish retry FAILED: {e}")
         return
@@ -1732,24 +1933,35 @@ def run_cli(config: dict, data_dir: Path, show: Show | None = None) -> None:
     today_s = now.strftime("%Y-%m-%d (%A)")
     target, max_words = word_limits(config, s)
     tags = audio_tags(config, s)
-    used = {e.get("edition") for d, e in episodes.items()
-            if e.get("edition") and not (force and d == today)}
+    # Everything since the last published episode, however long ago: James
+    # runs the shows when he needs them, not on a schedule (11/5). Only
+    # published episodes count, so what an unpublished one used comes round
+    # again.
+    start = period_start(episodes, now, tag)
+    since = since_label(start, now)
+    log.info(f"[{tag}] covering since {since} "
+             f"({start.strftime('%Y-%m-%d %I:%M %p')})")
+    heard = published_episodes(episodes, today)
+    used = {d for _, e in heard
+            for d in [e.get("edition"), *(e.get("editions") or [])] if d}
     edition = None
     if s.gather:
-        used_inputs = {i for d, e in episodes.items()
-                       if not (force and d == today)
-                       for i in e.get("inputs") or []}
-        edition = s.gather(config, now, used_inputs, tag)
+        used_inputs = {i for _, e in heard for i in e.get("inputs") or []}
+        edition = s.gather(config, now, used_inputs, tag, since=start.date())
         if edition is None:
-            log.info(f"[{tag}] no new {s.edition_word} today; cases only")
+            log.info(f"[{tag}] no new {s.edition_word} since {since}; cases "
+                     f"only")
     elif root is None:
         log.warning(f"[{tag}] {s.edition_word} folder not found (set "
                     f"{s.key('root')}); cases only")
     else:
-        edition = pick_edition(root, now, used, tag)
+        edition = pick_edition(root, now, used, tag, since=start.date())
         if edition is None:
-            log.warning(f"[{tag}] no complete, unused {s.edition_word} for "
-                        f"today or yesterday under {root}; cases only")
+            log.warning(f"[{tag}] no complete, unused {s.edition_word} since "
+                        f"{since} under {root}; cases only")
+        elif len(edition.get("dates") or []) > 1:
+            log.info(f"[{tag}] {len(edition['dates'])} editions merged: "
+                     f"{', '.join(edition['dates'])}")
     topics = [topic_card(client, model, m, today_s, style["topic"],
                          listener(config, s), s)
               for m in (edition["memos"] if edition else [])]
@@ -1757,18 +1969,19 @@ def run_cli(config: dict, data_dir: Path, show: Show | None = None) -> None:
         if c.get("error"):
             log.warning(f"[{tag}] topic {c['title']}: {c['error']}")
 
-    cases, note = collect_cases(config, client, model, now, rrids, s)
+    cases, note = collect_cases(config, client, model, now, rrids, s,
+                                start=start)
     if note != "ok":
         log.warning(f"[{tag}] no case segment: {note}")
     active = [c for c in cases if not c.get("quiet") and not c.get("error")]
     good_topics = [c for c in topics if not c.get("error")]
     if not good_topics and not active:
-        log.warning(f"[{tag}] nothing to report today (no {s.edition_word} "
-                    f"cards, no case activity); no episode")
+        log.warning(f"[{tag}] nothing to report since {since} (no "
+                    f"{s.edition_word} cards, no case activity); no episode")
         return
 
     title = f"{s.name} — {day_label(now)}"
-    notes = render_notes(topics, cases, s)
+    notes = render_notes(topics, cases, s, since)
     voices, hosts = _settings(config, s)
     opener = opener_index(config.get(s.key("opener")), now)
     if config.get(s.key("opener")) == "alternate":
@@ -1777,7 +1990,7 @@ def run_cli(config: dict, data_dir: Path, show: Show | None = None) -> None:
     covered = earlier_scripts(episodes, archive, now,
                               repeat_days(config, s), tags, tag)
     turns = write_script(client, model,
-                         cards_text(topics, cases, s.topic_label),
+                         cards_text(topics, cases, s.topic_label, since),
                          today_s, hosts, listener(config, s), style["script"],
                          target, max_words, tags, covered, opener, s)
     if not turns:
@@ -1837,8 +2050,12 @@ def run_cli(config: dict, data_dir: Path, show: Show | None = None) -> None:
                  stats, log_tag=tag, show=s)
 
     record = {"edition": edition["date"] if edition else None,
+              **({"editions": edition["dates"]}
+                 if edition and len(edition.get("dates") or []) > 1 else {}),
               **({"inputs": edition["inputs"]}
                  if edition and edition.get("inputs") else {}),
+              "covered_from": start.isoformat(),
+              "covered_to": now.astimezone().isoformat(),
               "title": title, "mp3": str(mp3),
               "cases": [c["title"] for c in cases if not c.get("quiet")],
               "published": False, "words": words,
@@ -1876,6 +2093,7 @@ def run_cli(config: dict, data_dir: Path, show: Show | None = None) -> None:
     _write_state(data_dir, state, s)
     log.info(f"[{tag}] published {title!r} to Transistor (episode "
              f"{record['episode_id']})")
+    check_published(key, record["episode_id"], tag)
 
 
 # ---------------------------------------------------------------------------

@@ -92,7 +92,7 @@ Rocky — Virtual Paralegal
       warned about, never drafted. No digest file = quiet day, exits quietly.
 
   python rocky.py --kirsten-digest [--days N] [--dry-run] [--force] [--no-podcast] [--audio] [--no-publish] [RRID-XXXX ...]  (on demand)
-  python rocky.py --kirsten-digest --shows | --subscribe EMAIL
+  python rocky.py --kirsten-digest --shows | --episodes | --subscribe EMAIL
       The Kirsten Digest, sent as the "Weekly Gallagher-Bozzuto Litigation
       Report": what happened since the last report and next steps for
       every case marked yes in the case index's "Kirsten Digest?" column,
@@ -104,26 +104,28 @@ Rocky — Virtual Paralegal
       (--no-podcast skips it; a dry run writes the script, --audio voices
       it). See kirsten_digest.py and kirsten_podcast.py.
 
-  python rocky.py --sams-podcast [--dry-run] [--audio] [--force] [--no-publish] [RRID-XXXX ...]  (6:00 AM daily)
-  python rocky.py --sams-podcast --shows | --subscribe EMAIL
-      Sam's Podcast: a daily two-host show (about 10 min) from the day's
-      sports research edition in the "Sam's Podcast" OneDrive folder plus
-      yesterday's activity on every case marked yes in the case index's
-      "Sam's Podcast" column. Cards per topic and case become the show
-      notes; ElevenLabs voices the script; the episode is published to a
-      private Transistor.fm show Sam subscribes to. Internal audience.
-      --shows lists Transistor shows; --subscribe adds Sam's private feed.
+  python rocky.py --sams-podcast [--dry-run] [--audio] [--force] [--no-publish] [RRID-XXXX ...]  (on demand)
+  python rocky.py --sams-podcast --shows | --episodes | --subscribe EMAIL
+      Sam's Podcast: a two-host show (about 10 min) from the sports
+      research editions in the "Sam's Podcast" OneDrive folder plus the
+      activity on every case marked yes in the case index's "Sam's
+      Podcast" column, all since the last published episode. Cards per
+      topic and case become the show notes; ElevenLabs voices the script;
+      the episode is published to a private Transistor.fm show Sam
+      subscribes to. Internal audience. --shows lists Transistor shows;
+      --episodes lists the show's last ten episodes as Transistor holds
+      them, and its subscribers; --subscribe adds Sam's private feed.
       See sams_podcast.py.
 
-  python rocky.py --multifamily-feud [--dry-run] [--audio] [--force] [--no-publish] [RRID-XXXX ...]  (5:00 AM daily)
-  python rocky.py --multifamily-feud --shows | --subscribe EMAIL
-      Multifamily Feud: Sam's Podcast's engine for an internal daily show
-      on fee and multifamily class action defense, hosted by Archie and
-      Frieda (they take turns opening). Sources: the day's edition in the
-      Fee Class Action Tracker's Daily Reports folder (RRID-0045,
-      REPORT_WORKFLOW.md there) and yesterday's activity on cases marked
-      yes in the case index's "Multifamily Feud?" column. Published to its
-      own private Transistor show. See multifamily_feud.py.
+  python rocky.py --multifamily-feud [--dry-run] [--audio] [--force] [--no-publish] [RRID-XXXX ...]  (on demand)
+  python rocky.py --multifamily-feud --shows | --episodes | --subscribe EMAIL
+      Multifamily Feud: Sam's Podcast's engine for an internal show on
+      fee and multifamily class action defense, hosted by Archie and
+      Frieda (they take turns opening). Sources, all since the last
+      published episode: the reports in the Multifamily Feud case
+      folder's three report folders (RRID-0045) and the activity on cases
+      marked yes in the case index's "Multifamily Feud?" column. Published
+      to its own private Transistor show. See multifamily_feud.py.
 
 
   python rocky.py --vault [--dry-run] [--source inbox|vault-mail|dropbox] [--backfill-days N] [--limit N]  (3:00 PM daily)
@@ -6656,17 +6658,17 @@ def main():
         print("                                          8 AM-7 PM); feeds the Multifamily Digest")
         print("  --maple-pma-activity [--dry-run] [--backfill-days N]  Export PMA emails folder to JSONL for the Maple updater (legacy alias: --pma-activity)")
         print("  --maple-digest [--date YYYY-MM-DD] [--yesterday] [--dry-run]  Draft the Maple PMA digest into James's Drafts (James sends)")
-        print("  --kirsten-digest [--days N] [--dry-run] [--force] [--no-podcast] [--audio] [--no-publish] [RRID-XXXX ...] | --shows | --subscribe EMAIL")
+        print("  --kirsten-digest [--days N] [--dry-run] [--force] [--no-podcast] [--audio] [--no-publish] [RRID-XXXX ...] | --shows | --episodes | --subscribe EMAIL")
         print("                                          Gallagher-Bozzuto Litigation Report (on demand): drafts what happened")
         print("                                          since the last report + next steps for every case marked yes in the")
         print("                                          case index's Kirsten Digest? column, To Kirsten, into James's Drafts;")
         print("                                          the audio version goes to its private Transistor feed")
-        print("  --sams-podcast [--dry-run] [--audio] [--force] [--no-publish] [RRID-XXXX ...] | --shows | --subscribe EMAIL")
-        print("                                          Sam's Podcast (6 AM daily): sports research + yesterday's case")
-        print("                                          activity as a two-host episode on a private Transistor feed")
-        print("  --multifamily-feud [--dry-run] [--audio] [--force] [--no-publish] [RRID-XXXX ...] | --shows | --subscribe EMAIL")
-        print("                                          Multifamily Feud (5 AM daily): the tracker's daily class action")
-        print("                                          report + yesterday's case activity, on its own private feed")
+        print("  --sams-podcast [--dry-run] [--audio] [--force] [--no-publish] [RRID-XXXX ...] | --shows | --episodes | --subscribe EMAIL")
+        print("                                          Sam's Podcast (on demand): sports research + case activity since")
+        print("                                          the last episode, two hosts, on a private Transistor feed")
+        print("  --multifamily-feud [--dry-run] [--audio] [--force] [--no-publish] [RRID-XXXX ...] | --shows | --episodes | --subscribe EMAIL")
+        print("                                          Multifamily Feud (on demand): class action reports + case activity")
+        print("                                          since the last episode, on its own private feed")
         print("  --vault        [--dry-run] [--source inbox|vault-mail|dropbox] [--backfill-days N] [--limit N] [--max-age-days N]")
         print("                 --status | --reindex | --dropbox-auth <account>")
         print("                 --cleanup [--execute] [--force]  Merge fragmented property/tenant folders (dry-run writes _vault\\cleanup_plan.txt)")

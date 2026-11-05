@@ -537,11 +537,12 @@ def publish(config: dict, mp3: Path, title: str, notes: str,
     record["published"] = True
     log.info(f"[kirsten podcast] published {title!r} to Transistor "
              f"(episode {record['episode_id']})")
+    sp.check_published(key, record["episode_id"], "kirsten podcast")
     return True
 
 
 def feed_cli(config: dict, args: list[str]) -> None:
-    """--kirsten-digest --shows | --subscribe EMAIL."""
+    """--kirsten-digest --shows | --episodes | --subscribe EMAIL."""
     import sams_podcast as sp
     key = config.get("transistor_api_key")
     if not key:
@@ -554,6 +555,13 @@ def feed_cli(config: dict, args: list[str]) -> None:
             log.info(f"[kirsten podcast] show id {found.get('id')}: "
                      f"{attrs.get('title')!r} (private: "
                      f"{attrs.get('private_show', attrs.get('private'))})")
+        return
+    if "--episodes" in args:
+        if not show_id(config):
+            log.error("[kirsten podcast] kirsten_podcast_show_id is not set "
+                      "in config.json")
+            return
+        sp.log_feed(key, str(show_id(config)), "kirsten podcast")
         return
     i = args.index("--subscribe")
     email = args[i + 1] if i + 1 < len(args) else ""

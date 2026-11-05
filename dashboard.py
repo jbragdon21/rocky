@@ -194,10 +194,10 @@ ROCKY_COMMANDS = [
     {"flag": "kirsten-digest", "label": "Kirsten Digest", "group": "Litigation", "dry_run": True, "desc": "Gallagher-Bozzuto Litigation Report — what happened since the last report and next steps for the cases marked for Kirsten, into James's Drafts; the audio version goes to her private GC Updates podcast feed"},
     # Daily, 6 AM: after the 1 AM research edition lands in the Sam's
     # Podcast folder. Publishes to a private Transistor feed.
-    {"flag": "sams-podcast", "label": "Sam's Podcast", "group": "Litigation", "dry_run": True, "desc": "Daily two-host episode — the morning's sports research and yesterday's activity on the cases marked for Sam, published to Sam's private feed", "sched_time": "06:00", "recommended": True},
+    {"flag": "sams-podcast", "label": "Sam's Podcast", "group": "Litigation", "dry_run": True, "desc": "Two-host episode — the sports research and the activity on the cases marked for Sam since the last episode, published to Sam's private feed", "sched_time": "06:00", "recommended": True},
     # Daily, 5 AM (James, 10/26): the Fee Class Action Tracker's daily
     # report plus yesterday's activity on the cases marked for the show.
-    {"flag": "multifamily-feud", "label": "Multifamily Feud", "group": "Litigation", "dry_run": True, "desc": "Daily two-host class action episode — the tracker's daily report and yesterday's activity on the cases marked for the show, published to its private feed", "sched_time": "05:00", "recommended": True},
+    {"flag": "multifamily-feud", "label": "Multifamily Feud", "group": "Litigation", "dry_run": True, "desc": "Two-host class action episode — the tracker's reports and the activity on the cases marked for the show since the last episode, published to its private feed", "sched_time": "05:00", "recommended": True},
     {"flag": "litigation-learn", "label": "Litigation Learn", "group": "Litigation", "dry_run": False, "desc": "Fold the week's Teams feedback into the litigation brain"},
     # LetterStream's documented slot is 8:00 AM, but it's deliberately NOT
     # "recommended": the --monitor loop already runs it every 10 minutes

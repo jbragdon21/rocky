@@ -15,6 +15,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import kirsten_digest as kd  # noqa: E402
 import kirsten_podcast as kp  # noqa: E402
+import sams_podcast as sp  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_transistor_read_back(monkeypatch):
+    """A publish reads the episode back from Transistor; never for real."""
+    monkeypatch.setattr(sp, "check_published", lambda *a, **k: None)
 
 
 @pytest.fixture(autouse=True)

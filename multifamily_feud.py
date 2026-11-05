@@ -3,8 +3,9 @@ Multifamily Feud: a daily two-host show on fee and multifamily class actions
 ===========================================================================
 
     python rocky.py --multifamily-feud [--dry-run] [--audio] [--force]
-                                       [--no-publish] [RRID-XXXX ...]   (5:00 AM daily)
+                                       [--no-publish] [RRID-XXXX ...]   (on demand)
     python rocky.py --multifamily-feud --shows
+    python rocky.py --multifamily-feud --episodes
     python rocky.py --multifamily-feud --subscribe EMAIL
 
 Sam's Podcast's engine (sams_podcast.py) with this show's profile, FEUD.
@@ -21,15 +22,18 @@ with nothing new just leaves that source out of the episode.
               Tracked Cases\\Daily Summary of Tracked Cases
                                                        what changed in tracked cases
             Each readable file (.md .txt .docx .pdf, top level only; names
-            starting with . _ or ~ skipped) dated today or yesterday counts,
-            by the YYYY-MM-DD in its name, else the day it was last saved. A
-            file is used once: the episode records it, and a file saved
-            again later counts as new. A long file is split at its "## "
+            starting with . _ or ~ skipped) dated from the last published
+            episode's day through today counts, by the YYYY-MM-DD in its
+            name, else the day it was last saved. A file is used once: the
+            published episode records it, and a file saved again later
+            counts as new. A long file is split at its "## "
             headings into cards of at most 12,000 characters.
 
-  CASES     Yesterday's activity on every open case marked yes in the case
-            index's "Multifamily Feud?" column (any header containing
-            "feud"). Quiet cases are named in one line.
+  CASES     The activity since the last published episode on every open
+            case marked yes in the case index's "Multifamily Feud?" column
+            (any header containing "feud"). Quiet cases are named in one
+            line. James runs the show when he needs it, not daily (11/5);
+            sams_podcast.period_start says where the period begins.
 
 Show folder (style guide, intro music, _Episodes): Podcasts\\Multifamily Feud
 in rocky@'s OneDrive (on James's laptop "Rocky's files - Podcasts\\Multifamily
@@ -162,14 +166,16 @@ def split_report(text: str, cap: int = sp._MEMO_CAP) -> list[str]:
 
 
 def gather(config: dict, now: datetime, used: set[str],
-           tag: str = _TAG) -> dict | None:
-    """The report cards' material: every new readable file dated today or
-    yesterday in the three report folders, each split into pieces.
+           tag: str = _TAG, since: date | None = None) -> dict | None:
+    """The report cards' material: every new readable file dated from
+    `since` (the last published episode's day; default yesterday) through
+    today in the three report folders, each split into pieces. Files a
+    published episode used (`used`) are skipped.
     {"date", "memos", "inputs"}, or None when no folder has anything new."""
     folder = tracker_root(config)
     if folder is None:
         return None
-    days = {now.date(), now.date() - timedelta(days=1)}
+    floor = since or (now.date() - timedelta(days=1))
     memos: list[dict] = []
     inputs: list[str] = []
     for label, parts in SOURCES:
@@ -177,13 +183,14 @@ def gather(config: dict, now: datetime, used: set[str],
         if not where.is_dir():
             log.warning(f"[{tag}] {label}: no folder {where}")
             continue
-        found = 0
+        found: list[tuple[Path, date, str, str]] = []
         for path in sorted(where.iterdir(), key=lambda p: p.name):
             if not path.is_file() or path.suffix.lower() not in _READABLE \
                     or _SKIP_NAME.search(path.name):
                 continue
             try:
-                if file_day(path) not in days:
+                day = file_day(path)
+                if not floor <= day <= now.date():
                     continue
                 if now.timestamp() - path.stat().st_mtime < _SETTLE_SECONDS:
                     log.info(f"[{tag}] {label}: {path.name} was just saved; "
@@ -200,16 +207,22 @@ def gather(config: dict, now: datetime, used: set[str],
                 log.warning(f"[{tag}] {label}: {path.name} is empty or "
                             f"unreadable; skipped")
                 continue
+            found.append((path, day, key, text))
+        # Several days since the last episode: each file's cards carry its
+        # date, so three research memos don't read as one.
+        dated = len(found) > 1
+        for path, day, key, text in found:
+            name = f"{label}, {day.strftime('%b')}. {day.day}" if dated \
+                else label
             pieces = split_report(text)
             for i, piece in enumerate(pieces, 1):
-                topic = label if len(pieces) == 1 else \
-                    f"{label} ({i} of {len(pieces)})"
+                topic = name if len(pieces) == 1 else \
+                    f"{name} ({i} of {len(pieces)})"
                 memos.append({"topic": topic, "file": path.name,
                               "text": piece})
             inputs.append(key)
-            found += 1
         log.info(f"[{tag}] {label}: "
-                 + (f"{found} new file(s)" if found else "nothing new"))
+                 + (f"{len(found)} new file(s)" if found else "nothing new"))
     if not memos:
         return None
     return {"date": now.strftime("%Y-%m-%d"), "memos": memos,
@@ -218,12 +231,13 @@ def gather(config: dict, now: datetime, used: set[str],
 
 TOPIC_CORE = """# Goal
 
-Turn one of today's reports (or one part of a long one) into a card for Multifamily Feud, Gallagher LLP's internal daily audio show on fee and multifamily class action defense. The card is the show notes for this report and the only source the hosts will read from.
+Turn one of the reports that came in since the last episode (or one part of a long one) into a card for Multifamily Feud, Gallagher LLP's internal daily audio show on fee and multifamily class action defense. The card is the show notes for this report and the only source the hosts will read from.
 
 TOPIC names the report:
 - "Daily research memo": the overnight research memo on fee and multifamily class actions (decisions, filings, legislation, follow-up for our matters).
 - "Courthouse News hits": fee or multifamily class action items flagged from the day's Courthouse News brief.
 - "Tracked cases summary": what changed in the outside cases we track.
+A date after the name ("Daily research memo, Nov. 3") is the day that report is for: more than one came in since the last episode. Keep that report's items on its own day.
 
 MEMO is that report's text.
 
@@ -260,22 +274,22 @@ Output the JSON object and nothing else."""
 
 CASE_CORE = """# Goal
 
-Write one case's card for Multifamily Feud, Gallagher LLP's internal daily audio show on fee and multifamily class action defense. Gallagher defends this case. The card covers the activity recorded on the case YESTERDAY.
+Write one case's card for Multifamily Feud, Gallagher LLP's internal daily audio show on fee and multifamily class action defense. Gallagher defends this case. The card covers the activity recorded on the case since PERIOD START, the last episode.
 
 # Input
 
-The case's identity, the activity recorded YESTERDAY (a line ending [by NAME] is that person's work), and background: the case overview and status memorandum, when they exist.
+The case's identity, the activity recorded since PERIOD START (a line ending [by NAME] is that person's work), and background: the case overview and status memorandum, when they exist.
 
 # Output
 
 Return ONLY a JSON object:
 {
   "status": "<one sentence>",
-  "yesterday": [{"date": "<YYYY-MM-DD the development itself happened, or null>", "text": "<bullet>"}, ...],
+  "developments": [{"date": "<YYYY-MM-DD the development itself happened, or null>", "text": "<bullet>"}, ...],
   "next_steps": [{"date": "<YYYY-MM-DD of the date the bullet leads with, or null>", "text": "<bullet>"}, ...]
 }
 
-- "yesterday": developments from yesterday's activity only. An activity line can describe an older event, so check the event's own date and leave out anything before YESTERDAY.
+- "developments": developments from the activity since PERIOD START only, which can be several days. An activity line can describe an older event, so check the event's own date and leave out anything before PERIOD START. When PERIOD START is before yesterday, lead each bullet with the date it happened as the sources give it ("Nov. 3: ...").
 - "next_steps": date order, soonest first, undated last. Every hearing or deadline on or after TODAY that the sources state belongs here. If nothing is pending, return [{"date": null, "text": "Nothing pending."}].
 
 # Guardrails
@@ -300,7 +314,7 @@ Write the script for today's episode of Multifamily Feud, Gallagher LLP's intern
 
 # Sources
 
-You receive the day's cards. REPORT cards come from the day's outside reports: the overnight research memo, Courthouse News hits and the daily summary of tracked cases. Not every report comes every day. CASE cards are yesterday's activity on the matters Gallagher defends. The cards are your only source. Follow the STYLE GUIDE below for the show's shape, tone, pacing and delivery. Where it conflicts with these guardrails, the guardrails win.
+You receive the cards. They cover everything since the last episode, which can be several days. REPORT cards come from the outside reports that came in since then: the overnight research memos, Courthouse News hits and the daily summaries of tracked cases. Not every report comes every day. CASE cards are the activity on the matters Gallagher defends since the last episode (CASE ACTIVITY PERIOD says since when). The cards are your only source. Follow the STYLE GUIDE below for the show's shape, tone, pacing and delivery. Where it conflicts with these guardrails, the guardrails win.
 
 # Output
 
@@ -312,11 +326,12 @@ Return ONLY a JSON object:
 - Use only facts in the cards. Add nothing from your own knowledge: no holdings, judges, parties, dates, case history or law the cards don't state. This step is important.
 - Keep anything pending, conditional, reported or unconfirmed exactly that. A ruling that is not on a card has not happened.
 - A date before TODAY is past: never present it as upcoming.
+- Say when something happened by its day; call it "yesterday" or "overnight" only if it was.
 - The show is internal: name parties, courts, judges and Gallagher people where the cards do. Nobody's work is "you": say who did it, or "the team".
 - The hosts give a card's angles as their view. They do not predict how any case will come out.
 - If a section has no cards, do not mention it anywhere, including the preview.
 - Never mention Rocky, AI, ChatGPT, activity logs, cards, memos, the research memo or the hit reports: the hosts just know the news. Crediting a news outlet for an item that rests on its reporting is fine.
-- ALREADY COVERED (when given) is what the listeners heard in earlier episodes. It is context, not a source: a brief callback to what an earlier episode said is fine ("as we said yesterday"), but every new fact must be on today's cards. Handle repeats as the style guide's Repeats section says.
+- ALREADY COVERED (when given) is what the listeners heard in earlier episodes. It is context, not a source: a brief callback to what an earlier episode said is fine ("as we said last time"), but every new fact must be on today's cards. Handle repeats as the style guide's Repeats section says.
 - At most {max_words} words in total across all turns; anything longer is cut off.
 - Spoken words only: no case, docket or inquiry numbers, no citations, no URLs, no markdown, no stage directions, no emojis. Write numbers, money and symbols as words ("a hundred and twenty-five dollars").
 - {tag_rule}
@@ -334,7 +349,7 @@ You receive TODAY, a CALENDAR, the CARDS, sometimes ALREADY COVERED (earlier epi
 
 Check every turn, one claim at a time, including the opening preview and the close, which summarize several cards at once and are where facts get crossed. For each case, court, judge or person a turn names, confirm the claim is on THAT card.
 
-Find every turn that states something the cards do not support: a holding, ruling, date, court, judge, party, amount or name not in the cards; a fact moved to the wrong case (one case's ruling credited to another, or an outside decision presented as one of our own cases); a past date presented as upcoming; something pending, reported or unconfirmed presented as decided; a prediction of how a case will come out; or anyone's work described as "you". A weekday is wrong only if the CALENDAR says so: never change one from your own reckoning. A brief callback to an earlier episode ("again", "as we said yesterday") is fine when ALREADY COVERED says it; anything else must be on today's cards. The hosts' discussion of a card's angles, given as their view, is fine. Delivery cues in brackets ([curious], [chuckles], ...) are not claims: leave them. Wording and style are not your concern.
+Find every turn that states something the cards do not support: a holding, ruling, date, court, judge, party, amount or name not in the cards; a fact moved to the wrong case (one case's ruling credited to another, or an outside decision presented as one of our own cases); a past date presented as upcoming; something pending, reported or unconfirmed presented as decided; a prediction of how a case will come out; or anyone's work described as "you". A weekday is wrong only if the CALENDAR says so: never change one from your own reckoning. A brief callback to an earlier episode ("again", "as we said last time") is fine when ALREADY COVERED says it; anything else must be on today's cards. The hosts' discussion of a card's angles, given as their view, is fine. Delivery cues in brackets ([curious], [chuckles], ...) are not claims: leave them. Wording and style are not your concern.
 
 Return ONLY a JSON object:
 {"fixes": [{"turn": <number>, "problem": "<short reason>", "text": "<the whole turn rewritten to say only what the cards support, same speaker voice and tone, swearing included, or empty to drop the turn>"}]}
@@ -486,7 +501,7 @@ Get the group through the day's class action news and our own docket in about te
 - **Opening.** {opener} opens: "Multifamily Feud", the day and date, and a one-line preview of the headlines. {other} answers in the second turn, ideally with a quip.
 - **Outside news.** The research memo's decisions, filings and legislation first, then the Courthouse News hits, then the tracked-case updates. For each decision give the case, the court, what it decided and on what ground, and why it matters to us. A source with no card today gets no mention.
 - A report gets airtime only for what is new and on point, so any source can go unmentioned on a given day. When the research memo finds nothing new overnight and fills in with older, newly discovered decisions, background guidance, or analogous authority from outside fee and multifamily class actions, leave that material out. The exception is an older item that bears directly on one of our cases: give it one line, with its date. The hosts pass over a skipped source without remarking on it.
-- **Our docket.** Hand off clearly ("Now to our own docket."). For each active case: what happened yesterday, who did it, and what comes next and when. Then the quiet cases in one turn: name them, nothing more. If there are no case cards, skip this segment.
+- **Our docket.** Hand off clearly ("Now to our own docket."). For each active case: what happened since the last episode, who did it, and what comes next and when. Then the quiet cases in one turn: name them, nothing more. If there are no case cards, skip this segment.
 - **Close.** The next key date in the outside news and on our docket, then a quick sign-off ("That's the Feud. Back tomorrow.").
 - The bold labels name the segments for you. A host never reads one out ("Close."): move between segments in conversation.
 
@@ -531,7 +546,7 @@ About {target} words in total (about ten minutes spoken). Budget roughly 60 word
 
 ALREADY COVERED holds the last few episodes the team heard.
 
-- Don't re-report a development already covered. If it still matters, give it one short callback ("As we said yesterday, ...") and move on.
+- Don't re-report a development already covered. If it still matters, give it one short callback ("As we said last time, ...") and move on.
 - Something new in an old story leads with the new part.
 - Upcoming hearings and deadlines may come up again in one line. Always mention anything in the next three days.
 - Background already given (a case's posture, the claims) gets a few words at most.
@@ -563,7 +578,7 @@ Joe's feedback on the show, newest last. Where a bullet here conflicts with anyt
 ## Case cards
 
 - **Status:** one sentence, at most 25 words: where the case stands (court, stage, next key date if known).
-- **Yesterday:** 0 to 5 substantive developments, one or two sentences each, with who did the work: filings and orders, hearings, discovery, settlement talk, deadlines set or moved, significant correspondence, significant work completed.
+- **Developments:** 0 to 5 substantive developments, one or two sentences each, with who did the work: filings and orders, hearings, discovery, settlement talk, deadlines set or moved, significant correspondence, significant work completed.
 - **Next steps:** 1 to 4 bullets: what happens next and who does it.
 """
 

@@ -1,6 +1,7 @@
 """Sam's Podcast: research editions (the manifest contract), the index
-column, yesterday's window, the cards the script is built from, the show
-notes, and the Transistor upload / create / publish calls.
+column, the period since the last published episode, the cards the script
+is built from, the show notes, and the Transistor upload / create /
+publish calls.
 
     python -m pytest tests/test_sams_podcast.py -q
 """
@@ -12,9 +13,19 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import pytest  # noqa: E402
+
 import dashboard  # noqa: E402
 import kirsten_digest as kd  # noqa: E402
 import sams_podcast as sp  # noqa: E402
+
+REAL_CHECK_PUBLISHED = sp.check_published
+
+
+@pytest.fixture(autouse=True)
+def _no_transistor_read_back(monkeypatch):
+    """A publish reads the episode back from Transistor; never for real."""
+    monkeypatch.setattr(sp, "check_published", lambda *a, **k: None)
 
 MEMO = """---
 topic: "Chicago Bears football"
@@ -72,6 +83,24 @@ def test_pick_edition_today_then_unused_yesterday(tmp_path):
     assert sp.pick_edition(tmp_path, now, {"2026-10-22"})["date"] == "2026-10-23"
 
 
+def test_pick_edition_merges_every_edition_since_the_last_episode(tmp_path):
+    now = datetime(2026, 10, 24, 9, 0)
+    for day in ("2026-10-20", "2026-10-21", "2026-10-22", "2026-10-24"):
+        _edition(tmp_path, day)
+    since = datetime(2026, 10, 21).date()
+    got = sp.pick_edition(tmp_path, now, {"2026-10-21"}, since=since)
+    assert got["dates"] == ["2026-10-24", "2026-10-22"]   # newest first
+    assert got["date"] == "2026-10-24"
+    (memo,) = got["memos"]                    # one topic, both editions
+    assert memo["topic"] == "Chicago Bears football"
+    assert memo["text"].index("=== EDITION 2026-10-24 ===") < \
+        memo["text"].index("=== EDITION 2026-10-22 ===")
+    assert memo["cap"] == sp._MERGED_MEMO_CAP
+    # One edition comes back as it is.
+    one = sp.pick_edition(tmp_path, now, set(), since=now.date())
+    assert one["dates"] == ["2026-10-24"] and "cap" not in one["memos"][0]
+
+
 def test_research_root_probes_both_onedrive_names(tmp_path):
     assert sp.research_root({}, home=tmp_path) is None
     share = tmp_path / "OneDrive - gejlaw.com" / "Rocky's files - Sam's Podcast"
@@ -101,10 +130,48 @@ def test_sam_column_and_selection():
     assert sp.sam_column([{"RRID#": "x", "Kirsten Digest?": "y"}]) is None
 
 
-def test_yesterday_window_is_local_midnight_to_midnight():
+def _local(*args):
+    return datetime(*args).astimezone()
+
+
+def test_period_start_goes_back_to_the_last_published_episode():
+    now = _local(2026, 11, 5, 9, 0)
+    # Nothing on record: since yesterday's midnight.
+    assert sp.period_start({}, now) == _local(2026, 11, 4)
+    # An episode from before 11/5 has no covered_to: it covered the day
+    # before it, so it ended at its own day's midnight.
+    episodes = {"2026-11-01": {"published": True}}
+    assert sp.period_start(episodes, now) == _local(2026, 11, 1)
+    # A newer episode records where it stopped.
+    episodes["2026-11-02"] = {"published": True, "covered_to":
+                              _local(2026, 11, 2, 17, 19).isoformat()}
+    assert sp.period_start(episodes, now) == _local(2026, 11, 2, 17, 19)
+    # Made but never published (failed upload, --no-publish): nobody heard
+    # it, so it doesn't end the period. Nor does today's own record.
+    episodes["2026-11-04"] = {"published": False, "covered_to":
+                              _local(2026, 11, 4, 17, 30).isoformat()}
+    episodes["2026-11-05"] = {"published": True, "covered_to":
+                              _local(2026, 11, 5, 6, 0).isoformat()}
+    assert sp.period_start(episodes, now) == _local(2026, 11, 2, 17, 19)
+    # Never more than MAX_PERIOD_DAYS back.
+    old = {"2026-09-01": {"published": True}}
+    assert sp.period_start(old, now) == \
+        _local(2026, 11, 5) - timedelta(days=sp.MAX_PERIOD_DAYS)
+
+
+def test_since_label():
+    now = _local(2026, 11, 5, 9, 0)
+    assert sp.since_label(_local(2026, 11, 5, 6, 0), now) == "earlier today"
+    assert sp.since_label(_local(2026, 11, 4), now) == "yesterday"
+    assert sp.since_label(_local(2026, 11, 4, 17, 30), now) == "yesterday"
+    assert sp.since_label(_local(2026, 11, 2, 17, 19), now) == \
+        "Monday, November 2"
+
+
+def test_events_between_is_start_inclusive_end_exclusive():
     now = datetime(2026, 10, 23, 6, 0).astimezone()
-    start, end = sp.yesterday_window(now)
-    assert (start.day, start.hour, end.day, end.hour) == (22, 0, 23, 0)
+    end = now.replace(hour=0)
+    start = end - timedelta(days=1)
     evs = [{"timestamp": (start - timedelta(minutes=1)).isoformat()},
            {"timestamp": start.isoformat(), "n": 1},
            {"timestamp": (end - timedelta(seconds=1))
@@ -128,7 +195,7 @@ TOPICS = [{"kind": "topic", "title": "Chicago Bears football",
            "angles": ["Is the defense real?"]},
           {"kind": "topic", "title": "Nationals", "error": "timeout"}]
 CASES = [{"kind": "case", "title": "Bulgin <A>", "subtitle": "EDVA",
-          "status": "MTD pending.", "yesterday": ["Opposition filed."],
+          "status": "MTD pending.", "developments": ["Opposition filed."],
           "next_steps": ["Nov. 19 — reply due."]},
          {"kind": "case", "title": "Hunt", "quiet": True},
          {"kind": "case", "title": "HRI", "error": "no case folder found"}]
@@ -140,15 +207,22 @@ def test_cards_text_skips_failed_and_lists_quiet():
     assert "Angles (opinion, for discussion):" in text
     assert "Nationals" not in text and "HRI" not in text
     assert "CASE: Bulgin <A> — EDVA" in text
+    assert "Since yesterday:\n- Opposition filed." in text
     assert "separate case):\n- Hunt" in text
     assert "CASE" not in sp.cards_text(TOPICS, [])
+    later = sp.cards_text(TOPICS, CASES, since="Monday, November 2")
+    assert "CASE ACTIVITY PERIOD: since Monday, November 2" in later
+    assert "no activity since Monday, November 2" in later
 
 
 def test_render_notes_escapes_and_flags_failures():
     notes = sp.render_notes(TOPICS, CASES)
     assert "<h3>Bulgin &lt;A&gt;</h3>" in notes
     assert "No card (timeout)" in notes
-    assert "<strong>Quiet yesterday:</strong> Hunt" in notes
+    assert "<strong>Quiet since yesterday:</strong> Hunt" in notes
+    assert "<strong>Since yesterday</strong>" in notes
+    later = sp.render_notes(TOPICS, CASES, since="Monday, November 2")
+    assert "<strong>Quiet since Monday, November 2:</strong> Hunt" in later
     assert "<h2>Cases</h2>" not in sp.render_notes(TOPICS, [])
 
 
@@ -777,9 +851,10 @@ def test_earlier_scripts_only_full_length_episodes(tmp_path):
         encoding="utf-8")
     (tmp_path / "2026-10-24 script.txt").write_text("AL: Cut-off day.\n",
                                                     encoding="utf-8")
-    episodes = {"2026-10-23": {"audio_complete": True},
-                "2026-10-24": {"audio_complete": False},
-                "2026-10-25": {"audio_complete": True}}      # today: never
+    episodes = {"2026-10-23": {"audio_complete": True, "published": True},
+                "2026-10-24": {"audio_complete": False, "published": True},
+                "2026-10-25": {"audio_complete": True,
+                               "published": True}}      # today: never
     now = datetime(2026, 10, 25, 6, 0)
     got = sp.earlier_scripts(episodes, tmp_path, now, 2)
     assert got == [("Friday, October 23, 2026",
@@ -789,6 +864,76 @@ def test_earlier_scripts_only_full_length_episodes(tmp_path):
     (tmp_path / "2026-10-24 script.txt").unlink()           # missing file
     assert [d for d, _ in sp.earlier_scripts(episodes, tmp_path, now, 2)] == \
         ["Friday, October 23, 2026"]
+
+
+def test_earlier_scripts_counts_published_episodes_not_days(tmp_path):
+    for day in ("2026-10-20", "2026-10-27", "2026-11-01", "2026-11-04"):
+        (tmp_path / f"{day} script.txt").write_text(f"AL: {day}.\n",
+                                                    encoding="utf-8")
+    episodes = {"2026-10-20": {"audio_complete": True, "published": True},
+                "2026-10-27": {"audio_complete": True, "published": True},
+                "2026-11-01": {"audio_complete": True, "published": True},
+                # Made, never published: nobody heard it.
+                "2026-11-04": {"audio_complete": True, "published": False}}
+    now = datetime(2026, 11, 5, 9, 0)
+    got = sp.earlier_scripts(episodes, tmp_path, now, 2)
+    assert [d for d, _ in got] == ["Tuesday, October 27, 2026",
+                                   "Sunday, November 1, 2026"]
+
+
+def test_check_published_reads_the_episode_back(monkeypatch, caplog):
+    seen = []
+
+    def fake_get(url, **kw):
+        seen.append(url)
+        return _Resp(body={"data": {"id": "987", "attributes": {
+            "status": "published", "published_at": "2026-11-05T09:30:00",
+            "audio_processing": True, "media_url": None}}})
+
+    monkeypatch.setattr(sp.requests, "get", fake_get)
+    with caplog.at_level("INFO"):
+        REAL_CHECK_PUBLISHED("KEY", "987")
+    assert seen == [f"{sp.TRANSISTOR}/episodes/987"]
+    assert "status published" in caplog.text
+    assert "audio processing" in caplog.text
+    # A failed audio job is a warning; a read error never raises.
+    monkeypatch.setattr(sp.requests, "get", lambda url, **kw: _Resp(body={
+        "data": {"attributes": {"status": "published",
+                                "processing_failure": "bad file"}}}))
+    caplog.clear()
+    REAL_CHECK_PUBLISHED("KEY", "987")
+    assert any(r.levelname == "WARNING" and "PROCESSING FAILED: bad file"
+               in r.getMessage() for r in caplog.records)
+    monkeypatch.setattr(sp.requests, "get",
+                        lambda url, **kw: _Resp(500, {"error": "down"}))
+    REAL_CHECK_PUBLISHED("KEY", "987")
+
+
+def test_episodes_flag_lists_episodes_and_subscribers(monkeypatch, caplog):
+    calls = []
+
+    def fake_get(url, **kw):
+        calls.append((url, kw.get("params")))
+        if url.endswith("/episodes"):
+            return _Resp(body={"data": [{"id": "1", "attributes": {
+                "title": "Sam's Podcast", "status": "draft",
+                "media_url": "https://m/1.mp3"}}]})
+        return _Resp(body={"data": [{"id": "9", "attributes": {
+            "email": "scowin@gallagherllp.com", "status": "subscribed",
+            "has_downloads": False, "feed_url": "https://feeds/x"}}]})
+
+    monkeypatch.setattr(sp.requests, "get", fake_get)
+    monkeypatch.setattr(sys, "argv", ["rocky.py", "--sams-podcast",
+                                      "--episodes"])
+    with caplog.at_level("INFO"):
+        sp.run_cli({"transistor_api_key": "K", "sams_podcast_show_id": "42"},
+                   Path("."))
+    assert calls[0] == (f"{sp.TRANSISTOR}/episodes",
+                        {"show_id": "42", "order": "desc",
+                         "pagination[per]": 10})
+    assert calls[1][0] == f"{sp.TRANSISTOR}/subscribers"
+    assert "status draft" in caplog.text
+    assert "scowin@gallagherllp.com: email status subscribed" in caplog.text
 
 
 def test_write_script_shows_earlier_episodes_as_context():
