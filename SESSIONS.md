@@ -24,6 +24,65 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-11-05 (4) — Joe's archive: access checked; message-class fix deployed
+
+James ran `rocky.exe --joe-archive --check` on the Rocky laptop after the
+12:06 deploy, then asked whether an interrupted backfill resumes, then said
+to fix the class bug first.
+
+**Check result**
+
+- The **app** path reads jdugan@'s Sent Items: 67,219 items, 15.1 GB,
+  2019-03-18 to 11/5. Listing and MIME download work. 566 GB free on C:.
+- `sample classes: (none) x10`: every class read blank (the bug below).
+- The paste stopped at the Disk line, so the filed-sends folder scan and
+  the `Saved check.json` line weren't seen.
+
+**What changed** (`199c943`)
+
+- `joe_archive/graph.py`: `prop_tag` parses an extended property id, and
+  `message_class` compares tags. It used to compare the text with
+  `String 0x001A`, but Graph answers with `String 0x1a`. On the old code
+  read receipts and recalls would be archived and every class stored
+  blank. A resumed backfill never revisits saved sends, so the fix had to
+  come before the first one.
+- `joe_archive/ingest.py`: when a class reads blank, `--check` prints the
+  property ids Graph returned.
+- Tests: fixtures use Graph's form (nine tests fail on the old code), plus
+  tag-parsing and check tests. 47 Joe tests, 364 in all.
+- `JOE_ARCHIVE_DESIGN.md` status, and the `acquire_app_token` docstring
+  (its mailbox list omits jdugan@, which the app token reads).
+
+**Deploy (11/5 12:20)**
+
+- rocky.exe only, from `199c943` in a throwaway worktree. dashboard.exe is
+  unchanged since 12:06.
+- Deployed hash = build output (52.4 MB). All 26 raw bundled .py files
+  equal `199c943`. The bundled `joe_archive.graph` has `prop_tag`. The exe
+  loads `--joe-archive --stats` and stops at the dev laptop's missing
+  config.
+- Backup: rocky.exe 11/5 12:06 in the session scratchpad.
+
+**Resume (answered for James)**
+
+- The backfill checkpoints every page of 50: rows committed, then the
+  cursor (newest send on the page) is written to `state.json` through a
+  temp file. A rerun lists from the cursor (`ge`), dedups by
+  internetMessageId, and redoes at most one page. Downloads go to `.part`
+  first. Failures retry first on the next run (up to 5). The run stops
+  itself on a page of all failures or under 2 GB free. The token
+  refreshes, and the lock dies with the process.
+
+**Next**
+
+- After the header shows `rocky` 11/5 12:20:
+  `rocky.exe --joe-archive --check --no-folders` should now say
+  `IPM.Note`.
+- Then `--backfill --limit 200` and a few `--search` runs, once Joe
+  agrees.
+
+---
+
 ## Session 2026-11-05 (3) — Deploy the branch tip, with Joe's Email Archive
 
 James asked to commit and push all current changes and repackage, with Joe's
