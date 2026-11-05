@@ -76,11 +76,42 @@ will pull.
     config.
 - Backup: rocky.exe 11/5 13:35 in the session scratchpad.
 
+**Backfill changes** (`c4eaaec`)
+
+- Sent Items as before, then a one-time **filed pass**. It lists every
+  other folder census-style, skipping Drafts, Outbox and Deleted Items
+  (`joe_archive_include_deleted`). It archives sends not yet archived, and
+  full copies of sends archived as shortcuts. `--filed` runs it alone. An
+  unlistable folder leaves it unfinished. `--sync` reads Sent Items only.
+- **Shortcuts** are archived and flagged in search hits and `--show`. A
+  later full copy replaces one in place (`store.upsert`): same ref, and the
+  index follows. A shortcut never replaces a full copy.
+- Found in review and fixed before commit: a retried failed shortcut would
+  have downloaded over a full copy archived meanwhile, since the `.eml` path
+  is keyed on the send. `_archive` now rechecks before downloading.
+- `--start YYYY-MM-DD` works only with a trial `--root`, never the real
+  archive. `--stats` counts shortcuts and filed sends. Failures remember
+  their folder.
+- Tests: 13 new, 76 Joe tests, 395 in all. The trial plan is in
+  `JOE_ARCHIVE_DESIGN.md`.
+
+**Deploy (11/5 15:20)**
+
+- rocky.exe only, from `c4eaaec`. Checks:
+  - deployed hash = build output;
+  - all 26 raw bundled .py files equal `c4eaaec`;
+  - the bundle has `filed_pass`, `upsert` and `SHORTCUT_NOTE`;
+  - the exe stops at the dev laptop's missing config.
+- Backup: rocky.exe 11/5 15:10 in the session scratchpad.
+- After the commit: a doc-only line in the `cli.py` help, not deployed.
+
 **Next**
 
-- After the header shows `rocky` 11/5 15:10, run
+- After the header shows `rocky` 11/5 15:20, run
   `rocky.exe --joe-archive --vault-check` and paste the output.
-- Backfill changes for the scope above are in progress.
+- Joe's agreement before the trial (`DATA_SECURITY.md`). Then follow the
+  trial plan: 100 oldest, 100 from 2024-06, 50 filed, all in
+  `C:\Rocky\joe_archive_trial`.
 
 ---
 

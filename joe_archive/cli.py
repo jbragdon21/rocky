@@ -52,7 +52,8 @@
 Common: --root <folder> overrides joe_archive_root (default
 <data>\\joe_archive_data: C:\\Rocky\\joe_archive_data on the Rocky laptop).
 Config: joe_archive_mailbox (jdugan@gallagherllp.com), joe_archive_auth
-(auto | app | delegated-read | delegated), joe_archive_min_free_gb (2).
+(auto | app | delegated-read | delegated), joe_archive_min_free_gb (2),
+joe_archive_include_deleted (false: the filed pass skips Deleted Items).
 """
 
 import argparse
