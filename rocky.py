@@ -318,6 +318,13 @@ ATTACHMENT_TEXT_CAP_TOTAL = 20000
 # and can return reports, so it gets more room than the classifier.
 DAILY_RUN_TEXT_CAP_PER_FILE = 20000
 DAILY_RUN_TEXT_CAP_TOTAL = 60000
+# A Courthouse News "My Daily Brief" is far longer: about 185,000 characters
+# as text (11/3/2026), some 190 rulings, a fifth of it tracking links. The
+# 20,000 cut showed the screen the first 20 rulings in court order. A brief
+# drops its links and gets its own cap; at that size it is a batch of its own.
+CNS_BRIEF_SENDER = "<reports@courthousenews.com>"
+CNS_BRIEF_TEXT_CAP = 250000
+_LINK_RE = re.compile(r"<?https?://\S+>?")
 DAILY_RUN_MAX_TOKENS = 8192
 # New files past DAILY_RUN_TEXT_CAP_TOTAL go to more calls in the same run,
 # at most this many a case; anything left waits for the next run.
@@ -2185,11 +2192,15 @@ def changed_files_block(case_folder: Path, files: list[Path]) -> str:
 
 def _raw_file_block(f: Path, text: str | None) -> str:
     """One new raw file as the daily run's prompt shows it: the name, then its
-    text up to DAILY_RUN_TEXT_CAP_PER_FILE."""
+    text up to DAILY_RUN_TEXT_CAP_PER_FILE (CNS_BRIEF_TEXT_CAP, links out, for
+    a saved Courthouse News brief, whose header names the sender)."""
     block = f"- **{f.name}**"
     if text:
-        capped = text[:DAILY_RUN_TEXT_CAP_PER_FILE]
-        if len(text) > DAILY_RUN_TEXT_CAP_PER_FILE:
+        cap = DAILY_RUN_TEXT_CAP_PER_FILE
+        if CNS_BRIEF_SENDER in text[:500].lower():
+            text, cap = _LINK_RE.sub("", text), CNS_BRIEF_TEXT_CAP
+        capped = text[:cap]
+        if len(text) > cap:
             capped += "\n[...truncated...]"
         block += f"\n```\n{capped}\n```"
     return block
@@ -3848,6 +3859,14 @@ def daily_digest(
             + ", ".join(f"{c.get('RRID#')} {str(c.get('File Name') or '').strip()}"
                         for c in unmapped)
         )
+    # A Case Folder path that is filled in but matches no Outlook folder.
+    for u in unresolved_mail_folders():
+        name = str(cases_by_rrid.get(str(u["rrid"]).upper(), {}).get("File Name") or "").strip()
+        alerts.append(
+            f"Email not read for {u['rrid']} {name}: its Case Folder path "
+            f"\"{u['path']}\" matches no Outlook folder. Correct the path in the "
+            f"case index, character for character (underscores count)."
+        )
 
     # (heading, body, rrid) — rrid tracked for co-counsel filtering.
     sections: list[tuple[str, str, str]] = []
@@ -4578,6 +4597,14 @@ DAILY_CASES_WATERMARK = STATE_DIR / "daily_cases_last_run.json"
 # A watermark older than this is ignored (a laptop off for a month shouldn't
 # pull a month of mail in one run); use --hours for a deliberate catch-up.
 DAILY_CASES_MAX_LOOKBACK = timedelta(days=7)
+# Case Folder paths the last full run found no Outlook folder for, read by the
+# digest's "Rocky needs attention" block. A filled-in path that resolved to
+# nothing used to be a log warning only: RRID-0045's index said "__Rocky" for
+# the "___Rocky" folder, and no Courthouse News brief was read 10/25-11/4/2026.
+DAILY_CASES_UNRESOLVED = STATE_DIR / "daily_cases_unresolved.json"
+# The digest ignores an older list, so a laptop that stopped running
+# --daily-cases doesn't keep a path on the alert list after it is fixed.
+DAILY_CASES_UNRESOLVED_MAX_AGE = timedelta(hours=36)
 
 
 def _case_folder_path(case: dict) -> str:
@@ -4620,6 +4647,43 @@ def _save_daily_cases_watermark(started_at: datetime) -> None:
             json.dumps({"started_at": started_at.isoformat()}), encoding="utf-8")
     except OSError as e:
         log.warning(f"Could not save {DAILY_CASES_WATERMARK}: {e}")
+
+
+def _save_unresolved_mail_folders(results: list[dict], checked_at: datetime) -> None:
+    """Record the cases whose Case Folder path matched no Outlook folder.
+
+    Rewritten by every full run, so a corrected path drops off the next day.
+    Nothing is written when there is nothing to report and no earlier list.
+    """
+    missing = [
+        {"rrid": r["rrid"], "path": str(r["reason"]).split(": ", 1)[1]}
+        for r in results
+        if str(r.get("reason") or "").startswith("folder_not_found: ")
+    ]
+    if not missing and not DAILY_CASES_UNRESOLVED.exists():
+        return
+    try:
+        DAILY_CASES_UNRESOLVED.parent.mkdir(parents=True, exist_ok=True)
+        DAILY_CASES_UNRESOLVED.write_text(
+            json.dumps({"checked_at": checked_at.isoformat(), "folders": missing}),
+            encoding="utf-8")
+    except OSError as e:
+        log.warning(f"Could not save {DAILY_CASES_UNRESOLVED}: {e}")
+
+
+def unresolved_mail_folders() -> list[dict]:
+    """[{rrid, path}] from the last full --daily-cases run, if it was recent."""
+    try:
+        saved = json.loads(DAILY_CASES_UNRESOLVED.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(saved, dict):
+        return []
+    ts = _parse_iso(saved.get("checked_at"))
+    if not ts or datetime.now(timezone.utc) - ts > DAILY_CASES_UNRESOLVED_MAX_AGE:
+        return []
+    return [f for f in saved.get("folders") or []
+            if isinstance(f, dict) and f.get("rrid") and f.get("path")]
 
 
 def daily_cases(
@@ -4700,6 +4764,9 @@ def daily_cases(
         _save_daily_cases_watermark(run_started)
     elif not read_any and results:
         log.warning("No case mail folder could be read — fetch watermark not advanced.")
+    # A one-case run saw only its own folder, so it leaves the list alone.
+    if not target_rrid:
+        _save_unresolved_mail_folders(results, run_started)
 
     return results
 

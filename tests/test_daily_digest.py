@@ -318,6 +318,11 @@ def test_digest_skips_borrowed_rrid_flags_alerts_and_scheduling(tmp_path, monkey
         {"RRID#": "RRID-0019", "File Name": "Ghumman, Saira", "Case Folder": "Inbox\\Ghumman"},
     ])
     monkeypatch.setattr(rocky, "datetime", _FrozenDatetime)
+    # Today's 4 PM fetch could not find Ghumman's Outlook folder.
+    unresolved = tmp_path / "daily_cases_unresolved.json"
+    unresolved.write_text(json.dumps({"checked_at": "2026-10-19T20:16:00+00:00", "folders": [
+        {"rrid": "RRID-0019", "path": "Inbox\\Ghumman"}]}), encoding="utf-8")
+    monkeypatch.setattr(rocky, "DAILY_CASES_UNRESOLVED", unresolved)
 
     def reply(kw):
         if "BIG DEADLINE" in kw["system"]:
@@ -333,6 +338,8 @@ def test_digest_skips_borrowed_rrid_flags_alerts_and_scheduling(tmp_path, monkey
     assert "Board, Bianca" in md.split("## Rocky Needs Attention")[1].split("---")[0]
     assert "RRID-0040 is on 2 folders" in md
     assert "Email not monitored" in md and "RRID-0004 Ricks, Sharday" in md
+    assert ('Email not read for RRID-0019 Ghumman, Saira: its Case Folder path '
+            '"Inbox\\Ghumman" matches no Outlook folder') in md
     sched = md.split("## Scheduling Info")[1].split("## Cases with No Activity")[0]
     assert "RRID-0004 — Ricks, Sharday: 2026-10-23" in sched.split("**On file**")[1]
     assert "RRID-0040 — Wall, Jesse: no scheduling order" in sched
@@ -367,10 +374,50 @@ def test_fetch_window_starts_at_last_completed_run(tmp_path, monkeypatch):
     assert rocky._daily_cases_since(now) == now - timedelta(hours=24)
 
 
+def test_unresolved_case_folder_is_recorded_for_the_digest(tmp_path, monkeypatch):
+    # 10/25-11/4/2026: RRID-0045's index said "Inbox\__Rocky\..." for the
+    # "___Rocky" folder; every run logged a warning and nothing else noticed.
+    _root(tmp_path, monkeypatch, "Multifamily Feud (RRID-0045)", "Ricks, Sharday (RRID-0004)")
+    mark, unresolved = tmp_path / "mark.json", tmp_path / "state" / "unresolved.json"
+    monkeypatch.setattr(rocky, "DAILY_CASES_WATERMARK", mark)
+    monkeypatch.setattr(rocky, "DAILY_CASES_UNRESOLVED", unresolved)
+    index = [{"RRID#": "RRID-0045", "File Name": "Fee Class Action Tracker",
+              "Case Folder": "Inbox\\__Rocky\\Junk Fees Digest"},
+             {"RRID#": "RRID-0004", "File Name": "Ricks, Sharday", "Case Folder": "Inbox\\Ricks"}]
+    monkeypatch.setattr(rocky, "load_case_index", lambda: index)
+    monkeypatch.setattr(rocky, "resolve_folder_path",
+                        lambda tok, user, path: None if "__Rocky" in path else "id-ricks")
+    monkeypatch.setattr(rocky, "fetch_folder_emails", lambda *a: [])
+
+    # A one-case run doesn't write the list; a full run does.
+    rocky.daily_cases(FakeClient("{}"), "tok", "j@x", "", target_rrid="RRID-0045")
+    assert not unresolved.exists()
+    results = rocky.daily_cases(FakeClient("{}"), "tok", "j@x", "")
+    assert [r.get("reason") for r in results] == [
+        "folder_not_found: Inbox\\__Rocky\\Junk Fees Digest", "no_emails_today"]
+    assert mark.exists()                     # Ricks was read, so the window moves
+    assert rocky.unresolved_mail_folders() == [
+        {"rrid": "RRID-0045", "path": "Inbox\\__Rocky\\Junk Fees Digest"}]
+
+    # A list from a run two days old is ignored.
+    saved = json.loads(unresolved.read_text(encoding="utf-8"))
+    saved["checked_at"] = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+    unresolved.write_text(json.dumps(saved), encoding="utf-8")
+    assert rocky.unresolved_mail_folders() == []
+
+    # Once the path is corrected, the next full run empties the list.
+    index[0]["Case Folder"] = "Inbox\\___Rocky\\Junk Fees Digest"
+    monkeypatch.setattr(rocky, "resolve_folder_path", lambda tok, user, path: "id")
+    rocky.daily_cases(FakeClient("{}"), "tok", "j@x", "")
+    assert json.loads(unresolved.read_text(encoding="utf-8"))["folders"] == []
+    assert rocky.unresolved_mail_folders() == []
+
+
 def test_daily_cases_without_case_folder_column_keeps_watermark(tmp_path, monkeypatch):
     _root(tmp_path, monkeypatch, "Castillo, Jose (RRID-0036)")
     mark = tmp_path / "mark.json"
     monkeypatch.setattr(rocky, "DAILY_CASES_WATERMARK", mark)
+    monkeypatch.setattr(rocky, "DAILY_CASES_UNRESOLVED", tmp_path / "unresolved.json")
     monkeypatch.setattr(rocky, "load_case_index",
                         lambda: [{"RRID#": "RRID-0036", "File Name": "Castillo, Jose "}])
     results = rocky.daily_cases(FakeClient("{}"), "tok", "j@x", "")

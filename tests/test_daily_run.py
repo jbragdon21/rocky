@@ -351,6 +351,32 @@ def test_batches_fit_the_cap(monkeypatch):
     assert rocky.daily_run_batches([]) == [[]]
 
 
+def test_courthouse_news_brief_is_read_whole_without_links_in_its_own_batch():
+    # 11/3/2026's brief ran 184,388 characters; the 20,000 cut showed the screen
+    # about 20 of its 190 rulings.
+    header = ("Subject: [EXTERNAL] My Daily Brief - Nov 3, 2026\n"
+              "From: Courthouse News Reports <reports@courthousenews.com>\n"
+              "Received: 2026-11-03T23:09:35Z\n\n---\n\n")
+    ruling = ("Doe\nv.\nRoe\n\nJ. Smith finds a fee claim fails. "
+              "View Case Details<https://www.courthousenews.com/c/abc123> | "
+              "Download Opinion<https://www.courthousenews.com/o/def456>\n\n")
+    brief = header + ruling * 1500 + "LAST RULING Hunt v. Avenue5"
+    block = rocky._raw_file_block(Path("20261103T2309_5789aefb_email.txt"), brief)
+    assert len(block) > rocky.DAILY_RUN_TEXT_CAP_TOTAL     # even without its links
+    assert "LAST RULING Hunt v. Avenue5" in block           # nothing cut
+    assert "[...truncated...]" not in block
+    assert "courthousenews.com/c/" not in block and "View Case Details |" in block
+    # Any other long file is still cut at the per-file cap.
+    other = rocky._raw_file_block(Path("memo.txt"), "From: Sam <s@x.com>\n" + "x" * 30000)
+    assert other.endswith("[...truncated...]\n```")
+    assert len(other) < rocky.DAILY_RUN_TEXT_CAP_PER_FILE + 200
+    # The brief, larger than a batch's budget, is reviewed in a call of its own.
+    batches = rocky.daily_run_batches([(Path("a.txt"), "short"),
+                                       (Path("brief.txt"), brief),
+                                       (Path("b.txt"), "short")])
+    assert [[f.name for f, _ in b] for b in batches] == [["a.txt"], ["brief.txt"], ["b.txt"]]
+
+
 def test_changed_files_skip_rocky_reports_and_cap_excerpts(tmp_path, monkeypatch):
     case = _case(tmp_path, "Courthouse News/Hit Reports")
     report = case / "Courthouse News" / "Hit Reports" / "R.md"
