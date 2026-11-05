@@ -18,6 +18,14 @@ from time_entries.mail import parse_utc
 
 SCHEMA_VERSION = "1"
 BODY_CAP = 200_000   # chars kept per body half; the .eml always has everything
+# An Enterprise Vault shortcut: a cut-down body and no attachments, standing
+# in for an email the Vault holds. It keeps the original's internetMessageId.
+SHORTCUT_PREFIX = "IPM.Note.EnterpriseVault.Shortcut"
+SHORTCUT_SQL = "message_class LIKE 'IPM.Note.EnterpriseVault.Shortcut%'"
+
+
+def is_shortcut(mclass: str | None) -> bool:
+    return (mclass or "").startswith(SHORTCUT_PREFIX)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
@@ -80,7 +88,8 @@ CREATE TABLE IF NOT EXISTS failures(
     subject   TEXT,
     error     TEXT,
     tries     INTEGER NOT NULL DEFAULT 1,
-    last_utc  TEXT
+    last_utc  TEXT,
+    folder    TEXT
 );
 """
 
@@ -103,6 +112,9 @@ def open_db(path: Path, read_only: bool = False) -> sqlite3.Connection:
         conn = sqlite3.connect(path, timeout=30)
         conn.execute("PRAGMA journal_mode=WAL")   # search while a backfill writes
         conn.executescript(SCHEMA)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(failures)")}
+        if "folder" not in cols:      # archives made before 11/5 (none ran live)
+            conn.execute("ALTER TABLE failures ADD COLUMN folder TEXT")
         conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES('schema_version', ?)",
                      (SCHEMA_VERSION,))
         conn.commit()
@@ -247,27 +259,66 @@ def insert(conn: sqlite3.Connection, row: dict) -> bool:
     return bool(cur.rowcount)
 
 
+def upsert(conn: sqlite3.Connection, row: dict) -> tuple[str, str | None]:
+    """("new" | "replaced" | "kept", old eml path). A full copy replaces an
+    archived Vault shortcut of the same send in place, so its ref stays;
+    anything else already archived is left alone. "replaced" comes with the
+    shortcut's .eml path when it differs from the new one (the caller deletes
+    it)."""
+    cur = conn.execute("SELECT id, message_class, eml_path FROM messages WHERE msg_key=?",
+                       (row["msg_key"],)).fetchone()
+    conn.execute("DELETE FROM failures WHERE graph_id=?", (row["graph_id"],))
+    if cur is None:
+        insert(conn, row)
+        return "new", None
+    if is_shortcut(cur[1]) and not is_shortcut(row["message_class"]):
+        cols = [c for c in _COLS if c != "msg_key"]
+        conn.execute(f"UPDATE messages SET {', '.join(f'{c}=?' for c in cols)} WHERE id=?",
+                     [row[c] for c in cols] + [cur[0]])
+        return "replaced", (cur[2] if cur[2] and cur[2] != row["eml_path"] else None)
+    return "kept", None
+
+
 def known_keys(conn: sqlite3.Connection, keys: list[str]) -> set[str]:
-    if not keys:
-        return set()
-    marks = ", ".join("?" for _ in keys)
-    return {r[0] for r in conn.execute(
-        f"SELECT msg_key FROM messages WHERE msg_key IN ({marks})", keys)}
+    return set(known_kinds(conn, keys))
 
 
-def record_failure(conn: sqlite3.Connection, msg: dict, error: str) -> None:
+def known_kinds(conn: sqlite3.Connection, keys: list[str]) -> dict[str, bool]:
+    """{msg_key: archived as a Vault shortcut?} for the keys already archived."""
+    out: dict[str, bool] = {}
+    keys = list(dict.fromkeys(keys))
+    for i in range(0, len(keys), 500):          # SQLite's bound-parameter limit
+        chunk = keys[i:i + 500]
+        marks = ", ".join("?" for _ in chunk)
+        for key, mclass in conn.execute(
+                f"SELECT msg_key, message_class FROM messages WHERE msg_key IN ({marks})",
+                chunk):
+            out[key] = is_shortcut(mclass)
+    return out
+
+
+def wanted(known: dict[str, bool], key: str, mclass: str) -> bool:
+    """Archive this copy? Yes if the send is new, or if it's a full copy of
+    a send archived only as a shortcut."""
+    return key not in known or (known[key] and not is_shortcut(mclass))
+
+
+def record_failure(conn: sqlite3.Connection, msg: dict, error: str,
+                   folder: str = "Sent Items") -> None:
     conn.execute(
-        "INSERT INTO failures(graph_id, sent_utc, subject, error, tries, last_utc) "
-        "VALUES (?, ?, ?, ?, 1, ?) ON CONFLICT(graph_id) DO UPDATE SET "
+        "INSERT INTO failures(graph_id, sent_utc, subject, error, tries, last_utc, folder) "
+        "VALUES (?, ?, ?, ?, 1, ?, ?) ON CONFLICT(graph_id) DO UPDATE SET "
         "error=excluded.error, tries=failures.tries + 1, last_utc=excluded.last_utc",
         (msg.get("id"), norm_utc(msg.get("sentDateTime")), (msg.get("subject") or "")[:300],
-         error[:500], now_utc()))
+         error[:500], now_utc(), folder))
 
 
 def stats(conn: sqlite3.Connection) -> dict:
     row = conn.execute(
         "SELECT COUNT(*), MIN(sent_utc), MAX(sent_utc), COALESCE(SUM(eml_bytes), 0), "
-        "SUM(has_attachments) FROM messages").fetchone()
+        f"SUM(has_attachments), SUM({SHORTCUT_SQL}), SUM(folder != 'Sent Items') "
+        "FROM messages").fetchone()
     fails = conn.execute("SELECT COUNT(*) FROM failures").fetchone()[0]
     return {"messages": row[0], "oldest": row[1], "newest": row[2], "eml_bytes": row[3],
-            "with_attachments": row[4] or 0, "failures": fails}
+            "with_attachments": row[4] or 0, "shortcuts": row[5] or 0,
+            "filed": row[6] or 0, "failures": fails}

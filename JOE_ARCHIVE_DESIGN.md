@@ -392,3 +392,47 @@ What the answers lead to:
   PST (then James's PST Processor), or by restoring the items into a mailbox
   folder Graph reads (rocky@'s, not Joe's, since 30,000 restored sends could
   fill his quota).
+
+**Backfill changes for the scope** (built 11/5):
+
+- **Order.** Sent Items first, oldest first and checkpointed as before.
+  Once it reaches the newest send, a **filed pass** runs (and reruns until
+  it completes). It lists Joe's mail in every other folder the way the
+  census does: ids and class only, 4 folders at a time, skipping Drafts,
+  Outbox and Deleted Items with its subfolders (unless config
+  `joe_archive_include_deleted` is true). Then it fetches and downloads
+  only what's wanted: sends not yet archived, and full copies of sends
+  archived as shortcuts. A rerun lists again and dedups. One unlistable
+  folder leaves the pass unfinished. `--backfill --filed` runs the pass
+  alone. `--sync` reads Sent Items only, so a send Joe moves out of Sent
+  Items before the nightly sync is missed until the filed pass runs again
+  (a step-5 question).
+- **Shortcuts** are archived with their message class. Search results and
+  `--show` add "Vault shortcut: the text may be cut short and the
+  attachments are missing". A full copy of the same send, found later in
+  Sent Items, the filed pass or any future source, replaces the shortcut
+  in place (`store.upsert`): same ref, new row, and the FTS index follows.
+  A shortcut never replaces a full copy. Rows filed elsewhere show "Filed
+  in: <folder>".
+- **`--start YYYY-MM-DD`** begins Sent Items at a date, for a trial archive
+  only. It requires a `--root` other than the real archive, because it
+  moves the checkpoint past every older send.
+- `--stats` counts shortcuts and filed sends and shows the filed pass's
+  state. Failures remember their folder, so a filed send retries into it.
+
+**Trial plan** (after Joe agrees and the deploy is live). Use a throwaway
+root, so the real archive starts clean:
+
+1. `rocky.exe --joe-archive --backfill --root C:\Rocky\joe_archive_trial --limit 100`:
+   the 100 oldest sends, nearly all shortcuts.
+2. `rocky.exe --joe-archive --backfill --root C:\Rocky\joe_archive_trial --start 2024-06-01 --limit 100`:
+   100 full sends with attachments.
+3. `rocky.exe --joe-archive --backfill --root C:\Rocky\joe_archive_trial --filed --limit 50`:
+   the filed pass on real folders. In a trial root, every filed copy
+   counts as new.
+4. `--stats --root ...` (counts only) is safe to paste. James tries a few
+   `--search` and `--show` runs on the laptop and reports whether the
+   results look right without pasting Joe's text.
+5. Delete `C:\Rocky\joe_archive_trial`, then run
+   `rocky.exe --joe-archive --backfill` on the real archive, rerunning
+   until it says it's finished.

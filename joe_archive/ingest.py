@@ -9,14 +9,20 @@ path in state.json, which the backfill then uses.
 eml\\YYYY\\MM\\, and indexes it. It checkpoints after every page (the cursor
 is the latest sentDateTime fully handled) and dedups on internetMessageId,
 so a rerun resumes, and rerunning after it finishes picks up new sends.
---sync is that rerun with a two-day overlap, for the nightly schedule.
+Once Sent Items is done, a filed pass (once, until it completes) archives
+Joe's sends filed only in other folders, Deleted Items left out (James,
+11/5), and full copies of sends archived as Vault shortcuts. --sync is the
+Sent Items rerun with a two-day overlap, for the nightly schedule.
+
+Vault shortcuts are archived and flagged by their message class. A full
+copy of the same send, found later, replaces one in place and keeps its ref.
 """
 
 import json
 import logging
 import shutil
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import timedelta
 from pathlib import Path
 
@@ -309,6 +315,12 @@ def _save_check(root: Path, report: dict) -> None:
 # --backfill / --sync
 # =============================================================================
 
+PHASES = ("all", "sent", "filed")
+FILED_PROGRESS_EVERY = 100
+COUNT_KEYS = ("archived", "shortcuts", "filed", "replaced", "duplicate", "skipped",
+              "failed", "gone")
+
+
 def skip_reason(msg: dict, mclass: str) -> str | None:
     if mclass and mclass.startswith(SKIP_CLASSES):
         return mclass
@@ -327,72 +339,98 @@ def _download(keeper, mb, root: Path, msg: dict):
 
 
 def _archive(conn, keeper, mb, root, batch, workers, counts) -> str | None:
-    """Download and index (msg, mclass) pairs; returns the latest sentDateTime
-    handled. Failures go to the failures table for the next run."""
+    """Download and index (msg, mclass, folder) triples; returns the latest
+    sentDateTime handled. A full copy of a send archived as a Vault shortcut
+    replaces it. Failures go to the failures table for the next run."""
+    # Checked again here, not only by the callers: a retried shortcut whose
+    # full copy was archived meanwhile would download over that copy's .eml
+    # (the path is keyed on the send, not the copy).
+    known = store.known_kinds(conn, [store.msg_key(t[0]) for t in batch])
+    keep = []
+    for t in batch:
+        if store.wanted(known, store.msg_key(t[0]), t[1]):
+            keep.append(t)
+        else:
+            counts["duplicate"] += 1
+            conn.execute("DELETE FROM failures WHERE graph_id=?", (t[0].get("id"),))
+    batch = keep
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        results = list(pool.map(lambda pair: _download(keeper, mb, root, pair[0]), batch))
+        results = list(pool.map(lambda t: _download(keeper, mb, root, t[0]), batch))
     latest = None
-    for (msg, mclass), (rel, size, err) in zip(batch, results):
+    for (msg, mclass, folder), (rel, size, err) in zip(batch, results):
         sent = store.norm_utc(msg.get("sentDateTime"))
         latest = max(latest or sent, sent)
         if err:
-            store.record_failure(conn, msg, err)
+            store.record_failure(conn, msg, err, folder)
             counts["failed"] += 1
             log.warning(f"[joe-archive] {sent} {msg.get('subject', '')[:60]!r}: {err}")
             continue
-        row = store.build_row(msg, "Sent Items", mclass, rel, size,
+        row = store.build_row(msg, folder, mclass, rel, size,
                               store.attachment_names(root / rel))
-        counts["archived" if store.insert(conn, row) else "duplicate"] += 1
+        outcome, old_eml = store.upsert(conn, row)
+        if outcome == "new":
+            counts["archived"] += 1
+            if store.is_shortcut(mclass):
+                counts["shortcuts"] += 1
+            if folder != "Sent Items":
+                counts["filed"] += 1
+        elif outcome == "replaced":
+            counts["replaced"] += 1
+            if old_eml and (root / old_eml).exists():
+                (root / old_eml).unlink()
+        else:
+            counts["duplicate"] += 1
     conn.commit()
     return latest
 
 
-def backfill(config: dict, root: Path, *, limit: int | None = None, workers: int = 4,
-             overlap_days: int = 0, out=print) -> dict:
-    state = load_state(root)
-    keeper, mb = resolve_access(config, root, state)
-    conn = store.open_db(root / DB_NAME)
-    bf = state.setdefault("backfill", {})
-    counts = Counter()
-    min_free = float(config.get("joe_archive_min_free_gb") or MIN_FREE_GB) * 1024 ** 3
+def _added(counts) -> int:
+    return counts["archived"] + counts["replaced"]
 
-    # Earlier failures first, so a flaky send isn't left behind the cursor.
-    for (gid,) in conn.execute("SELECT graph_id FROM failures WHERE tries < ?",
-                               (MAX_TRIES,)).fetchall():
-        msg = graph.message(keeper, mb, gid)
+
+def _retry_failures(conn, keeper, mb, root, counts) -> None:
+    """Earlier failures first, so a flaky send isn't left behind the cursor."""
+    for gid, folder in conn.execute("SELECT graph_id, folder FROM failures WHERE tries < ?",
+                                    (MAX_TRIES,)).fetchall():
+        try:
+            msg = graph.message(keeper, mb, gid)
+        except GraphError as e:
+            log.warning(f"[joe-archive] retry of {gid[:20]}... failed: {e}")
+            continue
         if msg is None:
             conn.execute("DELETE FROM failures WHERE graph_id=?", (gid,))
             conn.commit()
             continue
-        _archive(conn, keeper, mb, root, [(msg, graph.message_class(msg))], 1, counts)
+        _archive(conn, keeper, mb, root, [(msg, graph.message_class(msg),
+                                           folder or "Sent Items")], 1, counts)
 
-    since = bf.get("cursor")
-    if since and overlap_days:
-        since = store.norm_utc((parse_utc(since) - timedelta(days=overlap_days)).isoformat())
-    out(f"Joe's Email Archive: {'syncing' if overlap_days else 'backfilling'} {mb} "
-        f"({keeper.path} path) " + (f"from {since}" if since else "from the oldest send"))
-    finished = True
+
+def _sent_items(conn, keeper, mb, root, bf, state, since, limit, workers, min_free,
+                counts, out) -> bool:
+    """Sent Items, oldest first, checkpointed per page. True when it reached
+    the newest send."""
     for page in graph.iter_pages(keeper, mb, "sentitems", since):
         if shutil.disk_usage(root).free < min_free:
             out(f"Stopping: under {_gb(min_free)} free on the archive's disk.")
-            finished = False
-            break
-        known = store.known_keys(conn, [store.msg_key(m) for m in page])
-        batch, seen, cursor = [], set(), None
+            return False
+        known = store.known_kinds(conn, [store.msg_key(m) for m in page])
+        batch, seen = [], set()
         for msg in page:
             key = store.msg_key(msg)
-            if key in known or key in seen:
+            if key in seen:
                 counts["duplicate"] += 1
                 continue
             seen.add(key)
             mclass = graph.message_class(msg)
             if skip_reason(msg, mclass):
                 counts["skipped"] += 1
-                continue
-            batch.append((msg, mclass))
+            elif not store.wanted(known, key, mclass):
+                counts["duplicate"] += 1
+            else:
+                batch.append((msg, mclass, "Sent Items"))
         cut = False
-        if limit is not None and len(batch) > limit - counts["archived"]:
-            batch = batch[:max(0, limit - counts["archived"])]
+        if limit is not None and len(batch) > limit - _added(counts):
+            batch = batch[:max(0, limit - _added(counts))]
             cut = True
         failed_before = counts["failed"]
         latest = _archive(conn, keeper, mb, root, batch, workers, counts) if batch else None
@@ -401,8 +439,7 @@ def backfill(config: dict, root: Path, *, limit: int | None = None, workers: int
             # before the whole folder lands in the failures table.
             out("Stopping: every download on this page failed (see rocky.log). "
                 "The checkpoint holds; rerun once the cause is fixed.")
-            finished = False
-            break
+            return False
         # A page cut short by --limit resumes from its last handled send; a
         # whole page resumes from its newest.
         cursor = latest if cut else max(store.norm_utc(m.get("sentDateTime")) for m in page)
@@ -414,18 +451,180 @@ def backfill(config: dict, root: Path, *, limit: int | None = None, workers: int
                  f"(through {bf.get('cursor')}); {counts['duplicate']} already had, "
                  f"{counts['skipped']} skipped, {counts['failed']} failed")
         if cut:
-            finished = False
-            break
-    if finished:
-        bf["complete_utc"] = store.now_utc()
-    save_state(root, state)
+            return False
+    return True
+
+
+def _under(path: str, parent: str | None) -> bool:
+    return bool(parent) and (path == parent or path.startswith(parent + "/"))
+
+
+def _list_joe(keeper, mb, folder_id: str, addrs: list[str]) -> list[dict]:
+    rows = []
+    for page in graph.iter_index(keeper, mb, folder_id, from_addrs=addrs):
+        rows.extend(page)
+    return rows
+
+
+def _fetch(keeper, mb, msg):
+    """The full listing shape (body, recipients) of one indexed message:
+    (msg, or None if it's gone; error)."""
+    try:
+        return graph.message(keeper, mb, msg["id"]), None
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
+
+
+def filed_pass(conn, keeper, mb, root, config, fs: dict, limit, workers, min_free,
+               counts, out) -> bool:
+    """Joe's sends in every other folder (Deleted Items left out unless
+    joe_archive_include_deleted): those not yet archived, and full copies of
+    sends archived only as a Vault shortcut. Lists the folders as the census
+    does (ids and class only, 4 at a time), then fetches and downloads only
+    what's wanted. A rerun lists again and dedups. True when every folder was
+    listed and every wanted send handled."""
+    ids = {}
+    for name in ("sentitems", "deleteditems", "drafts", "outbox"):
+        try:
+            ids[name] = graph.folder(keeper, mb, name)["id"]
+        except GraphError:
+            ids[name] = None
+    out("Filed pass: mapping Joe's folders ...")
+    folders = walk_folders(keeper, mb, progress=lambda n: out(f"  ... {n} folders mapped"))
+    by_id = {f["id"]: f for f in folders}
+    deleted_path = by_id.get(ids["deleteditems"], {}).get("path")
+    include_deleted = bool(config.get("joe_archive_include_deleted"))
+    skip_ids = {ids["sentitems"], ids["drafts"], ids["outbox"]} - {None}
+    todo = [f for f in folders if f["items"] and f["id"] not in skip_ids
+            and (include_deleted or not _under(f["path"], deleted_path))]
+    out(f"Listing Joe's sends in {len(todo)} folders outside Sent Items"
+        + ("" if include_deleted else " (Deleted Items left out)") + " ...")
+    addrs = joe_addresses(config_mailbox(config), mb)
+
+    best, unreadable = {}, []           # key -> (msg, mclass, folder path)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {pool.submit(_list_joe, keeper, mb, f["id"], addrs): f for f in todo}
+        for i, fut in enumerate(as_completed(futures), 1):
+            f = futures[fut]
+            try:
+                rows = fut.result()
+            except Exception as e:      # one bad folder must not end the pass
+                unreadable.append(f["path"])
+                log.warning(f"[joe-archive] couldn't list {f['path']}: {e}")
+                rows = []
+            for msg in rows:
+                mclass = graph.message_class(msg)
+                if skip_reason(msg, mclass):
+                    continue
+                key = store.msg_key(msg)
+                cur = best.get(key)
+                if cur is None or (store.is_shortcut(cur[1]) and not store.is_shortcut(mclass)):
+                    best[key] = (msg, mclass, f["path"])
+            if i % FILED_PROGRESS_EVERY == 0:
+                out(f"  ... {i} of {len(todo)} folders listed")
+
+    known = store.known_kinds(conn, list(best))
+    wanted = sorted(((m, c, p) for k, (m, c, p) in best.items() if store.wanted(known, k, c)),
+                    key=lambda t: store.norm_utc(t[0].get("sentDateTime")))
+    n_new = sum(1 for m, _c, _p in wanted if store.msg_key(m) not in known)
+    out(f"  {len(best):,} of Joe's sends found there; {n_new:,} not yet archived, "
+        f"{len(wanted) - n_new:,} full copies of sends archived as Vault shortcuts"
+        + (f"; {len(unreadable)} folders couldn't be listed" if unreadable else ""))
+    fs.update(last_run_utc=store.now_utc(), found=len(best), wanted=len(wanted),
+              unreadable=unreadable[:50])
+
+    for i in range(0, len(wanted), graph.PAGE_SIZE):
+        if shutil.disk_usage(root).free < min_free:
+            out(f"Stopping: under {_gb(min_free)} free on the archive's disk.")
+            return False
+        room = None if limit is None else limit - _added(counts)
+        if room is not None and room <= 0:
+            return False
+        batch = wanted[i:i + graph.PAGE_SIZE][:room]
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+            fetched = list(pool.map(lambda t: _fetch(keeper, mb, t[0]), batch))
+        ready = []
+        for (msg, mclass, path), (full, err) in zip(batch, fetched):
+            if err:
+                store.record_failure(conn, msg, err, path)
+                counts["failed"] += 1
+            elif full is None:
+                counts["gone"] += 1     # moved or deleted since the listing
+            else:
+                ready.append((full, mclass, path))
+        conn.commit()
+        failed_before = counts["failed"]
+        if ready:
+            _archive(conn, keeper, mb, root, ready, workers, counts)
+        if len(ready) >= 3 and counts["failed"] - failed_before == len(ready):
+            out("Stopping: every download in this batch failed (see rocky.log). "
+                "Rerun once the cause is fixed.")
+            return False
+        if i + len(batch) < min(len(wanted), i + graph.PAGE_SIZE):
+            return False                # cut short by --limit
+    if unreadable:
+        return False
+    fs["complete_utc"] = store.now_utc()
+    return True
+
+
+def backfill(config: dict, root: Path, *, limit: int | None = None, workers: int = 4,
+             overlap_days: int = 0, start: str | None = None, phase: str = "all",
+             out=print) -> dict:
+    """phase "all": Sent Items, then the filed pass once Sent Items is done
+    (and until that pass completes). "sent": Sent Items only (--sync).
+    "filed": the filed pass only. start (YYYY-MM-DD, trial archives only)
+    begins Sent Items there instead of at the oldest send."""
+    if phase not in PHASES:
+        raise ValueError(f"phase must be one of {PHASES}")
+    state = load_state(root)
+    keeper, mb = resolve_access(config, root, state)
+    conn = store.open_db(root / DB_NAME)
+    bf = state.setdefault("backfill", {})
+    fs = state.setdefault("filed", {})
+    counts = Counter()
+    min_free = float(config.get("joe_archive_min_free_gb") or MIN_FREE_GB) * 1024 ** 3
+
+    _retry_failures(conn, keeper, mb, root, counts)
+
+    sent_done = bool(bf.get("complete_utc"))
+    finished = True
+    if phase in ("all", "sent"):
+        since = bf.get("cursor")
+        if since and overlap_days:
+            since = store.norm_utc((parse_utc(since) - timedelta(days=overlap_days)).isoformat())
+        if start:
+            since = max(since or "", f"{start}T00:00:00Z")
+        out(f"Joe's Email Archive: {'syncing' if overlap_days else 'backfilling'} {mb} "
+            f"({keeper.path} path), Sent Items "
+            + (f"from {since}" if since else "from the oldest send"))
+        sent_done = _sent_items(conn, keeper, mb, root, bf, state, since, limit, workers,
+                                min_free, counts, out)
+        if sent_done:
+            bf["complete_utc"] = store.now_utc()
+        finished = sent_done
+        save_state(root, state)
+    filed_due = sent_done and not fs.get("complete_utc")
+    if phase == "filed" or (phase == "all" and filed_due
+                            and (limit is None or _added(counts) < limit)):
+        if phase == "filed":
+            out(f"Joe's Email Archive: filed pass over {mb} ({keeper.path} path)")
+        finished = filed_pass(conn, keeper, mb, root, config, fs, limit, workers, min_free,
+                              counts, out)
+        save_state(root, state)
+    elif phase == "all" and filed_due:
+        finished = False                # --limit used up before the filed pass
+
     s = store.stats(conn)
     conn.close()
-    out(f"Done: {counts['archived']} archived this run, {counts['duplicate']} already "
-        f"archived, {counts['skipped']} skipped (receipts and meeting replies), "
-        f"{counts['failed']} failed.")
-    out(f"Archive: {s['messages']} sends, {s['oldest'] or '-'} to {s['newest'] or '-'}, "
+    out(f"Done: {counts['archived']} archived this run ({counts['shortcuts']} Vault shortcuts, "
+        f"{counts['filed']} from other folders), {counts['replaced']} shortcuts replaced by "
+        f"a full copy, {counts['duplicate']} already archived, {counts['skipped']} skipped "
+        f"(receipts and meeting replies), {counts['failed']} failed"
+        + (f", {counts['gone']} gone since listed" if counts["gone"] else "") + ".")
+    out(f"Archive: {s['messages']} sends ({s['shortcuts']} Vault shortcuts, {s['filed']} from "
+        f"other folders), {s['oldest'] or '-'} to {s['newest'] or '-'}, "
         f"{_gb(s['eml_bytes'])} of .eml; {s['failures']} waiting on a retry.")
     if not finished:
         out("Not finished: run it again to continue from the checkpoint.")
-    return {**counts, "finished": finished, "stats": s}
+    return {**{k: 0 for k in COUNT_KEYS}, **counts, "finished": finished, "stats": s}

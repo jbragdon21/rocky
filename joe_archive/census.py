@@ -30,15 +30,14 @@ from pathlib import Path
 from . import graph, ingest, store
 from .graph import GraphError
 
-SHORTCUT_PREFIX = "IPM.Note.EnterpriseVault.Shortcut"
+SHORTCUT_PREFIX = store.SHORTCUT_PREFIX
 CENSUS_NAME = "census.json"
 WORKERS = 4                   # Exchange allows 4 concurrent requests per mailbox
 FOLDER_PROGRESS_EVERY = 100
 TOP_FOLDERS = 15
 
 
-def is_shortcut(mclass: str) -> bool:
-    return (mclass or "").startswith(SHORTCUT_PREFIX)
+is_shortcut = store.is_shortcut
 
 
 def _kind(path: str, folder_id: str, sent_id: str, deleted_path: str | None) -> str:

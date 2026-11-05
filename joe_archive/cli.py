@@ -21,14 +21,21 @@
         shortcuts link to. Numbers only, safe to paste. Writes
         vault_check.json.
 
-    --joe-archive --backfill [--limit N] [--workers N]
-        Copy Sent Items, oldest first, to eml\\YYYY\\MM\\ and index it.
-        Checkpointed: rerun to resume. --limit N stops after N new sends
-        (try --limit 200 first). --workers: parallel MIME downloads (4;
-        Exchange allows 4 at once per mailbox).
+    --joe-archive --backfill [--limit N] [--workers N] [--filed]
+                  [--start YYYY-MM-DD --root FOLDER]
+        Copy Sent Items, oldest first, to eml\\YYYY\\MM\\ and index it, then
+        (once) the filed pass: Joe's sends found only in other folders
+        (Deleted Items left out; config joe_archive_include_deleted), and
+        full copies of sends archived as Vault shortcuts, which replace
+        them. Shortcuts are archived and flagged in search results.
+        Checkpointed: rerun to resume. --limit N stops after N new sends.
+        --filed runs only the filed pass. --start begins Sent Items at a
+        date, for a trial archive in its own --root only (it moves the
+        checkpoint past everything older). --workers: parallel MIME
+        downloads (4; Exchange allows 4 at once per mailbox).
 
     --joe-archive --sync
-        The backfill again with a two-day overlap: picks up new sends. Made
+        Sent Items again with a two-day overlap: picks up new sends. Made
         for a nightly scheduled task.
 
     --joe-archive --search "query" [--from YYYY-MM-DD] [--to YYYY-MM-DD]
@@ -52,6 +59,7 @@ import argparse
 import logging
 import sqlite3
 import sys
+from datetime import date
 from pathlib import Path
 
 from . import census, evault, ingest, search, store
@@ -81,6 +89,8 @@ def _parser() -> argparse.ArgumentParser:
     mode.add_argument("--show", type=int, metavar="REF")
     mode.add_argument("--stats", action="store_true")
     p.add_argument("--no-folders", action="store_true")
+    p.add_argument("--filed", action="store_true")
+    p.add_argument("--start", metavar="YYYY-MM-DD")
     p.add_argument("--limit", type=int)
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--from", dest="date_from")
@@ -105,6 +115,23 @@ def open_archive(root: Path) -> sqlite3.Connection | None:
         return store.open_db(db)
 
 
+def _trial_start(config: dict, data_dir: Path, args) -> str | None:
+    """--start's date, or None (with the reason printed) when it can't be used:
+    it moves the checkpoint, so it only goes with a trial archive's own --root."""
+    if args.sync or args.filed:
+        print("--start goes with --backfill alone.")
+        return None
+    if not args.root or Path(args.root).resolve() == get_root(config, data_dir).resolve():
+        print("--start is for a trial archive: add --root <a folder of its own>. "
+              "On the real archive it would skip every older send.")
+        return None
+    try:
+        return date.fromisoformat(args.start).isoformat()
+    except ValueError:
+        print("--start takes a date: YYYY-MM-DD.")
+        return None
+
+
 def run_cli(config: dict, data_dir: Path, argv: list[str] | None = None) -> int:
     argv = [a for a in (sys.argv[1:] if argv is None else argv) if a != "--joe-archive"]
     args, unknown = _parser().parse_known_args(argv)
@@ -125,9 +152,16 @@ def run_cli(config: dict, data_dir: Path, argv: list[str] | None = None) -> int:
             evault.run(config, root)
             return 0
         if args.backfill or args.sync:
+            start = None
+            if args.start:
+                start = _trial_start(config, data_dir, args)
+                if start is None:
+                    return 2
+            phase = "sent" if args.sync else "filed" if args.filed else "all"
             result = ingest.backfill(config, root, limit=args.limit,
                                      workers=max(1, min(args.workers, 4)),
-                                     overlap_days=2 if args.sync else 0)
+                                     overlap_days=2 if args.sync else 0,
+                                     start=start, phase=phase)
             return 0 if result["finished"] or args.limit else 1
     except GraphError as e:
         log.error(f"[joe-archive] {e}")
@@ -146,14 +180,20 @@ def run_cli(config: dict, data_dir: Path, argv: list[str] | None = None) -> int:
             s = store.stats(conn)
             print(f"{s['messages']} sends archived, {search.eastern(s['oldest']) or '-'} to "
                   f"{search.eastern(s['newest']) or '-'}; {s['with_attachments']} with attachments; "
+                  f"{s['shortcuts']} Vault shortcuts; {s['filed']} from other folders; "
                   f"{s['eml_bytes'] / 1024 ** 3:.1f} GB of .eml; "
                   f"{s['failures']} failed downloads waiting on a retry.")
             state = ingest.load_state(root)
             bf = state.get("backfill") or {}
-            print(f"Auth path {state.get('auth') or '?'}; backfill cursor "
-                  f"{bf.get('cursor') or '-'}; "
+            fs = state.get("filed") or {}
+            print(f"Auth path {state.get('auth') or '?'}; Sent Items cursor "
+                  f"{bf.get('cursor') or '-'}, "
                   + (f"finished {bf['complete_utc']}" if bf.get("complete_utc")
-                     else "not finished"))
+                     else "not finished")
+                  + "; filed pass "
+                  + (f"finished {fs['complete_utc']}" if fs.get("complete_utc")
+                     else f"last run {fs['last_run_utc']}" if fs.get("last_run_utc")
+                     else "not run"))
             return 0
         if args.show is not None:
             row = search.read_message(conn, args.show)

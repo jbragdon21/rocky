@@ -292,6 +292,20 @@ class FakeGraph:
         self.downloads = []
         self.fail = set()
         self.since_seen = []
+        # Other folders for the filed pass: id -> (path, messages).
+        self.folders = {"DELETEDITEMS": ("Deleted Items", []), "DRAFTS": ("Drafts", [])}
+        self.listed = []
+
+    def walk_folders(self, keeper, mb, **kw):
+        return ([{"id": "SENTITEMS", "path": "Sent Items", "items": len(self.msgs)}]
+                + [{"id": fid, "path": path, "items": len(rows)}
+                   for fid, (path, rows) in self.folders.items()])
+
+    def iter_index(self, keeper, mb, folder_id, from_addrs=None, top=None):
+        self.listed.append(folder_id)
+        rows = [dict(m) for m in self.folders[folder_id][1]]
+        for i in range(0, len(rows), 2):
+            yield rows[i:i + 2]
 
     def iter_pages(self, keeper, mb, folder_id="sentitems", since=None, top=None,
                    max_pages=None):
@@ -309,7 +323,8 @@ class FakeGraph:
         return dest.stat().st_size
 
     def message(self, keeper, mb, gid):
-        return next((dict(m) for m in self.msgs if m["id"] == gid), None)
+        every = self.msgs + [m for _p, rows in self.folders.values() for m in rows]
+        return next((dict(m) for m in every if m["id"] == gid), None)
 
 
 @pytest.fixture
@@ -326,6 +341,9 @@ def fake(monkeypatch, tmp_path):
     monkeypatch.setattr(graph, "iter_pages", g.iter_pages)
     monkeypatch.setattr(graph, "download_mime", g.download_mime)
     monkeypatch.setattr(graph, "message", g.message)
+    monkeypatch.setattr(graph, "iter_index", g.iter_index)
+    monkeypatch.setattr(graph, "folder", lambda k, mb, name: {"id": name.upper()})
+    monkeypatch.setattr(ingest, "walk_folders", g.walk_folders)
     monkeypatch.setattr(ingest, "resolve_access",
                         lambda config, root, state: (graph.TokenKeeper({}, "app", "t"), MB))
     return g
@@ -807,3 +825,204 @@ def test_vault_check_cli_takes_the_lock(vault_mailbox, tmp_path, capsys):
     assert cli.run_cli({}, tmp_path, ["--joe-archive", "--vault-check",
                                       "--root", str(tmp_path)]) == 0
     assert "Verdict:" in capsys.readouterr().out
+
+
+# =============================================================================
+# Vault shortcuts and the filed pass (scope: James, 11/5)
+# =============================================================================
+
+def short(i, sent, body="Cut-down text.", imid=True):
+    return gmsg(i, sent, body=body, mclass=SC, imid=imid)
+
+
+def test_upsert_full_copy_replaces_a_shortcut_and_keeps_its_ref(tmp_path):
+    conn = store.open_db(tmp_path / "a.db")
+    m = short(1, "2019-03-18T17:46:57Z", body="cut")
+    assert store.upsert(conn, store.build_row(m, "Sent Items", SC, "eml/a.eml", 5, [])) == \
+        ("new", None)
+    full = dict(m, id="g1-full", body={"content": "the whole quokka clause"})
+    row = store.build_row(full, "Inbox/Cases/A", "IPM.Note", "eml/b.eml", 50, ["x.pdf"])
+    assert store.upsert(conn, row) == ("replaced", "eml/a.eml")
+    conn.commit()
+    r = conn.execute("SELECT id, graph_id, message_class, folder, attachment_names "
+                     "FROM messages").fetchall()
+    assert [tuple(x) for x in r] == [(1, "g1-full", "IPM.Note", "Inbox/Cases/A", "x.pdf")]
+    assert refs(search.search(conn, "quokka")) == [1]       # the index follows
+    assert refs(search.search(conn, "cut")) == []
+
+
+def test_upsert_never_trades_a_full_copy_for_a_shortcut(tmp_path):
+    conn = store.open_db(tmp_path / "a.db")
+    m = gmsg(1, "2019-03-18T17:46:57Z", body="whole")
+    store.upsert(conn, store.build_row(m, "Sent Items", "IPM.Note", "eml/a.eml", 50, []))
+    again = store.build_row(m, "Sent Items", SC, "eml/a.eml", 5, [])
+    assert store.upsert(conn, again) == ("kept", None)
+    again = store.build_row(m, "Sent Items", "IPM.Note", "eml/a.eml", 50, [])
+    assert store.upsert(conn, again) == ("kept", None)
+
+
+def test_known_kinds_and_wanted(tmp_path):
+    conn = store.open_db(tmp_path / "a.db")
+    for m, c in ((short(1, "2019-01-01T00:00:00Z"), SC),
+                 (gmsg(2, "2024-01-01T00:00:00Z"), "IPM.Note")):
+        store.upsert(conn, store.build_row(m, "Sent Items", c, "eml/x", 1, []))
+    known = store.known_kinds(conn, ["<im1@gallagherllp.com>", "<im2@gallagherllp.com>",
+                                     "<im9@gallagherllp.com>"])
+    assert known == {"<im1@gallagherllp.com>": True, "<im2@gallagherllp.com>": False}
+    assert store.wanted(known, "<im1@gallagherllp.com>", "IPM.Note")
+    assert not store.wanted(known, "<im1@gallagherllp.com>", SC)
+    assert not store.wanted(known, "<im2@gallagherllp.com>", "IPM.Note")
+    assert store.wanted(known, "<im9@gallagherllp.com>", SC)
+
+
+@pytest.fixture
+def vault_fake(fake):
+    """Sent Items: two Vault shortcuts and the six fake sends. Filed: a full
+    copy of shortcut 21, a send found only there, a copy of send 1. Deleted
+    Items: one send found only there."""
+    fake.msgs[:0] = [short(20, "2019-03-18T17:46:57Z"), short(21, "2019-04-01T10:00:00Z")]
+    full21 = dict(gmsg(21, "2019-04-01T10:00:00Z", body="the whole quokka clause"),
+                  id="g21-full")
+    fake.folders["F1"] = ("Inbox/Cases and Matters/A",
+                          [full21, gmsg(30, "2023-01-05T10:00:00Z", body="filed only"),
+                           dict(fake.msgs[2], id="g1-copy")])
+    fake.folders["DELETEDITEMS"] = ("Deleted Items", [gmsg(31, "2022-07-01T10:00:00Z")])
+    fake.folders["D2"] = ("Deleted Items/Old", [gmsg(32, "2021-08-01T10:00:00Z")])
+    return fake
+
+
+def test_backfill_archives_shortcuts_then_the_filed_pass(vault_fake, tmp_path):
+    result, lines = run(tmp_path)
+    assert result["finished"]
+    assert result["archived"] == 7 and result["shortcuts"] == 2 and result["filed"] == 1
+    assert result["replaced"] == 1 and result["skipped"] == 2
+    conn = store.open_db(tmp_path / "archive.db")
+    rows = {r[0]: (r[1], r[2]) for r in conn.execute(
+        "SELECT graph_id, message_class, folder FROM messages")}
+    assert rows["g20"] == (SC, "Sent Items")
+    assert rows["g21-full"] == ("IPM.Note", "Inbox/Cases and Matters/A")   # replaced
+    assert "g21" not in rows
+    assert rows["g30"] == ("IPM.Note", "Inbox/Cases and Matters/A")        # filed only
+    assert "g31" not in rows and "g32" not in rows                         # deleted: out
+    assert "g1-copy" not in vault_fake.downloads
+    assert "DELETEDITEMS" not in vault_fake.listed and "D2" not in vault_fake.listed
+    assert "DRAFTS" not in vault_fake.listed
+    text = "\n".join(lines)
+    assert "1 not yet archived, 1 full copies of sends archived as Vault shortcuts" in text
+    assert "Archive: 7 sends (1 Vault shortcuts, 2 from other folders)" in text
+    state = json.loads((tmp_path / "state.json").read_text())
+    assert state["backfill"]["complete_utc"] and state["filed"]["complete_utc"]
+
+
+def test_the_filed_pass_runs_once(vault_fake, tmp_path):
+    run(tmp_path)
+    vault_fake.listed.clear()
+    result, _ = run(tmp_path)
+    assert vault_fake.listed == [] and result["finished"] and result["archived"] == 0
+
+
+def test_deleted_items_come_in_when_config_says_so(vault_fake, tmp_path):
+    lines = []
+    ingest.backfill({"joe_archive_include_deleted": True}, tmp_path, out=lines.append)
+    conn = store.open_db(tmp_path / "archive.db")
+    got = {r[0] for r in conn.execute("SELECT graph_id FROM messages")}
+    assert {"g31", "g32"} <= got
+
+
+def test_limit_spans_sent_items_and_the_filed_pass(vault_fake, tmp_path):
+    result, lines = run(tmp_path, limit=6)          # Sent Items holds 6 wanted sends
+    assert result["archived"] == 6 and not result["finished"]
+    assert vault_fake.listed == []                  # limit used up: no filed pass yet
+    result, _ = run(tmp_path, limit=1)
+    assert result["replaced"] + result["archived"] == 1 and not result["finished"]
+    result, _ = run(tmp_path)
+    assert result["finished"]
+    conn = store.open_db(tmp_path / "archive.db")
+    assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 7
+
+
+def test_filed_phase_alone(vault_fake, tmp_path):
+    result, lines = run(tmp_path, phase="filed")
+    assert vault_fake.since_seen == []              # Sent Items untouched
+    assert result["archived"] == 3 and result["finished"]   # 21 full, 30, and 1's copy
+
+
+def test_a_failed_filed_send_retries_into_its_folder(vault_fake, tmp_path):
+    vault_fake.fail.add("g30")
+    result, _ = run(tmp_path)
+    assert result["failed"] == 1
+    conn = store.open_db(tmp_path / "archive.db")
+    assert conn.execute("SELECT folder FROM failures").fetchone()[0] == \
+        "Inbox/Cases and Matters/A"
+    vault_fake.fail.clear()
+    run(tmp_path)
+    assert conn.execute("SELECT folder FROM messages WHERE graph_id='g30'").fetchone()[0] == \
+        "Inbox/Cases and Matters/A"
+
+
+def test_an_unlistable_folder_leaves_the_filed_pass_unfinished(vault_fake, monkeypatch,
+                                                               tmp_path):
+    real = vault_fake.iter_index
+
+    def flaky(keeper, mb, folder_id, from_addrs=None, top=None):
+        if folder_id == "F1":
+            raise GraphError(500, "boom")
+        yield from real(keeper, mb, folder_id, from_addrs, top)
+
+    monkeypatch.setattr(graph, "iter_index", flaky)
+    result, lines = run(tmp_path)
+    assert not result["finished"] and "1 folders couldn't be listed" in "\n".join(lines)
+    assert "complete_utc" not in json.loads((tmp_path / "state.json").read_text())["filed"]
+
+
+def test_search_flags_shortcuts(vault_fake, tmp_path, capsys):
+    run(tmp_path)
+    conn = store.open_db(tmp_path / "archive.db")
+    hits = search.search(conn, "", limit=50)["hits"]
+    flagged = {h["ref"] for h in hits if h["shortcut"]}
+    assert len(flagged) == 1
+    text = search.format_hits(search.search(conn, "Cut-down"), "Cut-down")
+    assert search.SHORTCUT_NOTE in text
+    ref = next(iter(flagged))
+    assert search.SHORTCUT_NOTE in search.format_message(search.read_message(conn, ref))
+    filed = conn.execute("SELECT id FROM messages WHERE graph_id='g30'").fetchone()[0]
+    assert "Filed in: Inbox/Cases and Matters/A" in search.format_message(
+        search.read_message(conn, filed))
+    assert cli.run_cli({}, tmp_path, ["--stats", "--root", str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    assert "1 Vault shortcuts; 2 from other folders" in out and "filed pass finished" in out
+
+
+def test_start_is_for_a_trial_root_only(vault_fake, tmp_path, capsys):
+    real = tmp_path / "real"
+    cfg = {"joe_archive_root": str(real)}
+    assert cli.run_cli(cfg, tmp_path, ["--backfill", "--start", "2024-01-01"]) == 2
+    assert cli.run_cli(cfg, tmp_path, ["--backfill", "--start", "2024-01-01",
+                                       "--root", str(real)]) == 2
+    assert cli.run_cli(cfg, tmp_path, ["--sync", "--start", "2024-01-01",
+                                       "--root", str(tmp_path / "t")]) == 2
+    assert cli.run_cli(cfg, tmp_path, ["--backfill", "--start", "1/1/2024",
+                                       "--root", str(tmp_path / "t")]) == 2
+    assert "trial archive" in capsys.readouterr().out
+    trial = tmp_path / "trial"
+    assert cli.run_cli(cfg, tmp_path, ["--backfill", "--start", "2026-01-05", "--limit", "1",
+                                       "--root", str(trial)]) == 0
+    assert vault_fake.since_seen[-1] == "2026-01-05T00:00:00Z"
+    conn = store.open_db(trial / "archive.db")
+    assert [r[0] for r in conn.execute("SELECT graph_id FROM messages")] == ["g5"]
+    assert not real.exists()
+
+
+def test_a_retried_shortcut_never_overwrites_a_full_copy(vault_fake, tmp_path):
+    vault_fake.fail.add("g21")                      # the Sent Items shortcut fails
+    result, _ = run(tmp_path)
+    assert result["failed"] == 1 and result["archived"] == 7   # full copy came in filed
+    conn = store.open_db(tmp_path / "archive.db")
+    rel = conn.execute("SELECT eml_path FROM messages WHERE graph_id='g21-full'").fetchone()[0]
+    before = (tmp_path / rel).read_bytes()
+    vault_fake.fail.clear()
+    vault_fake.downloads.clear()
+    result, _ = run(tmp_path)
+    assert "g21" not in vault_fake.downloads and result["archived"] == 0
+    assert (tmp_path / rel).read_bytes() == before
+    assert conn.execute("SELECT COUNT(*) FROM failures").fetchone()[0] == 0

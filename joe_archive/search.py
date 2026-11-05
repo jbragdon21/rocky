@@ -15,6 +15,8 @@ from datetime import date, datetime, timedelta, timezone
 
 from time_entries.mail import parse_utc, to_eastern
 
+from .store import is_shortcut
+
 # bm25 weights, in messages_fts column order.
 WEIGHTS = (6.0, 2.0, 3.0, 1.0, 2.0)  # subject, recipients, body_own, body_quoted, attachments
 OWN_COLUMNS = "{subject body_own}"    # "Joe's own words": his subject line and top text
@@ -150,7 +152,7 @@ def _fts(conn, match, filters, params, order, limit, offset) -> dict:
         for i, col in enumerate((2, 3, -1)))
     rows = conn.execute(
         f"SELECT m.id, m.sent_utc, m.subject, m.to_list, m.cc_list, m.attachment_names, "
-        f"{snips}, bm25(messages_fts, {weights}) AS score {base} "
+        f"m.message_class, {snips}, bm25(messages_fts, {weights}) AS score {base} "
         f"ORDER BY {ORDERS[order]} LIMIT ? OFFSET ?",
         [match] + params + [limit, offset]).fetchall()
     hits = []
@@ -165,7 +167,7 @@ def _browse(conn, filters, params, order, limit, offset) -> dict:
     total = conn.execute(f"SELECT COUNT(*) FROM messages m{where}", params).fetchone()[0]
     rows = conn.execute(
         f"SELECT m.id, m.sent_utc, m.subject, m.to_list, m.cc_list, m.attachment_names, "
-        f"COALESCE(NULLIF(m.body_own, ''), m.body_quoted) AS snip "
+        f"m.message_class, COALESCE(NULLIF(m.body_own, ''), m.body_quoted) AS snip "
         f"FROM messages m{where} ORDER BY {ORDERS[order]} LIMIT ? OFFSET ?",
         params + [limit, offset]).fetchall()
     return {"total": total, "order": order, "query_used": "", "rewritten": False,
@@ -176,7 +178,14 @@ def _hit(r, snip: str) -> dict:
     return {"ref": r["id"], "sent": eastern(r["sent_utc"]),
             "to": _people_short(r["to_list"]), "cc": _people_short(r["cc_list"], 2),
             "subject": r["subject"] or "(no subject)", "snippet": _flat(snip, 260),
-            "attachments": r["attachment_names"] or ""}
+            "attachments": r["attachment_names"] or "",
+            "shortcut": is_shortcut(r["message_class"])}
+
+
+# Shown with every Vault shortcut, in the CLI now and to Claude in the chat
+# later, so a cut-down copy is never taken for the whole email.
+SHORTCUT_NOTE = ("Vault shortcut: the text may be cut short and the attachments "
+                 "are missing (the full email is in Enterprise Vault)")
 
 
 def read_message(conn: sqlite3.Connection, ref: int) -> dict | None:
@@ -202,6 +211,8 @@ def format_hits(result: dict, query: str = "") -> str:
         lines.append(f"[{h['ref']}] {h['sent']}  To: {h['to'] or '(none)'}"
                      + (f"  Cc: {h['cc']}" if h["cc"] else ""))
         lines.append(f"     {h['subject']}")
+        if h.get("shortcut"):
+            lines.append(f"     {SHORTCUT_NOTE}")
         if h["attachments"]:
             lines.append(f"     Attachments: {_flat(h['attachments'], 160)}")
         if h["snippet"]:
@@ -222,6 +233,10 @@ def format_message(row: dict, cap: int = 20_000) -> str:
         lines.append(f"Bcc: {row['bcc_list']}")
     if row["attachment_names"]:
         lines.append(f"Attachments: {row['attachment_names']}")
+    if is_shortcut(row.get("message_class")):
+        lines.append(SHORTCUT_NOTE)
+    if row.get("folder") and row["folder"] != "Sent Items":
+        lines.append(f"Filed in: {row['folder']}")
     lines += ["", row["body_own"] or "(nothing typed above the history)"]
     quoted = row["body_quoted"] or ""
     if quoted:
