@@ -305,10 +305,30 @@ What differs from the sections above:
   Graph's form; nine tests fail on the old code. When a class still reads
   blank, `--check` prints the property ids Graph returned.
 
+- With the class read, the sample showed **Enterprise Vault shortcuts**:
+  the ten oldest sends were `IPM.Note.EnterpriseVault.Shortcut x9` and one
+  meeting reply. A shortcut keeps a cut-down body and no attachments, and
+  the full email is in the Vault, which Graph can't reach. A shortcut keeps
+  the original's internetMessageId, so an archived shortcut would block a
+  later full copy (`msg_key` is UNIQUE, inserted OR IGNORE).
+- The full check's folder scan: 2,417 folders. In the 600 largest, 21,170
+  of Joe's sends sit outside Sent Items, across 512 folders: 10,228 in
+  Deleted Items, the rest filed in matter folders. The other folders weren't
+  counted.
+- **The backfill is on hold** until both are settled. It starts oldest
+  first, so a `--limit 200` trial would be all shortcuts.
+- `--census` (built 11/5) answers the facts without downloading: unique
+  sends across every folder, those only outside Sent Items, Vault-only
+  sends and their dates, by year. The folder walk now prints progress.
+- James's calls after the census: whether Deleted Items is in scope (Joe
+  deleted them), whether filed-only sends are, and how shortcuts are held.
+  IT: does Joe's Vault still exist, and can it export to PST?
+
 Next on the Rocky laptop, after a deploy:
 
-1. `rocky.exe --joe-archive --check`
-2. `rocky.exe --joe-archive --backfill --limit 200`, then a few `--search`
+1. `rocky.exe --joe-archive --census`
+2. The scope decisions above, then the backfill changes they need
+3. `rocky.exe --joe-archive --backfill --limit 200`, then a few `--search`
    runs on what it pulled
-3. `rocky.exe --joe-archive --backfill` until it finishes (rerun to resume)
+4. `rocky.exe --joe-archive --backfill` until it finishes (rerun to resume)
 

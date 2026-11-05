@@ -15,7 +15,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from joe_archive import cli, graph, ingest, search, store  # noqa: E402
+from joe_archive import census, cli, graph, ingest, search, store  # noqa: E402
 from joe_archive.graph import GraphError  # noqa: E402
 
 MB = "jdugan@gallagherllp.com"
@@ -460,7 +460,7 @@ def test_check_reports_access_size_and_filed_sends(fake, monkeypatch, tmp_path):
     monkeypatch.setattr(ingest, "_first_sent", lambda k, mb, d:
                         "2019-04-01T12:00:00Z" if d == "asc" else "2026-11-03T12:00:00Z")
     monkeypatch.setattr(graph, "folder", lambda k, mb, name: {"id": name.upper()})
-    monkeypatch.setattr(ingest, "walk_folders", lambda k, mb: [
+    monkeypatch.setattr(ingest, "walk_folders", lambda k, mb, **kw: [
         {"id": "SENTITEMS", "path": "Sent Items", "items": 6},
         {"id": "F1", "path": "Inbox/Bozzuto", "items": 900},
         {"id": "F2", "path": "Inbox/Empty", "items": 0},
@@ -475,6 +475,7 @@ def test_check_reports_access_size_and_filed_sends(fake, monkeypatch, tmp_path):
     assert "sample classes: IPM.Note x" in text and "MIME download works" in text
     assert "extended properties returned" not in text
     assert "120 of Joe's sends sit in 1 other folders (1 folders couldn't be counted)" in text
+    assert "4 folders, 2 with mail; checking all of them" in text
     assert "Inbox/Bozzuto" in text
     assert not (tmp_path / "_check").exists()          # the sample .eml is cleaned up
     saved = json.loads((tmp_path / "check.json").read_text())
@@ -517,3 +518,123 @@ def test_snippet_prefers_joes_own_text(archive):
     assert hits[4] == "[Refusal] letter"
     both = search.search(archive, "lease")["hits"]
     assert both[0]["ref"] == 1 and "\x02" not in both[0]["snippet"]
+
+
+# =============================================================================
+# --census
+# =============================================================================
+
+SC = "IPM.Note.EnterpriseVault.Shortcut"
+
+
+@pytest.fixture
+def mailbox(monkeypatch):
+    """A mailbox with Vault shortcuts, filed copies, deleted sends, a broken
+    folder, and Drafts the census must not read."""
+    m = {i: gmsg(i, sent, mclass=c, imid=imid) for i, sent, c, imid in [
+        (1, "2019-03-18T17:46:57Z", SC, True),          # shortcut, no full copy
+        (2, "2019-05-01T10:00:00Z", SC, True),          # shortcut; full copy filed
+        (3, "2024-02-01T10:00:00Z", "IPM.Note", True),  # also in Deleted Items
+        (4, "2024-03-01T10:00:00Z", "IPM.Schedule.Meeting.Resp.Pos", True),
+        (5, "2024-04-01T10:00:00Z", "IPM.Note", False),  # no internetMessageId
+        (6, "2023-01-05T10:00:00Z", "IPM.Note", True),  # only filed
+        (7, "2020-06-01T10:00:00Z", SC, True),          # only filed, as a shortcut
+        (8, "2022-07-01T10:00:00Z", "IPM.Note", True),  # only deleted
+        (9, "2021-08-01T10:00:00Z", "IPM.Note", True),  # only in a Deleted subfolder
+        (10, "2024-05-01T10:00:00Z", "IPM.Note", True)]}
+    full2 = dict(m[2], singleValueExtendedProperties=[{"id": "String 0x1a", "value": "IPM.Note"}])
+    data = {"SENTITEMS": [m[1], m[2], m[3], m[4], m[5]],
+            "F1": [full2, m[6], m[7]],
+            "DELETEDITEMS": [m[8], m[3]],
+            "D2": [m[9]],
+            "DRAFTS": [m[10]]}
+    folders = [{"id": "SENTITEMS", "path": "Sent Items", "items": 5},
+               {"id": "F1", "path": "Inbox/Cases and Matters/A", "items": 3},
+               {"id": "DELETEDITEMS", "path": "Deleted Items", "items": 2},
+               {"id": "D2", "path": "Deleted Items/Old", "items": 1},
+               {"id": "F2", "path": "Inbox/Broken", "items": 4},
+               {"id": "EMPTY", "path": "Inbox/Empty", "items": 0},
+               {"id": "DRAFTS", "path": "Drafts", "items": 1}]
+    calls = []
+
+    def iter_index(keeper, mb, folder_id, from_addrs=None, top=None):
+        calls.append((folder_id, from_addrs))
+        if folder_id in fail:
+            raise GraphError(500, "boom")
+        rows = [dict(x) for x in data.get(folder_id, [])]
+        for i in range(0, len(rows), 2):
+            yield rows[i:i + 2]
+
+    fail = {"F2"}
+    monkeypatch.setattr(graph, "iter_index", iter_index)
+    monkeypatch.setattr(graph, "folder", lambda k, mb, name: {"id": name.upper()})
+    monkeypatch.setattr(ingest, "walk_folders", lambda k, mb, **kw: [dict(f) for f in folders])
+    monkeypatch.setattr(ingest, "resolve_access",
+                        lambda config, root, state: (graph.TokenKeeper({}, "app", "t"), MB))
+    return {"calls": calls, "fail": fail}
+
+
+def test_census_pairs_copies_and_finds_what_sent_items_lacks(mailbox, tmp_path):
+    lines = []
+    report = census.run({}, tmp_path, out=lines.append)
+    s = report["sends"]
+    assert s["unique"] == 8 and s["skipped_receipts_and_replies"] == 1
+    assert s["in_sent_items"] == 4 and s["copied_elsewhere"] == 2
+    assert (s["only_outside"], s["only_filed"], s["only_deleted"],
+            s["only_filed_and_deleted"]) == (4, 2, 2, 0)
+    assert s["no_message_id"] == 1
+    assert report["sent_items_listed"] and report["folders_total"] == 7
+    assert report["folders_listed"] == 5          # not Drafts, not the empty folder
+    assert report["folders_unreadable"][0]["path"] == "Inbox/Broken"
+    years = report["years"]
+    assert years["2019"] == {"unique": 2, "in_sent_items": 2, "vault_only": 1}
+    assert years["2020"] == {"unique": 1, "only_outside": 1, "vault_only": 1}
+    assert years["2024"] == {"unique": 2, "in_sent_items": 2}
+    only = {f["path"]: f["only_here"] for f in report["folders"]}
+    assert only == {"Inbox/Cases and Matters/A": 2, "Deleted Items": 1,
+                    "Deleted Items/Old": 1, "Sent Items": 0}
+    assert json.loads((tmp_path / "census.json").read_text())["sends"] == s
+
+
+def test_census_reports_vault_shortcuts(mailbox, tmp_path):
+    lines = []
+    s = census.run({}, tmp_path, out=lines.append)
+    assert s["sends"]["shortcut_somewhere"] == 3
+    assert s["sends"]["vault_only"] == 2                    # 1 and 7
+    assert s["vault_only_range"] == ["2019-03-18T17:46:57Z", "2020-06-01T10:00:00Z"]
+    assert s["sends"]["sent_shortcut_full_elsewhere"] == 1  # 2: full copy filed
+    text = "\n".join(lines)
+    assert "with no full copy anywhere in the mailbox (sent 2019-03-18 to 2020-06-01)" in text
+    assert "1 folders couldn't be listed" in text
+
+
+def test_census_reads_sent_items_whole_and_other_folders_for_joe_only(mailbox, tmp_path):
+    census.run({}, tmp_path, out=lambda line: None)
+    by_folder = dict(mailbox["calls"])
+    assert by_folder["SENTITEMS"] is None
+    assert MB.lower() in by_folder["F1"] and MB.lower() in by_folder["DELETEDITEMS"]
+    assert "DRAFTS" not in by_folder and "EMPTY" not in by_folder
+
+
+def test_census_says_when_sent_items_could_not_be_listed(mailbox, tmp_path):
+    mailbox["fail"].add("SENTITEMS")
+    lines = []
+    report = census.run({}, tmp_path, out=lines.append)
+    assert report["sent_items_listed"] is False
+    assert "INCOMPLETE: Sent Items couldn't be listed" in "\n".join(lines)
+    assert cli.run_cli({}, tmp_path, ["--census", "--root", str(tmp_path)]) == 1
+
+
+def test_census_cli_runs_and_takes_the_lock(mailbox, tmp_path, capsys):
+    assert "--census" in cli.WRITE_FLAGS
+    assert cli.run_cli({}, tmp_path, ["--joe-archive", "--census", "--root", str(tmp_path)]) == 0
+    assert "Saved" in capsys.readouterr().out
+
+
+def test_walk_folders_reports_progress(monkeypatch):
+    page = {"value": [{"id": f"f{i}", "displayName": f"F{i}", "totalItemCount": 1,
+                       "childFolderCount": 0} for i in range(600)]}
+    monkeypatch.setattr(graph, "get_json", lambda keeper, url, params=None: page)
+    seen = []
+    folders = ingest.walk_folders(graph.TokenKeeper({}, "app", "t"), MB, progress=seen.append)
+    assert len(folders) == 600 and seen == [250, 500]

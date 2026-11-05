@@ -195,6 +195,31 @@ def iter_pages(keeper: TokenKeeper, mailbox: str, folder_id: str = "sentitems",
             return
 
 
+INDEX_SELECT = "id,internetMessageId,sentDateTime"
+INDEX_PAGE = 500
+
+
+def iter_index(keeper: TokenKeeper, mailbox: str, folder_id: str,
+               from_addrs: list[str] | None = None, top: int = INDEX_PAGE):
+    """Yield pages of one folder's messages with only what the census needs:
+    ids, sent date and message class, no body. from_addrs keeps only mail
+    from those addresses (Joe's, in folders other than Sent Items)."""
+    url = f"{GRAPH}/users/{mailbox}/mailFolders/{folder_id}/messages"
+    params = {"$top": str(top), "$select": INDEX_SELECT, "$expand": LIST_EXPAND}
+    if from_addrs:
+        params["$filter"] = " or ".join(f"from/emailAddress/address eq '{a}'"
+                                        for a in from_addrs)
+    next_url = None
+    while True:
+        data = get_json(keeper, next_url or url, None if next_url else params)
+        batch = data.get("value") or []
+        if batch:
+            yield batch
+        next_url = data.get("@odata.nextLink")
+        if not next_url:
+            return
+
+
 def message(keeper: TokenKeeper, mailbox: str, graph_id: str) -> dict | None:
     """One message in the listing's shape, or None if it's gone (404)."""
     resp = get(keeper, f"{GRAPH}/users/{mailbox}/messages/{graph_id}",

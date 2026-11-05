@@ -133,8 +133,13 @@ def _first_sent(keeper, mb, direction: str) -> str | None:
     return store.norm_utc(vals[0].get("sentDateTime")) if vals else None
 
 
-def walk_folders(keeper, mb, cap: int = 5000) -> list[dict]:
-    """Every (non-hidden) folder: id, path, totalItemCount."""
+WALK_PROGRESS_EVERY = 250
+
+
+def walk_folders(keeper, mb, cap: int = 5000, progress=None) -> list[dict]:
+    """Every (non-hidden) folder: id, path, totalItemCount. progress(n) is
+    called every WALK_PROGRESS_EVERY folders: mapping 2,400 folders takes
+    minutes, and the 11/5 check sat silent through it."""
     out, stack = [], [(None, "")]
     params = {"$top": "250", "$select": "id,displayName,totalItemCount,childFolderCount"}
     while stack and len(out) < cap:
@@ -148,10 +153,19 @@ def walk_folders(keeper, mb, cap: int = 5000) -> list[dict]:
                 path = f"{prefix}/{f.get('displayName')}" if prefix else f.get("displayName")
                 out.append({"id": f["id"], "path": path,
                             "items": f.get("totalItemCount") or 0})
+                if progress and len(out) % WALK_PROGRESS_EVERY == 0:
+                    progress(len(out))
                 if f.get("childFolderCount"):
                     stack.append((f["id"], path))
             next_url = data.get("@odata.nextLink")
     return out
+
+
+def joe_addresses(mailbox: str, mb: str) -> list[str]:
+    """Every address Joe's sends can carry: the configured one, the one that
+    answered, and the legacy-domain twin."""
+    alt = _alt_mailbox(mailbox)
+    return sorted({mailbox.lower(), mb.lower()} | ({alt.lower()} if alt else set()))
 
 
 def authored_count(keeper, mb, folder_id: str, addrs: list[str]) -> int | None:
@@ -250,18 +264,21 @@ def _scan_filed(keeper, mb, mailbox, out) -> dict:
             skip.add(graph.folder(keeper, mb, name)["id"])
         except GraphError:
             pass
+    out("")
+    out("Mapping Joe's folders ...")
     try:
-        folders = walk_folders(keeper, mb)
+        folders = walk_folders(keeper, mb,
+                               progress=lambda n: out(f"  ... {n} folders mapped"))
     except GraphError as e:
         out(f"Folder scan failed: {e}")
         return {"ok": False, "error": str(e)}
-    todo = sorted((f for f in folders if f["items"] and f["id"] not in skip),
-                  key=lambda f: -f["items"])[:FOLDER_SCAN_CAP]
-    addrs = sorted({mailbox.lower(), mb.lower()} | (
-        {_alt_mailbox(mailbox).lower()} if _alt_mailbox(mailbox) else set()))
-    out("")
-    out(f"Looking for Joe's sends filed outside Sent Items ({len(todo)} of "
-        f"{len(folders)} folders have mail) ...")
+    with_mail = [f for f in folders if f["items"] and f["id"] not in skip]
+    todo = sorted(with_mail, key=lambda f: -f["items"])[:FOLDER_SCAN_CAP]
+    addrs = joe_addresses(mailbox, mb)
+    out(f"Looking for Joe's sends filed outside Sent Items: {len(folders)} folders, "
+        f"{len(with_mail)} with mail; checking "
+        + ("all of them" if len(todo) == len(with_mail) else f"the largest {len(todo)}")
+        + " (--census lists every one) ...")
     found, unknown = [], 0
     for i, f in enumerate(todo, 1):
         n = authored_count(keeper, mb, f["id"], addrs)

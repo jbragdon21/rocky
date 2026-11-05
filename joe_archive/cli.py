@@ -6,6 +6,13 @@
         other folders (--no-folders skips that scan). Writes check.json and
         records the working auth path for the backfill.
 
+    --joe-archive --census
+        Every send of Joe's in every folder, counted without downloading
+        anything: unique sends, those found only outside Sent Items (and only
+        in Deleted Items), Enterprise Vault shortcuts with no full copy in the
+        mailbox, a year-by-year table and the folders holding the most sends
+        found nowhere else. Writes census.json.
+
     --joe-archive --backfill [--limit N] [--workers N]
         Copy Sent Items, oldest first, to eml\\YYYY\\MM\\ and index it.
         Checkpointed: rerun to resume. --limit N stops after N new sends
@@ -39,12 +46,14 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from . import ingest, search, store
+from . import census, ingest, search, store
 from .graph import GraphError
 
 log = logging.getLogger("rocky")
 
-WRITE_FLAGS = ("--check", "--backfill", "--sync")
+# These share the joe-archive lock: they call Graph hard (Exchange allows 4
+# requests at once per mailbox) or write the archive.
+WRITE_FLAGS = ("--check", "--census", "--backfill", "--sync")
 
 
 def get_root(config: dict, data_dir: Path, override: str | None = None) -> Path:
@@ -56,6 +65,7 @@ def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="rocky.py --joe-archive", add_help=False)
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true")
+    mode.add_argument("--census", action="store_true")
     mode.add_argument("--backfill", action="store_true")
     mode.add_argument("--sync", action="store_true")
     mode.add_argument("--search", metavar="QUERY")
@@ -99,6 +109,9 @@ def run_cli(config: dict, data_dir: Path, argv: list[str] | None = None) -> int:
         if args.check:
             report = ingest.check(config, root, scan_folders=not args.no_folders)
             return 0 if report.get("auth") else 1
+        if args.census:
+            report = census.run(config, root)
+            return 0 if report.get("sent_items_listed") else 1
         if args.backfill or args.sync:
             result = ingest.backfill(config, root, limit=args.limit,
                                      workers=max(1, min(args.workers, 4)),
