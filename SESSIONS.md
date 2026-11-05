@@ -237,6 +237,69 @@ Committed as `5ca3332` on `time-entries` and deployed 11/5 (see Deploy).
 
 ---
 
+## Session 2026-11-04 — Joe's Email Archive: the access check, backfill and search
+
+James asked on 11/3 for a process that archives Joe Dugan's (jdugan@) Sent Items on the Rocky
+laptop and lets Joe search it from a Teams chat. The design went into `JOE_ARCHIVE_DESIGN.md`
+that day. On 11/4 he said to build steps 1 and 2. Built in the worktree
+`.claude/worktrees/joe-archive` on branch `joe-archive` (from `f9a4ff7`). Nothing is committed
+or deployed, and nothing has touched Joe's mailbox yet.
+
+**What changed**
+
+- `joe_archive/` (new package):
+  - `graph.py`: three auth paths (app, delegated-read, delegated), a thread-safe TokenKeeper
+    (45-minute refresh, and a refresh on a 401), GET with backoff, paging that brings the text
+    body and PR_MESSAGE_CLASS, and streamed MIME downloads.
+  - `store.py`: archive.db (messages, an external-content FTS5 table kept in step by triggers,
+    and failures), the body split ported from Minotaur, and attachment names from the `.eml`.
+  - `search.py`: one `search()` for the CLI and the coming chat tool, plus `read_message` and the
+    text formats.
+  - `ingest.py`: `check()` and `backfill()`.
+  - `cli.py`: `--joe-archive ...`.
+- `rocky.py`: the help text, the dispatch, and a lock that only the writers take.
+- `build_exe.py`: `--collect-submodules joe_archive`.
+- `.gitignore`: `joe_archive_data/`.
+- `DATA_SECURITY.md`: a row for the archive's data, and a BitLocker note.
+- `tests/test_joe_archive.py` (new, 37 tests).
+
+**Decisions**
+
+- The data folder is `joe_archive_data`, not `joe_archive`. In dev mode the data directory is
+  the repo, so `joe_archive\` would have put Joe's mail inside the package.
+- `--check` tries the app token first because it can only read. It falls back to rocky@'s
+  delegated Mail.Read.Shared, then Mail.ReadWrite.Shared, and records the first path that works.
+- `--sync` reruns the backfill from its cursor with a two-day overlap. A delta query isn't
+  needed for that.
+- Searches never wait on the lock, so James can test them while the backfill runs.
+- No Claude calls and no Teams in steps 1 and 2.
+
+**Verification**
+
+- Full suite: 347 passing.
+- An end-to-end run through `rocky.main()` with stand-in Graph (backfill, then four searches and
+  `--stats`): the writer lock was taken, the searches took none, and the `.eml` files were dated
+  and foldered.
+- The Graph request shapes have not been tried against a real mailbox: `$expand` on the message
+  class, `$count` with a from filter, and `$value`. `--check` exercises each before the backfill
+  does.
+
+**Open items**
+
+- Run `--check`. The dev laptop has rocky@'s delegated token and no app secret, so it can try the
+  delegated paths. The Rocky laptop needs the branch merged into `time-entries` and deployed.
+- James's questions from the design: Joe's Online Archive and filed sends, Joe's agreement and
+  firm sign-off, and whether the chat is 1:1.
+- Steps 3-5: the chat loop (dry run first), delivery with the upload-session path, and a nightly
+  `--sync` task.
+
+**Watch-outs**
+
+- Merge `joe-archive` into `time-entries` before any deploy. A build from the worktree would drop
+  whatever lands on `time-entries` after `f9a4ff7`.
+
+---
+
 ## Session 2026-11-01 (5) — Time Entries phase 3: the mail trigger and delivery
 
 James said "Start phase 3" after phase 2 was committed (`1ce3c09`). Built on `time-entries`,

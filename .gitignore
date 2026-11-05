@@ -83,3 +83,5 @@ scratch_*.py
 # Time Entries (time_entries/ package): te.db, candidate and backtest JSON.
 # Client narratives and email-derived data — never commit.
 time_entries_data/
+# Joe's Email Archive: a colleague's sent mail (.eml) and its index. NEVER commit.
+joe_archive_data/
