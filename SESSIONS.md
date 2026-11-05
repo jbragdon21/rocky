@@ -24,6 +24,99 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-11-05 (2) — Courthouse News feed: a two-underscore path; whole briefs
+
+James asked why no CNS daily brief ever reached RRID-0045 (Multifamily Feud).
+He asked for the diagnosis first, then approved fixes A, B and C, and chose
+not to deploy B and C yet.
+
+**Diagnosis**
+
+- The briefs arrive. They come from `reports@courthousenews.com` as "My Daily
+  Brief - <date>" every weekday at about 5–7 PM ET. All 113 since 5/27 are in
+  `Inbox\___Rocky\Junk Fees Digest`.
+- Rule 9 "Courthouse News Reports" is server-side and enabled: mail from that
+  address moves to that folder. Rule 8 (Google Alert "Junk fee") is
+  client-only and has never put anything there.
+- The break: the index's Case Folder (Sheet1!C41) said `Inbox\__Rocky\...`
+  with two underscores. The folder is `___Rocky`, with three.
+  - `resolve_folder_path` matches names exactly, so every run since 10/25
+    returned `folder_not_found`.
+  - Each run logged two warnings on the Rocky laptop and nothing else: no
+    activity event, no digest alert.
+  - Proof without the Rocky laptop's log: the run went daily 10/25–11/3
+    (other cases' events), and six of its windows had a brief, but RRID-0045
+    never logged an email event.
+- The stale File Name ("Fee Class Action Tracker") is harmless. Folders are
+  found by RRID, and the name only breaks ties.
+- The next break: a brief is about 185,000 characters as text (11/3:
+  184,388, about 190 rulings, 22% of it links). The daily run reads 20,000
+  characters a file, about the first 20 rulings.
+
+**What changed**
+
+- A (live): Rocky Case Index Sheet1!C41 is now `Inbox\___Rocky\Junk Fees
+  Digest`.
+  - Only the one shared string in the xlsx XML changed, and every other cell
+    was checked.
+  - The backup is in this session's scratchpad (`Rocky Case
+    Index.backup_20261105_083925.xlsx`).
+- B and C: commit `7e43d77` on branch `cns-feed-fix` (worktree
+  `.claude/worktrees/cns-feed-fix`), based on `210b6cb`.
+  - B: a full `--daily-cases` run writes `state/daily_cases_unresolved.json`.
+    The digest's Rocky needs attention block says "Email not read for …"
+    while the file is under 36 hours old.
+  - C: `_raw_file_block` takes the links out of a saved brief (its header
+    names reports@courthousenews.com) and reads it up to `CNS_BRIEF_TEXT_CAP`
+    (250,000). The brief becomes a batch of its own.
+  - BUILD_REFERENCE: Stage 1 and Stage 2 item 9. Tests: two new, one
+    extended; 279 pass on the branch.
+- RRID-0045 activity.jsonl: one `file_maintenance` line.
+
+**Decisions**
+
+- The index was corrected instead of renaming the Outlook folder: one cell,
+  and nothing else points at `___Rocky`.
+- No fuzzy folder matching. Rocky reads an exact path or raises an alert; it
+  never guesses.
+- James, 11/5: don't deploy B and C yet.
+
+**Open items**
+
+- Deploy B and C.
+  - C depends on the batching commit `16470b0`, never deployed. Without it, a
+    whole brief fills the daily run's prompt, and every later file that day
+    is dropped and counted as a miss.
+  - Build from `5ca3332` (live since 11/5 09:55, built from `6b81d81`) plus
+    `16470b0`, plus `210b6cb` if James wants the input caps, plus `7e43d77`.
+  - `cns-feed-fix` as it stands lacks `5ca3332`. Building it would undo the
+    11/5 podcast fix.
+- `7e43d77` isn't on `time-entries`. Cherry-pick it before the next deploy
+  from that branch.
+- The backfill isn't decided. These are behind the watermark:
+  - the briefs of 10/20–10/23, 10/26–10/30, 11/2 and 11/3;
+  - the non-brief mail of 11/1–11/4.
+  `--daily-cases RRID-0045 --hours N` (a live one-case pass) brings them in.
+  It's best run after C is deployed.
+- Today's 4:16 PM run saves the 11/4 brief. The 4:30 daily run screens only
+  its first 20,000 characters.
+- Optional: change the index's File Name to "Multifamily Feud".
+
+**Watch-outs**
+
+- Graph returns HTML bodies unless the request sends `Prefer:
+  outlook.body-content-type="text"`. Sizes measured without it come out about
+  1.7 times too big.
+- `resolve_folder_path`'s "Available" list is empty when its `$filter` finds
+  no match, so the warning never shows the near miss.
+- The 10/26 daily run reported a CNS "screen" ("No fee or multifamily class
+  action decisions reported") with zero raw files. No brief was there.
+- The 11/5 09:55 deploy was built from `6b81d81`, so it likely dropped
+  `af975ca` (the Vault Checklist DC rent rule), which the 11/1 17:04 exe
+  probably carried.
+
+---
+
 ## Session 2026-11-05 — Podcasts: cover everything since the last episode; Transistor read-back
 
 James said the podcasts weren't reaching subscribers' feeds. He also said
@@ -272,6 +365,49 @@ input caps were cutting real case content. He said to raise all four.
   and the Litigation Updater, Vault classifier and Sam's research-memo caps.
 - `_read_pleading_facts` still sends the digest the newest 60 facts by date
   (15 for the no-activity list).
+
+---
+
+## Session 2026-11-01 (3) — Case CLAUDE.md: Rocky items asked with question cards
+
+James asked why a Cowork session pointed at a case folder doesn't prompt him
+with Rocky's items on its own, and why he has to reconnect the project folder
+every session.
+
+**What changed**
+
+- All 40 open case `CLAUDE.md` files (not in git; OneDrive Rocky Cases).
+  Four strings reworded, nothing else touched: the "Before starting any
+  work" step, the opening paragraph and step 3 of **Session Start: Rocky
+  Items**, and the last sentence of **Rocky Unfiled Documents**. Sessions
+  now put open items to James with the AskUserQuestion tool, one card per
+  item and up to four per call, before working on his first message.
+  Options are fixed per item type, and unanswered cards count as deferred.
+  The old text said to list the items and not hold the request.
+- Backups of all 40 originals are in this session's scratchpad
+  (`claude_md_backup_20261101_194420`). Five files (RRID-0029, -0030, -0031,
+  -0037, -0042) are CRLF. The rewrite briefly made them LF; they are CRLF
+  again.
+
+**Decisions made**
+
+- Cards come before the request. James asked to be prompted outright;
+  "Defer" or dismissing the cards gets him past them.
+- No Rocky code change. Rocky only appends the Suggestions and Unfiled
+  sections when they are missing, and the Session Start section was never
+  in code.
+
+**Watch-outs**
+
+- Cowork project folders don't always mount at session start (open bug
+  anthropics/claude-code#86647, Windows too). When the folder isn't
+  mounted, Cowork never loads the case CLAUDE.md, so no wording in it can
+  fire. Reconnecting mid-session doesn't load it either. The fix belongs in
+  Cowork's global or project instructions, which load without the folder.
+- Cowork can't speak first. Any first message triggers the check.
+- Git Bash `grep $'\r'` doesn't detect CRLF here. Check bytes in Python.
+- `_templates/CLAUDE.md.template` has no Session Start section and is stale.
+  New case CLAUDE.md files have to be copied from a current case.
 
 ---
 
