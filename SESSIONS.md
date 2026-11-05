@@ -201,21 +201,29 @@ not to deploy B and C yet.
 
 **Open items**
 
-- Deploy B and C.
-  - C depends on the batching commit `16470b0`, never deployed. Without it, a
-    whole brief fills the daily run's prompt, and every later file that day
-    is dropped and counted as a miss.
-  - Build from `5ca3332` (live since 11/5 09:55, built from `6b81d81`) plus
-    `16470b0`, plus `210b6cb` if James wants the input caps, plus `7e43d77`.
-  - `cns-feed-fix` as it stands lacks `5ca3332`. Building it would undo the
-    11/5 podcast fix.
-- `7e43d77` isn't on `time-entries`. Cherry-pick it before the next deploy
-  from that branch.
-- The backfill isn't decided. These are behind the watermark:
+- Deploy B and C. **Still not live after the 11/5 12:06 and 12:20 deploys.**
+  Both were built from `time-entries`, which doesn't carry `7e43d77`. Checked
+  in the 12:20 exe's bundled `rocky` code: the batching and Joe's archive are
+  there, and none of the fix's strings (`CNS_BRIEF_TEXT_CAP`,
+  `daily_cases_unresolved.json`) are.
+  - The batching C depends on (`16470b0`) is live as of 12:06, so C is safe
+    to ship on top of the current tip.
+  - **Cherry-picked onto `time-entries` on 11/5 as `70e21cf`** (366 tests
+    pass). The next build from the branch tip carries B and C. James is
+    holding that build for another edit in progress.
+  - After the deploy, confirm it: the exe's bundled `rocky` code should
+    contain `CNS_BRIEF_TEXT_CAP` and `daily_cases_unresolved.json`.
+  - Don't build `cns-feed-fix` itself. It's based on `210b6cb` and would undo
+    everything deployed since. The branch is now redundant.
+- Backfill from 10/20, approved by James on 11/5, to run once B and C are
+  deployed (not before, or the screen reads only 20,000 characters a
+  brief). These are behind the watermark:
   - the briefs of 10/20–10/23, 10/26–10/30, 11/2 and 11/3;
   - the non-brief mail of 11/1–11/4.
-  `--daily-cases RRID-0045 --hours N` (a live one-case pass) brings them in.
-  It's best run after C is deployed.
+  Run `--daily-cases RRID-0045 --hours N`, with N reaching back to 10/20 at
+  00:00 ET. It's a live one-case pass that doesn't move the watermark, and it
+  skips files already saved. The daily runs then clear the backlog oldest
+  first, at 4 batches a run, so expect about a week.
 - Today's 4:16 PM run saves the 11/4 brief. The 4:30 daily run screens only
   its first 20,000 characters.
 - Optional: change the index's File Name to "Multifamily Feud".
