@@ -24,6 +24,79 @@ Naming entries: `## Session YYYY-MM-DD — short title`. If multiple sessions in
 
 ---
 
+## Session 2026-11-05 (5) — Joe's archive: Vault shortcuts, filed sends, and a census
+
+After the 12:20 deploy, James ran `--check --no-folders`, then the full
+`--check`, and said to build a census.
+
+**What the checks showed**
+
+- With the class read, the ten oldest sends were
+  `IPM.Note.EnterpriseVault.Shortcut x9` and one meeting reply. Shortcuts
+  keep a cut-down body and no attachments. The full copy is in the Vault,
+  which Graph can't reach. Nothing in Rocky or Minotaur handled Vault
+  shortcuts before.
+- Folder scan: 2,417 folders in all, with only the largest 600 counted. In
+  those, 21,170 of Joe's sends sit outside Sent Items, across 512 folders:
+  10,228 in Deleted Items, the rest filed in matter folders. The scan line
+  "600 of 2417 folders have mail" meant 2,417 folders in total.
+- The walk sat silent for minutes while it mapped the folders.
+
+**Backfill on hold**
+
+- It reads Sent Items only, oldest first, so a `--limit 200` trial would be
+  all shortcuts.
+- `msg_key` (internetMessageId) is UNIQUE and inserts are OR IGNORE. A
+  shortcut keeps the original's id, so an archived shortcut would block a
+  later full copy.
+
+**What changed** (`795b835`)
+
+- `joe_archive/census.py`, `--joe-archive --census`: lists every folder's
+  mail from Joe (Sent Items whole), ids, date and class only, 4 folders at a
+  time. It pairs copies by internetMessageId and writes `census.json`:
+  - unique sends, those only outside Sent Items (filed, only deleted);
+  - Vault-only sends (no full copy in the mailbox) and their dates, and
+    Sent Items shortcuts with a full copy filed elsewhere;
+  - a year table, and the folders holding sends found nowhere else.
+  It skips Drafts and Outbox and leaves out receipts and meeting replies.
+  A folder that fails is named and the rest carry on. If Sent Items fails,
+  the run says INCOMPLETE and exits 1. It shares the `joe-archive` lock.
+- `graph.iter_index` (no body, 500 a page). `ingest.walk_folders` prints
+  progress every 250 folders. `ingest.joe_addresses`. The check's scan
+  line now says how many folders have mail and that it counts the largest
+  600.
+- Tests: 6 census and walk tests, 53 Joe tests, 372 in all.
+- `JOE_ARCHIVE_DESIGN.md` status and BUILD_REFERENCE.
+
+**Deploy (11/5 13:35)**
+
+- rocky.exe only, from `795b835` in a throwaway worktree.
+- It also carries the Courthouse News fix B and C (`70e21cf`), which
+  another session cherry-picked onto `time-entries`. Its note said James
+  was holding the next tip build for an edit in progress.
+- Checks:
+  - deployed hash = build output (52.4 MB);
+  - all 26 raw bundled .py files equal `795b835`;
+  - `joe_archive.census` is bundled, and the bundled `rocky` code has
+    `CNS_BRIEF_TEXT_CAP` and `daily_cases_unresolved.json`, as the CNS
+    entry asked;
+  - the exe loads `--joe-archive --census` and stops at the dev laptop's
+    missing config.
+- Backup: rocky.exe 11/5 12:20 in the session scratchpad.
+
+**Next**
+
+- After the header shows `rocky` 11/5 13:35, run
+  `rocky.exe --joe-archive --census`. It will take a while: one listing per
+  folder that has mail, 4 at a time.
+- James's calls on its results: Deleted Items in or out, filed-only sends
+  in or out, how shortcuts are held. Ask IT whether Joe's Vault still
+  exists and can export to PST.
+- The CNS backfill from 10/20 (entry (2)) can run once this exe is live.
+
+---
+
 ## Session 2026-11-05 (4) — Joe's archive: access checked; message-class fix deployed
 
 James ran `rocky.exe --joe-archive --check` on the Rocky laptop after the
