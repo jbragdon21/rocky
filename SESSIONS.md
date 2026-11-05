@@ -31,8 +31,34 @@ not to assume scheduled runs: he runs the shows when he needs them. The
 synced `_Episodes` folders bear that out. No Sam's or Feud episode was ever
 made at its 6 AM or 5 AM slot, and the gaps between episodes run 1 to 5
 days. Sam's and the Feud read only yesterday's case activity, and only
-today's or yesterday's reports, so the days in between were lost. Built
-on `time-entries`; not committed or deployed.
+today's or yesterday's reports, so the days in between were lost.
+Committed as `5ca3332` on `time-entries` and deployed 11/5 (see Deploy).
+
+**Deploy (11/5 09:55)**
+
+- Built rocky.exe only from `6b81d81` plus this commit's code. The build
+  ran in a throwaway worktree, not from the branch tip.
+  - The live exe (11/1 17:04, never logged) matched `6b81d81`: its
+    bundled sources were identical, and so were `rocky.py`'s compiled
+    strings.
+  - So this deploy still leaves out `af975ca` (Vault Checklist DC rent),
+    `16470b0` (daily-run batching), `210b6cb` (input caps), `1ce3c09`
+    (Time Entries phase 2) and `f9a4ff7` (phase 3's mail trigger in
+    the monitor).
+- Checks:
+  - deployed hash = build output (52.2 MB);
+  - of 26 bundled modules, only the four podcast files changed, and
+    those equal `5ca3332`;
+  - `rocky.py` changed only in its eight help-text strings;
+  - miniaudio and lameenc are bundled;
+  - 272 tests pass on the deploy tree;
+  - the exe launches and stops at the dev laptop's missing config, as
+    expected.
+- dashboard.exe was not rebuilt. Only its descriptions changed.
+- The old exe is kept in the session scratchpad until the new one is
+  confirmed on the Rocky laptop.
+- The next deploy from the branch tip ships all five commits above.
+  Phase 3's mail trigger has its own checklist in entry 2026-11-01 (5).
 
 **What changed**
 
